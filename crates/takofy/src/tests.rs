@@ -8,7 +8,7 @@ use takofy_core::receive::RECEIVE_LOG_TARGET;
 use takofy_ui::cover::COVER_LOG_TARGET;
 use takofy_ui::remote::REMOTE_LOG_TARGET;
 
-use crate::bridge::LANDING_LOG_TARGET;
+use crate::bridge::{LANDING_LOG_TARGET, STARTUP_LOG_TARGET};
 
 use super::{Flags, Mode, USAGE, logger_builder, mode_for, parse_flags};
 
@@ -70,6 +70,13 @@ fn the_cover_size_line_shows_and_its_neighbours_do_not() {
     let logger = logger_builder().build();
     assert!(logger.matches(&record(COVER_LOG_TARGET, Level::Info)));
     assert!(!logger.matches(&record("takofy_ui::view", Level::Info)));
+}
+
+#[test]
+fn startup_target_logs_at_info() {
+    let logger = logger_builder().build();
+    assert!(logger.matches(&record(STARTUP_LOG_TARGET, Level::Info)));
+    assert!(!logger.matches(&record("takofy::app", Level::Info)));
 }
 
 #[test]

@@ -112,7 +112,7 @@ fn a_pushed_view_reaches_the_window_as_updates() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         let tx = shared
             .device_tx
@@ -138,7 +138,7 @@ fn a_second_watch_request_is_a_no_op() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end.commands.send(Command::WatchDevices).expect("watch");
         expect_no_update(&ui_end);
@@ -161,7 +161,7 @@ fn a_failed_watch_is_retried_by_a_refresh() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
 
         ui_end.commands.send(Command::WatchDevices).expect("watch");
         let failed = ui_end.updates.recv().expect("watch failed");
@@ -206,7 +206,7 @@ fn a_spent_dealer_stays_terminal_on_watch_and_refresh() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::WatchDevices).expect("watch");
         assert_eq!(
             ui_end.updates.recv().expect("watch failed"),
@@ -242,7 +242,7 @@ fn a_refresh_answers_with_the_roster() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end
             .commands
@@ -265,7 +265,7 @@ fn a_refresh_roster_is_not_undone_by_an_older_push() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         let tx = shared
             .device_tx
@@ -316,7 +316,7 @@ fn a_failed_refresh_says_the_devices_are_unreachable() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end
             .commands
@@ -371,7 +371,7 @@ fn a_steer_that_lands_sends_nothing() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Steer {
@@ -409,7 +409,7 @@ fn a_steer_that_fails_is_reported_once() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Steer {
@@ -474,7 +474,7 @@ fn a_successful_pick_sends_no_update() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end
             .commands
@@ -515,7 +515,7 @@ fn a_failed_pick_sends_transfer_failed() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end
             .commands
@@ -547,7 +547,7 @@ fn a_pick_with_nothing_to_hand_over_says_what_is_missing() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end
             .commands
@@ -578,7 +578,7 @@ fn a_stop_during_a_pending_pick_leaves_the_loop() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         ui_end
             .commands
@@ -613,7 +613,7 @@ fn a_label_answer_names_the_remote_track() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LabelRemote {
@@ -639,7 +639,7 @@ fn a_missing_label_sends_nothing() {
 
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
-            let _ = expect_updates(&ui_end, 2);
+            let _ = expect_library(&ui_end);
             ui_end
                 .commands
                 .send(Command::LabelRemote {
@@ -670,7 +670,7 @@ fn a_window_that_never_watches_hears_nothing_about_devices() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let updates = expect_updates(&ui_end, 2);
+        let updates = expect_library(&ui_end);
         assert!(
             !updates
                 .iter()
@@ -690,7 +690,7 @@ fn a_drain_that_ends_while_the_window_lives_says_the_devices_are_lost() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         // The pump is gone while the window is not.
         shared.device_tx.lock().expect("lock").take();
@@ -716,7 +716,7 @@ fn a_refresh_after_the_drain_dies_stays_off() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
         shared.device_tx.lock().expect("lock").take();
         assert_eq!(
@@ -761,7 +761,7 @@ fn a_stop_after_watching_withdraws_before_the_player_goes() {
 
     let watched = Arc::clone(&shared);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &watched);
         // Returned to the caller so it lives through teardown: the stop is
         // the only exit this test exercises.
@@ -796,7 +796,7 @@ fn a_closed_window_after_watching_withdraws_before_the_player_goes() {
 
     let watched = Arc::clone(&shared);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &watched);
         // Dropping the window's end ends the command loop by itself; there
         // is no stop signal to lean on.
@@ -831,7 +831,7 @@ fn a_stop_during_a_pending_watch_still_withdraws() {
 
     let watched = Arc::clone(&shared);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &watched);
         drop(ui_end);
     };
@@ -870,7 +870,7 @@ fn a_stop_during_a_pending_refresh_still_withdraws() {
     *shared.refresh_started.lock().expect("lock") = Some(refresh_tx);
     let watched = Arc::clone(&shared);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &watched);
         ui_end
             .commands
@@ -910,7 +910,7 @@ fn a_withdraw_that_never_answers_is_released() {
 
     let watched = Arc::clone(&shared);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &watched);
     };
     let teardown = move || async move {
@@ -937,7 +937,7 @@ fn a_window_that_never_watched_withdraws_nothing() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
     });
 
     assert_eq!(
@@ -959,7 +959,7 @@ fn an_inbound_command_is_refused_and_nothing_else_happens() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
 
         let id = RequestId(7);
@@ -1012,7 +1012,7 @@ fn every_kind_is_refused_exactly_once() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
 
         let tx = inbound_sender(&shared);
@@ -1048,7 +1048,7 @@ fn a_report_reaches_the_host_only_when_watching() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
 
         // This command is in front of the watch in the same channel, so it
         // is handled before the watch starts.
@@ -1096,7 +1096,7 @@ fn playing_a_track_makes_the_device_playable() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -1125,7 +1125,7 @@ fn a_failed_play_for_no_audio_device_makes_it_unplayable() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -1154,7 +1154,7 @@ fn a_not_playable_track_leaves_the_device_playable() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -1224,7 +1224,7 @@ fn commands_are_still_served_after_the_inbound_stream_closes() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &shared);
 
         // The account stops sending requests; the loop must carry on with

@@ -274,7 +274,7 @@ fn independent_reads_overlap() {
 
     let updates = run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let hold = hold_reads(&shared);
         let reads = [
             Command::LoadFollowedShows,
@@ -388,7 +388,7 @@ fn pause_and_seek_apply_while_a_read_is_held() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let hold = hold_reads(&shared);
         ui_end
             .commands
@@ -426,7 +426,7 @@ fn an_instant_behind_a_barrier_waits_for_it() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         // A report needs a watch to have somewhere to go.
         watch_now(&ui_end, &shared);
         let hold = hold_reads(&shared);
@@ -575,7 +575,7 @@ fn a_read_arriving_inside_the_grace_joins_the_batch() {
     let (ui_end, _slot, worker) = start_paced(&runtime, host, store, source);
 
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watch_now(&ui_end, &watched);
         let hold = hold_reads(&watched);
         ui_end
@@ -641,7 +641,7 @@ fn the_cap_bounds_the_reads_in_flight() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let hold = hold_reads(&shared);
         let sent = MAX_CONCURRENT_READS + 2;
         for _ in 0..sent {
@@ -686,7 +686,7 @@ fn a_write_is_a_barrier() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let hold = hold_reads(&shared);
         ui_end
             .commands
@@ -731,7 +731,7 @@ fn a_read_after_a_write_waits_for_it() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let hold = hold_reads(&shared);
         ui_end
             .commands
@@ -849,7 +849,7 @@ fn commands_deferred_by_a_rebuild_still_run_in_order() {
 
     let window = move || {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (release, started) = probe.hold_next();
         shared.down.store(true, Ordering::SeqCst);
         started.recv().expect("the rebuild refresh started");

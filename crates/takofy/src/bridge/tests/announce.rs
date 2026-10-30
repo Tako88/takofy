@@ -300,7 +300,7 @@ fn run_album(detail: AlbumDetail) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadAlbum {
@@ -328,7 +328,7 @@ fn a_failed_album_load_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadAlbum {
@@ -394,7 +394,7 @@ fn run_show(detail: ShowDetail) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadShow {
@@ -422,7 +422,7 @@ fn a_failed_show_load_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadShow {
@@ -526,7 +526,7 @@ fn run_followed(shows: Vec<FollowedShow>) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadFollowedShows)
@@ -567,7 +567,7 @@ fn a_failed_followed_load_is_announced_as_followed() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadFollowedShows)
@@ -589,7 +589,7 @@ fn a_signed_in_window_gets_no_followed_update_unprompted() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         assert_eq!(
             ui_end.updates.recv_timeout(Duration::from_millis(250)),
             Err(RecvTimeoutError::Timeout),
@@ -644,7 +644,7 @@ fn run_followed_artists(artists: Vec<FollowedArtist>) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadFollowedArtists)
@@ -676,7 +676,7 @@ fn a_failed_followed_artists_load_is_announced_as_followed_artists() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadFollowedArtists)
@@ -701,7 +701,7 @@ fn a_signed_in_window_gets_no_followed_artist_update_unprompted() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         assert_eq!(
             ui_end.updates.recv_timeout(Duration::from_millis(250)),
             Err(RecvTimeoutError::Timeout),
@@ -756,7 +756,7 @@ fn run_saved_albums(albums: Vec<SavedAlbum>) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadSavedAlbums)
@@ -804,7 +804,7 @@ fn a_failed_saved_albums_load_is_announced_as_saved_albums() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadSavedAlbums)
@@ -826,7 +826,7 @@ fn a_signed_in_window_gets_no_saved_album_update_unprompted() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         assert_eq!(
             ui_end.updates.recv_timeout(Duration::from_millis(250)),
             Err(RecvTimeoutError::Timeout),

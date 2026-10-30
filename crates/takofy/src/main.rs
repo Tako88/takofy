@@ -27,7 +27,7 @@ use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::receive::RECEIVE_LOG_TARGET;
 
-use crate::bridge::LANDING_LOG_TARGET;
+use crate::bridge::{LANDING_LOG_TARGET, STARTUP_LOG_TARGET};
 use takofy_ui::cover::COVER_LOG_TARGET;
 use takofy_ui::message::Failure;
 use takofy_ui::remote::REMOTE_LOG_TARGET;
@@ -217,6 +217,8 @@ fn logger_builder() -> env_logger::Builder {
     // Which size each uploaded cover texture was. Dimensions only: a cover URL
     // names a file and stays out of the log.
     builder.filter_module(COVER_LOG_TARGET, LevelFilter::Info);
+    // Per-stage startup durations and counts, never a name or URI.
+    builder.filter_module(STARTUP_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
