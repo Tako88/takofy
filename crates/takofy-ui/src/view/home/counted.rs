@@ -1,9 +1,9 @@
 //! The counted shelf: the artists the library holds the most of.
 //!
 //! The reference draws this shelf as `.tiles`, not as cards: a compact bordered
-//! row that keeps its own box, two to a page, a round portrait and a name. The
-//! shelf counts a holding rather than showing one, so a card would say more with
-//! its cover than the shelf has to say.
+//! row that keeps its own box, filled across the page at a 15rem floor, a round
+//! portrait and a name. The shelf counts a holding rather than showing one, so a
+//! card would say more with its cover than the shelf has to say.
 
 use egui::{Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 
@@ -112,7 +112,7 @@ pub(super) fn show(
         );
     }
     if super::door::show(ui, HOME_DOOR_ARTISTS, tokens) {
-        out.door = Some(super::Door::Library);
+        out.door = Some(super::Door::Artists);
     }
 }
 

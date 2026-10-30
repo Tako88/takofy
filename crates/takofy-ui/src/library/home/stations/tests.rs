@@ -355,3 +355,24 @@ fn the_lengths_read_is_spent_from_the_shelfs_own_budget() {
         "four stations and one lengths read are the shelf's whole open"
     );
 }
+
+#[test]
+fn the_lengths_wait_until_every_station_has_answered() {
+    let mut library = four_feeds();
+    let seeds = asked_seeds(&mut library, 4);
+    for seed in seeds.iter().take(2) {
+        land(&mut library, seed, 4);
+    }
+    assert_eq!(
+        library.stations_lengths_ask(),
+        None,
+        "one read covers the whole band, so it waits for the whole band"
+    );
+    for seed in seeds.iter().skip(2) {
+        land(&mut library, seed, 4);
+    }
+    assert!(
+        library.stations_lengths_ask().is_some(),
+        "every station answered, so the one lengths read is due"
+    );
+}

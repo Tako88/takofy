@@ -45,9 +45,10 @@ pub(super) fn show(
 ) {
     match shelf {
         Shelf::Waiting => {
-            // One row of tiles: the shelf is one row, so the skeleton holds the
-            // shape the cards will.
+            // One row of tiles and the door under them: the shelf is one row, so
+            // the skeleton holds the exact shape the content will take.
             frame::card_band(ui, draw.tokens);
+            frame::door_band(ui, draw.tokens);
         }
         Shelf::Unreadable(failure) | Shelf::Incomplete(failure) => {
             ui.label(recipe::muted(

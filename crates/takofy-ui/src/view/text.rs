@@ -204,6 +204,11 @@ pub fn track_mono(size: f32) -> FontId {
     FontId::new(size, fonts::mono(MonoWeight::Regular))
 }
 
+/// A page's foot: the sentence under its last rule, at the body size.
+pub fn colophon() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Regular))
+}
+
 /// A page head's title: the reference's `--text-2xl` at 800, tracked tight.
 ///
 /// The hero's title is its own recipe because its size follows the window.

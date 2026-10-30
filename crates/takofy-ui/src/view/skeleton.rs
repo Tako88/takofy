@@ -320,13 +320,20 @@ pub fn episode_rows(ui: &mut Ui, count: usize, tokens: &Tokens) {
 /// The placeholders are the boxes themselves, because that is what the shelf will
 /// occupy: a waiting shelf has to hold the room its content will take or the
 /// shelves under it move when the content lands.
-pub fn compact_rows(ui: &mut Ui, count: usize, columns: usize, row_h: f32, tokens: &Tokens) {
+pub fn compact_rows(
+    ui: &mut Ui,
+    count: usize,
+    columns: usize,
+    row_h: f32,
+    gap: f32,
+    tokens: &Tokens,
+) {
     if count == 0 {
         return;
     }
     wake(ui);
     let width = ui.available_width();
-    let placed = chips::grid(count, width, columns.max(1), row_h, space::S2);
+    let placed = chips::grid(count, width, columns.max(1), row_h, gap);
     let (list, _) = ui.allocate_exact_size(vec2(width, placed.height), Sense::hover());
     for (index, at) in placed.rects.iter().enumerate() {
         let rect = at.translate(list.min.to_vec2());

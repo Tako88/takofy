@@ -4,10 +4,12 @@
 //! promise is its own arithmetic — and the note is the whole of it, because the
 //! counts a shelf would print are exactly what this page refuses to print.
 
-use egui::{FontId, Sense, Ui, vec2};
+use egui::{Sense, Ui, vec2};
 
 use crate::format::HOME_COLOPHON;
-use crate::theme::{Tokens, Weight, fonts, space, stroke, text};
+use crate::theme::{Tokens, space, stroke};
+
+use super::super::text as recipe;
 
 /// Draws the rule, the note under it, and the air the page ends in.
 pub(super) fn show(ui: &mut Ui, tokens: &Tokens) {
@@ -21,7 +23,7 @@ pub(super) fn show(ui: &mut Ui, tokens: &Tokens) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(HOME_COLOPHON)
-                .font(FontId::new(text::SM, fonts::sans(Weight::Regular)))
+                .font(recipe::colophon())
                 .color(tokens.palette.text_muted),
         )
         .wrap(),

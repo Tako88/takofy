@@ -64,8 +64,10 @@ pub(super) struct Pressed {
 /// Where a shelf's foot door opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Door {
-    /// The library, at its first kind.
+    /// The library, on whichever chip it was last left.
     Library,
+    /// The library, narrowed to the artists the ranking was drawn from.
+    Artists,
     /// The library, narrowed to the shows that follow.
     Podcasts,
     /// One artist's page, which is where its neighbours are listed.
@@ -255,10 +257,13 @@ pub(super) fn home_view(
             return library.open(Page::Artist(uri));
         }
         library.to_playlists();
-        if door == Door::Podcasts {
-            library
-                .root_filter
-                .choose(crate::library_filter::RootKind::Podcasts);
+        let kind = match door {
+            Door::Artists => Some(crate::library_filter::RootKind::Artists),
+            Door::Podcasts => Some(crate::library_filter::RootKind::Podcasts),
+            Door::Library | Door::Artist(_) => None,
+        };
+        if let Some(kind) = kind {
+            library.root_filter.choose(kind);
         }
         return None;
     }

@@ -148,6 +148,10 @@ pub struct Home {
     failed: Option<Failure>,
     /// The URIs a label read was sent for, so each one is sent once.
     asked: HashSet<String>,
+    /// The URIs a lengths read was sent for. Kept apart from `asked`, because a
+    /// lengths answer names no track the page can draw: it must not stop the
+    /// dated shelf asking for the same song's label.
+    lengths: HashSet<String>,
     /// The stations built from the library's own seeds.
     pub stations: stations::State,
     /// The artists related to one followed artist.
@@ -174,6 +178,11 @@ impl Home {
 
     /// Folds one answer into the shelf that asked for it.
     pub fn land(&mut self, answer: &HomeAnswer) {
+        if let HomeAnswer::Labelled { asked, named } = answer {
+            // A read any shelf sent still says how long each track it named runs,
+            // which is all a station row wants from it.
+            self.fill_durations(asked, named);
+        }
         if matches!(
             answer,
             HomeAnswer::Labelled { .. } | HomeAnswer::Portrait { .. }
@@ -207,14 +216,23 @@ impl Home {
     /// unusable. Keeping the miss is what stops the shelf waiting on an answer
     /// that already arrived.
     pub fn apply_labels(&mut self, asked: &[String], named: &[TrackEntry]) {
+        self.fill_durations(asked, named);
+        for uri in asked {
+            let usable = named
+                .iter()
+                .find(|track| track.uri == *uri)
+                .filter(|track| track.named && track.album_uri.is_some())
+                .cloned();
+            self.labels.insert(uri.clone(), usable);
+        }
+    }
+
+    /// How long each asked track runs, recorded from any label read.
+    fn fill_durations(&mut self, asked: &[String], named: &[TrackEntry]) {
         for uri in asked {
             let answer = named.iter().find(|track| track.uri == *uri);
             self.durations
                 .insert(uri.clone(), answer.and_then(|track| track.duration_ms));
-            let usable = answer
-                .filter(|track| track.named && track.album_uri.is_some())
-                .cloned();
-            self.labels.insert(uri.clone(), usable);
         }
     }
 
@@ -265,6 +283,16 @@ impl Home {
     /// Whether a label read was sent for `uri`.
     pub fn asked(&self, uri: &str) -> bool {
         self.asked.contains(uri)
+    }
+
+    /// Whether a lengths read was sent for `uri`.
+    pub fn lengths_asked(&self, uri: &str) -> bool {
+        self.lengths.contains(uri)
+    }
+
+    /// Records the URIs a lengths read was sent for.
+    pub fn mark_lengths(&mut self, uris: &[String]) {
+        self.lengths.extend(uris.iter().cloned());
     }
 
     /// Whether a label read has answered for `uri`.

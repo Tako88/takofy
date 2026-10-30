@@ -40,6 +40,7 @@ pub(super) fn waiting(ui: &mut Ui, title: &str, tokens: &Tokens, band: Band) {
             crate::home::stations::STATIONS,
             super::stations::COLUMNS,
             super::stations::cell(ui, tokens),
+            space::GUTTER,
             tokens,
         ),
         Band::Tiles => {
@@ -49,6 +50,7 @@ pub(super) fn waiting(ui: &mut Ui, title: &str, tokens: &Tokens, band: Band) {
                 crate::home::counted::DRAWN,
                 super::counted::columns(width),
                 extent::HOME_ROW_H,
+                space::S2,
                 tokens,
             )
         }
@@ -61,7 +63,7 @@ pub(super) fn waiting(ui: &mut Ui, title: &str, tokens: &Tokens, band: Band) {
 }
 
 /// The room a shelf's foot door will take, marked but not drawn.
-fn door_band(ui: &mut Ui, tokens: &Tokens) {
+pub(super) fn door_band(ui: &mut Ui, tokens: &Tokens) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(width, extent::DROP_HIT), Sense::hover());
     let bar = Rect::from_min_size(
@@ -75,7 +77,7 @@ fn door_band(ui: &mut Ui, tokens: &Tokens) {
         .rect_filled(bar, radius::XS, tokens.palette.skeleton_rule);
 }
 
-/// One row of card placeholders: the shape the card shelves draw.
+/// One row of card placeholders, and the foot the shelf will end in.
 pub(super) fn card_band(ui: &mut Ui, tokens: &Tokens) {
     let solved = root::media_grid(ui);
     let count = solved.columns;

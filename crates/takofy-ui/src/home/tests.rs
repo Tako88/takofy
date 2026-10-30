@@ -353,3 +353,43 @@ fn the_dated_shelf_says_the_same_four_things() {
         "cards are cards whether or not the pool drew any"
     );
 }
+
+#[test]
+fn a_label_answer_names_the_lengths_of_what_it_asked_for() {
+    let mut home = Home::default();
+    let asked = uris(&["spotify:track:a", "spotify:track:b"]);
+    let mut timed = named("spotify:track:a", None);
+    timed.duration_ms = Some(252_000);
+
+    home.land(&HomeAnswer::Labelled {
+        asked: asked.clone(),
+        named: vec![timed, named("spotify:track:b", None)],
+    });
+
+    assert_eq!(
+        home.duration("spotify:track:a"),
+        Some(252_000),
+        "a label read says how long the track it named runs"
+    );
+    assert_eq!(
+        home.duration("spotify:track:b"),
+        None,
+        "a track with no length answers none"
+    );
+}
+
+#[test]
+fn a_label_answer_from_another_shelf_does_not_fill_the_dated_shelves_cards() {
+    let mut home = Home::default();
+    let asked = uris(&["spotify:track:a"]);
+
+    home.land(&HomeAnswer::Labelled {
+        asked: asked.clone(),
+        named: vec![named("spotify:track:a", Some("spotify:album:r"))],
+    });
+
+    assert!(
+        !home.answered("spotify:track:a"),
+        "only the dated shelf's own read names a card"
+    );
+}

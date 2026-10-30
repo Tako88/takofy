@@ -94,12 +94,20 @@ impl Library {
     /// are one batched read over the rows the band shows. Rows already answered
     /// are not asked for again, so the read runs at most once an open.
     pub(super) fn stations_lengths_ask(&mut self) -> Option<Command> {
+        // One read for the whole band: asked before every station has answered,
+        // it would leave the late ones' rows without a length for the open.
+        if !self.home.stations.answered() {
+            return None;
+        }
         let mut tracks: Vec<String> = Vec::new();
         if let Some(band) = self.home.stations.band() {
             for station in &band.stations {
                 for row in station.shown.iter().filter_map(|at| station.whole.get(*at)) {
+                    // A row some other read already asked for is answered by
+                    // that read, so this one does not spend a second read on it.
                     if self.home.duration(&row.uri).is_some()
                         || self.home.asked(&row.uri)
+                        || self.home.lengths_asked(&row.uri)
                         || tracks.iter().any(|asked| asked == &row.uri)
                     {
                         continue;
@@ -111,7 +119,7 @@ impl Library {
         if tracks.is_empty() || !self.home.budget.take(Slot::Stations) {
             return None;
         }
-        self.home.mark_asked(&tracks);
+        self.home.mark_lengths(&tracks);
         Some(Command::LoadHome(HomeAsk::Labels { tracks }))
     }
 
