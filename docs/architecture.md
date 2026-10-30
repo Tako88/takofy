@@ -40,6 +40,17 @@ to be a boundary.
 The UI holds a snapshot of what it draws and emits commands. The binary owns the
 engine, runs it on a tokio runtime, drains commands, and sends updates back.
 
+To the worker a command is a read, an instant or a barrier. A read only reads,
+so reads overlap: four at a time, started in the order they were sent and
+answered in whatever order they finish. An instant changes nothing a read can
+see — `Fetch`, `Report`, `Volume`, `Answer`, `Pause`, `Resume`, `Stop`, `Seek` —
+so it is served the moment the worker takes it, and the worker takes no command
+at all while all four places are taken. A barrier writes, orders the transport
+or changes the session — a `connect`, retiring a dead engine, a device watch, a
+library reload — so it ends admission, waits for the reads in flight, then runs
+alone, and the barriers behind it follow in the order they were sent. Teardown
+is not one of them: it ends the loop and abandons the reads in flight.
+
 The UI never calls into core. That keeps the crate boundary real, keeps the frame
 loop free of awaits, and keeps the cursor types that borrow a session out of the
 UI.
@@ -133,13 +144,14 @@ relative, so a retry can skip twice — while pause, resume and seek name the
 state they want and repeat safely. While a write is in flight no
 read's order is adopted; a probe recorded the server answering a write with the
 new revision and the old order, so adopting on revision equality would undo the
-drag, and the worker answers in the order its commands were sent, which is what
-makes the gate correct. The page reads only the first page of its context and a
-move touches indices inside it, so every boundary the marker draws is a wire
-index. A failed write puts the rows back where they were and the page says so
-above them: the sentence is the whole affordance, and trying again means
-dragging again rather than a button that could write twice for one gesture. Two
-devices editing one list are last-write-wins, each naming the revision it read.
+drag, and the worker answers every write and transport order in the order its
+commands were sent, which is what makes the gate correct. The page reads only
+the first page of its context and a move touches indices inside it, so every
+boundary the marker draws is a wire index. A failed write puts the rows back
+where they were and the page says so above them: the sentence is the whole
+affordance, and trying again means dragging again rather than a button that
+could write twice for one gesture. Two devices editing one list are
+last-write-wins, each naming the revision it read.
 
 The library is four kinds over three collection sets. Followed shows, followed
 artists and saved albums each come from their own set — saved albums share the
@@ -169,6 +181,16 @@ cannot fire at a page the user has since left, and the start happens at frame en
 only when nothing else took the frame: the queue moves for a command that will
 actually be sent. A failed read starts nothing and says so under the chips;
 pressing play again is the retry, so there is no second gesture to learn.
+
+Home is the page that owes the most reads at once, and its order is the
+library's rather than the frame's: the dated shelf's label read for the pooled
+liked songs goes out first, and the four built shelves are asked one per frame,
+so a session is asked one thing at a time. While the dated shelf's own feeds —
+the rootlist, the saved albums, the likes — are still out and the label is still
+owed, the built asks wait, but for no more than a second: that is a scheduling
+bound rather than a token, so a feed that hangs costs the page that much and no
+more. The wait belongs to one visit, so leaving the page clears it and coming
+back arms it again.
 
 The sidebar column has two meanings, told apart by what is carried: a playlist
 row dragged to a gap moves the playlists, and a track dragged onto a playlist
@@ -310,13 +332,14 @@ artist. An artist or album that no track matches is not found.
 The faces are the one thing the answer cannot carry, so they arrive in a second,
 speculative read: one batched artist request for every artist a surface will
 draw, keyed by the record's own id rather than by the URI the answer echoes, and
-bounded in time because the worker answers commands in order and a speculative
-read must not hold a play behind it. A reply counts only while the surface that
-asked is the one on screen — with one exception, a menu's reply filling the page
-when Enter hands the overlay over, because the cache is keyed by artist and the
-faces are the same faces. An artist whose record carries no portrait, whose
-face never arrived, or whom the answer omitted falls back to the cover of the
-record the match sits on; only a read still in flight draws a raised slot.
+bounded in time so it cannot hold up a play — a play waits for the reads
+already in flight, at most four — and this one gives up after three seconds. A
+reply counts only while the surface that asked is the one on screen — with one
+exception, a menu's reply filling the page when Enter hands the overlay over,
+because the cache is keyed by artist and the faces are the same faces. An
+artist whose record carries no portrait, whose face never arrived, or whom the
+answer omitted falls back to the cover of the record the match sits on; only a
+read still in flight draws a raised slot.
 
 A revealed block belongs to the read on screen, not to the query: a new query
 starts every block at ten and at the top of the page, while a retry or a
