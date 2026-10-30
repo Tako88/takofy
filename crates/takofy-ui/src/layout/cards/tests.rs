@@ -192,3 +192,31 @@ fn zero_and_non_finite_inputs_do_not_panic() {
         }
     }
 }
+
+#[test]
+fn a_capped_grid_fills_its_width_with_the_cap() {
+    let area = Rect::from_min_size(Pos2::ZERO, vec2(2544.0, 0.0));
+    let grid = grid_capped(area, 176.0, 12.0, 40.0, 4);
+
+    assert_eq!(grid.columns, 4, "the cap decides the column count");
+    let last = grid.card_rect(3);
+    assert!(
+        (last.right() - area.right()).abs() < 0.01,
+        "the last card lands on the area's right edge rather than stopping short"
+    );
+    assert!(
+        (grid.card_w - (2544.0 - 3.0 * 12.0) / 4.0).abs() < 0.01,
+        "the four cards share the width"
+    );
+}
+
+#[test]
+fn a_capped_grid_still_gives_way_to_a_narrow_area() {
+    let area = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 0.0));
+    let grid = grid_capped(area, 176.0, 12.0, 40.0, 4);
+
+    assert_eq!(
+        grid.columns, 2,
+        "a narrow page keeps the minimum width rather than squeezing four"
+    );
+}

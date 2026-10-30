@@ -515,3 +515,78 @@ fn a_library_door_lands_on_the_root() {
         "a door into the library lands on its root rather than on a page"
     );
 }
+
+/// One pass of the page at a window of `size`, and what it painted.
+fn run_at(size: Vec2, library: &mut Library) -> egui::FullOutput {
+    let ctx = context();
+    let tokens = Tokens::DARK;
+    let mut art = Art::default();
+    let mut output = ctx.run_ui(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..Default::default()
+        },
+        |ui| {
+            let _ = home_view(
+                ui,
+                library,
+                &mut art,
+                Instant::now(),
+                NOW_MS,
+                LOCAL_HOUR,
+                &tokens,
+            );
+        },
+    );
+    output.textures_delta.clear();
+    output
+}
+
+#[test]
+fn a_card_shelf_draws_four_across_on_one_row_however_wide_the_window() {
+    let mut library = because_ready();
+    let output = run_at(Vec2::new(2544.0, 4000.0), &mut library);
+
+    let cards: Vec<Rect> = (0..4)
+        .map(|at| {
+            text_rect(&output, &format!("A{at}"))
+                .unwrap_or_else(|| panic!("card A{at} is drawn at a wide window"))
+        })
+        .collect();
+    let row = cards[0].top();
+    assert!(
+        cards.iter().all(|card| (card.top() - row).abs() < 0.01),
+        "the four cards share one row: {cards:?}"
+    );
+    assert!(
+        cards.windows(2).all(|pair| pair[0].left() < pair[1].left()),
+        "the cards run left to right"
+    );
+    assert!(
+        cards[3].left() > 1500.0,
+        "the fourth card reaches the far end of a 2544-point page rather than \
+         stopping at a 176-point minimum: {cards:?}"
+    );
+}
+
+#[test]
+fn a_narrow_page_wraps_the_four_cards_instead_of_squeezing_them() {
+    let mut library = because_ready();
+    let output = run_at(Vec2::new(360.0, 4000.0), &mut library);
+
+    let cards: Vec<Rect> = (0..4)
+        .map(|at| {
+            text_rect(&output, &format!("A{at}"))
+                .unwrap_or_else(|| panic!("card A{at} is still drawn"))
+        })
+        .collect();
+    let rows: usize = cards
+        .iter()
+        .map(|card| (card.top() * 10.0).round() as i64)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert_eq!(
+        rows, 4,
+        "a page this narrow holds one card across, so the four stack: {cards:?}"
+    );
+}

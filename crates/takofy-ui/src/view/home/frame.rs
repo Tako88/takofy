@@ -11,7 +11,6 @@ use crate::home::Slot;
 use crate::home::episodes::DRAWN;
 use crate::message::Failure;
 use crate::theme::{Tokens, extent, radius, space};
-use crate::view::playlist::root;
 use crate::view::skeleton;
 
 use super::super::{section, text as recipe};
@@ -79,9 +78,9 @@ pub(super) fn door_band(ui: &mut Ui, tokens: &Tokens) {
 
 /// One row of card placeholders, and the foot the shelf will end in.
 pub(super) fn card_band(ui: &mut Ui, tokens: &Tokens) {
-    let solved = root::media_grid(ui);
+    let solved = super::grid::solve(ui);
     let count = solved.columns;
-    let list = root::grid_rect(ui, &solved, count);
+    let list = super::grid::row_rect(ui, &solved, count);
     ui.allocate_rect(list, Sense::hover());
     skeleton::tiles(ui, &solved, count, tokens);
 }

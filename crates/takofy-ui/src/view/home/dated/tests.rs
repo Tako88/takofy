@@ -115,7 +115,7 @@ fn card_rect_for(ctx: &Context, index: usize) -> Rect {
                 crate::view::inner(ui, |ui| {
                     page_head::show(ui, greeting(LOCAL_HOUR), "", &tokens);
                     section::head(ui, HOME_SHELF_TITLE, "", &tokens);
-                    found = Some(root::media_grid(ui).card_rect(index));
+                    found = Some(super::super::grid::solve(ui).card_rect(index));
                 });
             });
     });

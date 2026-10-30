@@ -82,12 +82,29 @@ impl Grid {
 /// plus `card_extra_h`; the gap separates rows as well as columns, as the
 /// reference's single `gap` does.
 pub fn grid(available: Rect, card_min: f32, gap: f32, card_extra_h: f32) -> Grid {
+    grid_capped(available, card_min, gap, card_extra_h, usize::MAX)
+}
+
+/// [`grid`] with a ceiling on the column count.
+///
+/// The columns still stretch to fill the area, so a capped grid is a row of
+/// `max_columns` cards sharing whatever width there is rather than a row that
+/// stops short of its own right edge. Home's card shelves are capped: a shelf is
+/// a handful of things, and a page 2500 points wide would otherwise draw fifteen
+/// covers nobody asked for.
+pub fn grid_capped(
+    available: Rect,
+    card_min: f32,
+    gap: f32,
+    card_extra_h: f32,
+    max_columns: usize,
+) -> Grid {
     let avail = usable(available.width());
     let card_min = usable(card_min);
     let gap = usable(gap);
     let extra = usable(card_extra_h);
 
-    let columns = columns_for(avail, card_min, gap);
+    let columns = columns_for(avail, card_min, gap).min(max_columns.max(1));
     let card_w = ((avail - gap * (columns - 1) as f32) / columns as f32).max(0.0);
     let card_h = card_w + extra;
 

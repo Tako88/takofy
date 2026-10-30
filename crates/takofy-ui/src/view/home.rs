@@ -20,7 +20,7 @@ use crate::message::Command;
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, space};
-use crate::view::playlist::root::{self, MediaDraw};
+use crate::view::playlist::root::MediaDraw;
 
 use super::text as recipe;
 use super::{page_head, section};
@@ -32,6 +32,7 @@ mod door;
 mod episodes;
 mod foot;
 mod frame;
+mod grid;
 mod stations;
 
 /// The shelves below the dated one, in the page's order.
@@ -102,7 +103,7 @@ pub(super) fn home_view(
                     ));
                 }
                 let fit = Fit {
-                    columns: root::media_grid(ui).columns,
+                    columns: grid::columns(ui),
                 };
                 let shelves = library.home_sections(fit);
                 let mut draw = MediaDraw {

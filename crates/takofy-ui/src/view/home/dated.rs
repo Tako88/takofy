@@ -3,7 +3,6 @@
 use egui::{Sense, Ui};
 
 use crate::availability::Control;
-use crate::cover::want_px;
 use crate::format::{
     HOME_DAY_ONE_BODY, HOME_DAY_ONE_DOOR, HOME_DAY_ONE_TITLE, HOME_DOOR_SAVED, HOME_QUIET,
     HOME_SHELF_TITLE, media_type, saved_sub,
@@ -14,7 +13,7 @@ use crate::library::MediaLayout;
 use crate::library_filter::{Item, RootKind};
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
-use crate::view::playlist::root::{self, MediaDraw};
+use crate::view::playlist::root::MediaDraw;
 
 use super::super::text as recipe;
 use super::super::{controls, hero, media, section};
@@ -96,17 +95,17 @@ pub(super) fn show(
 /// be placed above the title that names them.
 fn cards_row(ui: &mut Ui, cards: &[Card<'_>], draw: &mut MediaDraw<'_, '_>, now_ms: u64) {
     let head = section::head(ui, HOME_SHELF_TITLE, "", draw.tokens);
-    let solved = &root::media_grid(ui);
+    let solved = &super::grid::solve(ui);
     if let Some(first) = (0..cards.len()).map(|at| solved.card_rect(at)).next() {
         debug_assert!(
             first.top() >= head.bottom(),
             "the shelf's cards start above its own title"
         );
     }
-    let list = root::grid_rect(ui, solved, cards.len());
+    let list = super::grid::row_rect(ui, solved, cards.len());
     ui.allocate_rect(list, Sense::hover());
     let visible = ui.clip_rect();
-    let want = want_px(solved.card_w, ui.pixels_per_point());
+    let want = super::grid::art_px(ui, solved);
 
     for (index, card) in cards.iter().enumerate() {
         let rect = solved.card_rect(index);
