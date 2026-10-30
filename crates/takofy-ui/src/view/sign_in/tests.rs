@@ -189,3 +189,16 @@ fn authorizing_draws_no_control() {
         "an in-flight flow must not offer a second control"
     );
 }
+
+#[test]
+fn a_window_narrower_than_the_card_still_draws() {
+    let ctx = context();
+    let tokens = Tokens::DARK;
+    let mut state = SignIn::NeedsAuthorization;
+
+    for width in [1.0, 20.0, 64.0, extent::SIGNIN_W] {
+        run(&ctx, window(width, 400.0), |ui| {
+            show(ui, &mut state, &tokens);
+        });
+    }
+}
