@@ -25,7 +25,7 @@ pub(crate) const DECODE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The most bytes a cover body may have.
 pub(crate) const MAX_COVER_BYTES: usize = 2 * 1024 * 1024;
 /// The most cover fetches that may run at once.
-pub(crate) const MAX_CONCURRENT_COVERS: usize = 6;
+pub(crate) const MAX_CONCURRENT_COVERS: usize = 12;
 
 /// The window waits longer for a cover than the worker takes to fetch and
 /// decode it, and both sides bound the same traffic with the same number.

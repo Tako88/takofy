@@ -2,6 +2,9 @@ use super::super::*;
 use super::test_support::*;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
+use takofy_core::engine::RootlistRead;
+use takofy_model::PlaylistAccess;
+use tokio::sync::Notify;
 
 #[test]
 fn rootlist_replies_keep_the_order_their_commands_were_sent_in() {
@@ -15,7 +18,7 @@ fn rootlist_replies_keep_the_order_their_commands_were_sent_in() {
 
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
-            let _ = expect_updates(&ui_end, 2);
+            let _ = expect_library(&ui_end);
             let move_command = Command::MovePlaylist {
                 revision: revision(1),
                 from: 0,
@@ -29,10 +32,14 @@ fn rootlist_replies_keep_the_order_their_commands_were_sent_in() {
                 ui_end.commands.send(reload).expect("reload");
                 ui_end.commands.send(move_command).expect("move");
             }
-            vec![
-                ui_end.updates.recv().expect("first reply"),
-                ui_end.updates.recv().expect("second reply"),
-            ]
+            let mut seen: Vec<Update> = Vec::new();
+            while !(seen.iter().any(moved) && seen.iter().any(read)) {
+                seen.push(ui_end.updates.recv().expect("reply"));
+            }
+            // Readiness is no reply to either command: the replies keep the
+            // order the commands were sent in.
+            seen.retain(|update| moved(update) || read(update));
+            seen
         })
     }
 
@@ -65,7 +72,7 @@ fn an_empty_rootlist_is_announced_as_empty() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_library(&ui_end)
     });
 
     assert!(updates.contains(&Update::Playlists(Vec::new())));
@@ -80,7 +87,7 @@ fn a_failed_connect_is_announced_as_a_library_failure() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_library(&ui_end)
     });
 
     assert!(updates.contains(&Update::SignedIn));
@@ -98,7 +105,7 @@ fn a_failed_rootlist_is_announced_as_a_library_failure() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_library(&ui_end)
     });
 
     assert!(updates.contains(&Update::SignedIn));
@@ -116,12 +123,12 @@ fn reload_library_runs_the_rootlist_again() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let mut seen = expect_updates(&ui_end, 2);
+        let mut seen = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::ReloadLibrary)
             .expect("reload");
-        seen.extend(expect_updates(&ui_end, 1));
+        seen.extend(expect_library(&ui_end));
         seen
     });
 
@@ -147,7 +154,7 @@ fn a_second_token_does_not_reconnect() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let mut seen = expect_updates(&ui_end, 2);
+        let mut seen = expect_library(&ui_end);
         let mut sign_ins = seen
             .iter()
             .filter(|update| **update == Update::SignedIn)
@@ -272,12 +279,12 @@ fn reload_library_retries_a_failed_connect() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let mut seen = expect_updates(&ui_end, 2);
+        let mut seen = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::ReloadLibrary)
             .expect("reload");
-        seen.extend(expect_updates(&ui_end, 1));
+        seen.extend(expect_library(&ui_end));
         seen
     });
 
@@ -317,6 +324,187 @@ fn reload_with_no_token_announces_a_library_failure() {
     assert_eq!(shared.connects.load(Ordering::SeqCst), 0);
     assert_eq!(shared.rootlists.load(Ordering::SeqCst), 0);
     assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_walk_stage_is_scripted_per_attempt() {
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Fail, RootlistScript::Ready(list)],
+        Vec::new(),
+    );
+    let shared = Arc::clone(&host.shared);
+    let runtime = runtime();
+
+    let (failed, walked) = runtime.block_on(async {
+        let failed = host.walk_rootlist().await.is_err();
+        (failed, host.walk_rootlist().await)
+    });
+
+    assert!(failed, "the first attempt fails as scripted");
+    let walked = walked.expect("the second attempt walks");
+    assert_eq!(walked.playlists.len(), 1);
+    assert_eq!(walked.playlists[0].uri, "spotify:playlist:one");
+    assert_eq!(
+        walked.playlists[0].saved_at, None,
+        "a walk keeps no date: the labels bring the read the window draws"
+    );
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 2);
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_walk_carries_the_access_its_read_named() {
+    let access = PlaylistAccess {
+        revision: revision(3),
+        editable: false,
+    };
+    let host = FakeHost::new(
+        ConnectScript::Ok,
+        RootlistScript::ReadyWith(RootlistRead {
+            entries: Vec::new(),
+            access: Some(access.clone()),
+        }),
+    );
+
+    let walked = runtime().block_on(host.walk_rootlist()).expect("a walk");
+
+    assert_eq!(walked.access, Some(access));
+}
+
+#[test]
+fn a_label_pass_answers_the_read_its_walk_named() {
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list.clone()));
+    let shared = Arc::clone(&host.shared);
+
+    let read = runtime()
+        .block_on(async {
+            let walked = host.walk_rootlist().await.expect("a walk");
+            host.label_rootlist(walked).await
+        })
+        .expect("labels answer");
+
+    assert_eq!(read.entries, list);
+    assert_eq!(read.access, None);
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_gated_label_pass_holds_until_it_is_released() {
+    let gate = Arc::new(Notify::new());
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list.clone())],
+        vec![LabelScript::Gated(Arc::clone(&gate))],
+    );
+    let runtime = runtime();
+    let walked = runtime.block_on(host.walk_rootlist()).expect("a walk");
+
+    let held = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            host.label_rootlist(walked.clone()),
+        )
+        .await
+    });
+    assert!(held.is_err(), "the gate must hold the pass");
+
+    gate.notify_one();
+    let read = runtime
+        .block_on(host.label_rootlist(walked))
+        .expect("the released pass answers");
+    assert_eq!(read.entries, list);
+}
+
+#[test]
+fn a_pending_label_pass_never_answers() {
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(Vec::new())],
+        vec![LabelScript::Pending],
+    );
+    let runtime = runtime();
+    let walked = runtime.block_on(host.walk_rootlist()).expect("a walk");
+
+    let held = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_millis(20), host.label_rootlist(walked)).await
+    });
+
+    assert!(held.is_err(), "a pending pass must not answer");
+}
+
+#[test]
+fn a_failed_label_pass_is_a_disconnected_session() {
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(Vec::new())],
+        vec![LabelScript::Fail],
+    );
+    let runtime = runtime();
+    let walked = runtime.block_on(host.walk_rootlist()).expect("a walk");
+
+    assert!(runtime.block_on(host.label_rootlist(walked)).is_err());
+}
+
+#[test]
+fn an_empty_rootlist_announces_readiness_then_an_empty_list() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 3)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(Vec::new()),
+        ],
+        "an account with no playlists is still ready"
+    );
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_access_only_walk_sends_access_after_the_empty_list() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let access = PlaylistAccess {
+        revision: revision(4),
+        editable: true,
+    };
+    let host = FakeHost::new(
+        ConnectScript::Ok,
+        RootlistScript::ReadyWith(RootlistRead {
+            entries: Vec::new(),
+            access: Some(access.clone()),
+        }),
+    );
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 4)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(Vec::new()),
+            Update::RootlistAccess(access),
+        ],
+        "the access follows the list, even when the list is empty"
+    );
 }
 
 #[test]

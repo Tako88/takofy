@@ -8,8 +8,8 @@ use takofy_model::{CoverSet, Owner};
 
 use crate::cover::{Art, Cover, want_px};
 use crate::format::{
-    library_kind, library_note, media_size, media_type, root_empty_label, root_filter_label,
-    root_loading_label,
+    copy_note, library_kind, library_note, media_size, media_type, root_empty_label,
+    root_filter_label, root_loading_label,
 };
 use crate::layout::{cards, table as table_layout};
 use crate::library::{Library, Load, MediaLayout};
@@ -219,6 +219,15 @@ pub(super) fn idle(
                         crate::signin::failure_message(failure),
                         tokens,
                     ));
+                }
+                // The cards above are last session's, and the read that would
+                // replace them failed. The grid stays drawn: retrying asks for
+                // the lists again rather than blanking what the reader has.
+                if library.copy_failed() {
+                    ui.label(recipe::muted(copy_note(), tokens));
+                    if ui.button("Retry").clicked() {
+                        retry_playlists = true;
+                    }
                 }
 
                 match view {

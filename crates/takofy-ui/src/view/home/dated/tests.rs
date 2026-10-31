@@ -176,6 +176,7 @@ fn album(uri: &str, name: &str, ms: Option<u64>) -> SavedAlbum {
 /// A Home library whose three reads have all answered with these lists.
 fn settled(playlists: Vec<PlaylistEntry>, albums: Vec<SavedAlbum>) -> Library {
     let mut library = Library::starting_home(NOW_MS);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(playlists));
     assert_eq!(
         library.likes_request(),
@@ -245,6 +246,7 @@ fn a_track_card_opens_the_album_its_label_named() {
     // label the card draws its name from.
     let mut library = {
         let mut library = Library::starting_home(NOW_MS);
+        library.apply(&Update::LibraryReady);
         library.apply(&Update::Playlists(Vec::new()));
         assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
         library.apply(&Update::LikedTracks(vec![takofy_model::LikedTrack {

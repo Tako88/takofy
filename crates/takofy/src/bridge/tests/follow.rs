@@ -39,7 +39,7 @@ fn a_scripted_release_announces_its_labelled_tracks() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadReleaseTracks {
@@ -71,7 +71,7 @@ fn a_failed_release_load_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadReleaseTracks {
@@ -101,7 +101,7 @@ fn a_set_follow_announces_the_requested_value() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetFollow {
@@ -138,7 +138,7 @@ fn a_failed_follow_write_is_announced_as_a_save_failure() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetFollow {
@@ -171,7 +171,7 @@ fn a_move_announces_the_reply_revision_and_sends_what_was_asked() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::MoveTrack {
@@ -235,7 +235,7 @@ fn a_two_move_command_is_one_write_and_one_revision() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::MoveTrack {
@@ -279,7 +279,7 @@ fn a_removal_announces_the_reply_revision_and_sends_what_was_asked() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RemoveTracks {
@@ -317,7 +317,7 @@ fn a_removal_failure_announces_remove_failed() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RemoveTracks {
@@ -350,7 +350,7 @@ fn a_two_run_removal_is_one_write() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RemoveTracks {
@@ -416,7 +416,7 @@ fn a_failed_move_is_a_save_failure() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::MoveTrack {
@@ -542,7 +542,7 @@ fn replies_keep_the_order_their_commands_were_sent_in() {
 
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
-            let _ = expect_updates(&ui_end, 2);
+            let _ = expect_library(&ui_end);
             let move_command = Command::MoveTrack {
                 playlist: "spotify:playlist:a".to_owned(),
                 revision: revision(1),

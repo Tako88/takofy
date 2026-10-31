@@ -10,11 +10,15 @@ mod decode;
 mod devices;
 mod headless;
 mod keychain;
+mod latest_writer;
 mod playhead;
 mod preferences;
 mod prompt;
 mod recovery;
 mod session;
+mod small_file;
+mod snapshot;
+mod snapshot_format;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -27,7 +31,7 @@ use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::receive::RECEIVE_LOG_TARGET;
 
-use crate::bridge::LANDING_LOG_TARGET;
+use crate::bridge::{LANDING_LOG_TARGET, STARTUP_LOG_TARGET};
 use takofy_ui::cover::COVER_LOG_TARGET;
 use takofy_ui::message::Failure;
 use takofy_ui::remote::REMOTE_LOG_TARGET;
@@ -135,6 +139,7 @@ fn run_window(flags: &Flags) -> ExitCode {
     // Read once, before the window exists: the first frame draws what the file
     // held, and the writer outlives the window only long enough to flush it.
     let (loaded, prefs) = preferences::open();
+    let (cached, snapshots) = snapshot::open();
 
     let runtime = match build_runtime() {
         Ok(runtime) => runtime,
@@ -151,8 +156,9 @@ fn run_window(flags: &Flags) -> ExitCode {
             Box::new(move |cc| {
                 slot.install(Arc::new(cc.egui_ctx.clone()));
                 cc.egui_ctx.request_repaint();
-                let app: Box<dyn eframe::App> =
-                    Box::new(app::TakofyApp::new(cc, ui_end, loaded, prefs));
+                let app: Box<dyn eframe::App> = Box::new(app::TakofyApp::new(
+                    cc, ui_end, loaded, prefs, cached, snapshots,
+                ));
                 Ok(app)
             }),
         )
@@ -217,6 +223,8 @@ fn logger_builder() -> env_logger::Builder {
     // Which size each uploaded cover texture was. Dimensions only: a cover URL
     // names a file and stays out of the log.
     builder.filter_module(COVER_LOG_TARGET, LevelFilter::Info);
+    // Per-stage startup durations and counts, never a name or URI.
+    builder.filter_module(STARTUP_LOG_TARGET, LevelFilter::Info);
     builder
 }
 

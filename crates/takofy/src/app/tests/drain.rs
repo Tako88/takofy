@@ -3,6 +3,7 @@ use super::test_support::*;
 
 use std::sync::mpsc::channel;
 use takofy_model::{CoverImage, CoverUrl, TrackEntry};
+use takofy_ui::library::Load;
 use takofy_ui::message::{Failure, TransportUpdate};
 
 #[test]
@@ -464,12 +465,13 @@ fn a_position_event_earlier_in_the_drain_restamps_the_play_clock() {
 }
 
 #[test]
-fn logic_requests_the_followed_list_once_playlists_are_ready() {
+fn logic_requests_the_followed_list_once_the_session_is_ready() {
     // `logic()` only forwards this return value into the command queue, so
     // the contract is `Library::followed_request` itself.
     let mut library = Library::default();
     assert_eq!(library.followed_request(), None, "nothing has loaded yet");
 
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
     assert_eq!(library.followed, Load::Loading);
@@ -488,7 +490,8 @@ fn logic_requests_the_artists_and_albums_for_the_chip_that_names_them() {
     assert_eq!(library.followed_artists_request(), None);
     assert_eq!(library.saved_albums_request(), None);
 
-    // All draws every kind, so a ready library under it asks for both.
+    // All draws every kind, so a ready session under it asks for both.
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(
         library.followed_artists_request(),
@@ -502,6 +505,7 @@ fn logic_requests_the_artists_and_albums_for_the_chip_that_names_them() {
     // A chip that draws only playlists names neither list, so a library
     // that has not read them yet stays idle under it.
     let mut narrowed = Library::default();
+    narrowed.apply(&Update::LibraryReady);
     narrowed.apply(&Update::Playlists(Vec::new()));
     assert!(
         narrowed
@@ -513,6 +517,7 @@ fn logic_requests_the_artists_and_albums_for_the_chip_that_names_them() {
 
     // A chip of its own asks for its own list, once.
     let mut chip = Library::default();
+    chip.apply(&Update::LibraryReady);
     chip.apply(&Update::Playlists(Vec::new()));
     assert!(
         chip.root_filter
@@ -538,6 +543,7 @@ fn logic_requests_the_artists_and_albums_for_the_chip_that_names_them() {
 
     // The sidebar's chips are the other surface that names the same lists.
     let mut sidebar = Library::default();
+    sidebar.apply(&Update::LibraryReady);
     sidebar.apply(&Update::Playlists(Vec::new()));
     assert!(
         sidebar
@@ -679,6 +685,7 @@ fn home_asks_for_the_artists_whatever_chip_is_chosen() {
         "nothing has named a signed-in window yet"
     );
 
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert!(
         library

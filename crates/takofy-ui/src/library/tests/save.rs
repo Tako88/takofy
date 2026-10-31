@@ -76,6 +76,7 @@ fn a_heart_that_asks_to_unsave_writes_one_removal() {
 #[test]
 fn an_artist_page_wants_the_saved_albums() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.open(Page::Artist("spotify:artist:a".to_owned()));
 
@@ -160,6 +161,7 @@ fn a_followed_artist_re_arms_the_artist_read() {
 #[test]
 fn a_press_of_follow_asks_for_the_artist_list_again() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.apply(&Update::FollowedArtists(Vec::new()));
     library
@@ -369,6 +371,30 @@ fn an_item_the_library_has_is_not_saved_again() {
         None
     );
     assert!(!library.write_in_flight());
+}
+
+#[test]
+fn an_artist_save_does_not_wait_for_the_artist_list_to_be_ready() {
+    for load in [Load::Loading, Load::Failed(Failure::FollowedArtists)] {
+        let mut library = Library {
+            followed_artists: load,
+            ..Library::default()
+        };
+        assert_eq!(
+            library.is_saved("spotify:artist:new"),
+            Some(false),
+            "an artist list the session asked for answers not saved"
+        );
+        assert_eq!(
+            library.save_to_library(&item(SidebarKind::Artists, "spotify:artist:new")),
+            Some(Command::SetFollow {
+                artist: "spotify:artist:new".to_owned(),
+                followed: true,
+            }),
+            "an artist save was refused while the list was not ready"
+        );
+        assert!(!library.write_in_flight(), "an artist save holds no write");
+    }
 }
 
 #[test]

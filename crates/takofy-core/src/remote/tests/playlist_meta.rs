@@ -3,6 +3,11 @@ use super::test_support::*;
 
 use crate::playlist_edit::owned as owned_by;
 use librespot::core::{SpotifyId, SpotifyUri};
+use librespot::protocol::playlist_permission::Capabilities;
+use librespot::protocol::playlist4_external::{
+    Item, ListAttributes, ListItems, SelectedListContent,
+};
+use protobuf::MessageField;
 
 const PLAYLIST_ID: &str = "37i9dQZF1DXcBWIGoYBM5M";
 
@@ -95,4 +100,195 @@ fn a_declared_length_is_the_count_and_a_negative_one_is_not() {
     assert_eq!(playlist_length(62), Some(62));
     assert_eq!(playlist_length(0), Some(0), "an empty playlist counts zero");
     assert_eq!(playlist_length(-1), None, "a wire error is not a length");
+}
+
+const PICTURE: [u8; 20] = [7; 20];
+
+fn track_uri(index: u8) -> String {
+    let mut raw = [0u8; 16];
+    raw[15] = index + 1;
+    SpotifyUri::Track {
+        id: SpotifyId::from_raw(&raw).expect("a track id"),
+    }
+    .to_uri()
+    .expect("a uri")
+}
+
+fn episode_uri() -> String {
+    SpotifyUri::Episode {
+        id: SpotifyId::from_base62(EPISODE_ID).expect("an episode id"),
+    }
+    .to_uri()
+    .expect("a uri")
+}
+
+fn local_uri() -> String {
+    "spotify:local:Artist:Album:Title:3".to_owned()
+}
+
+fn item(uri: &str) -> Item {
+    Item {
+        uri: Some(uri.to_owned()),
+        ..Default::default()
+    }
+}
+
+/// A decorated window naming `uris`, with every field the sidebar draws set.
+fn window(uris: &[String]) -> SelectedListContent {
+    let mut content = SelectedListContent::new();
+    content.set_revision(b"rev".to_vec());
+    content.set_length(uris.len() as i32);
+    content.set_owner_username("alice".to_owned());
+    content.attributes = MessageField::some(ListAttributes {
+        name: Some("Night Drive".to_owned()),
+        description: Some("late hours".to_owned()),
+        picture: None,
+        ..Default::default()
+    });
+    content.contents = MessageField::some(ListItems {
+        items: uris.iter().map(|uri| item(uri)).collect(),
+        ..Default::default()
+    });
+    content.capabilities = MessageField::some(Capabilities {
+        can_edit_items: Some(true),
+        ..Default::default()
+    });
+    content
+}
+
+fn revision(bytes: &[u8]) -> Revision {
+    Revision::from_wire(bytes).expect("a revision")
+}
+
+#[test]
+fn the_metadata_path_asks_for_a_decorated_head_window() {
+    assert_eq!(
+        playlist_meta_path(PLAYLIST_ID),
+        format!(
+            "/playlist/v2/playlist/{PLAYLIST_ID}?decorate=revision,attributes,length,owner,capabilities,status_code,timestamp&from=0&length={META_WINDOW}"
+        )
+    );
+    assert_eq!(
+        META_WINDOW, 24,
+        "twice the head cap, so the cap is reachable"
+    );
+    assert!(
+        META_WINDOW >= HEAD_TRACKS as u32,
+        "a smaller window could not fill the head"
+    );
+}
+
+#[test]
+fn a_decorated_window_maps_every_field() {
+    let uris = vec![track_uri(0), track_uri(1)];
+    let mut content = window(&uris);
+    content.attributes = MessageField::some(ListAttributes {
+        name: Some("Night Drive".to_owned()),
+        description: Some("  late\n hours ".to_owned()),
+        picture: Some(PICTURE.to_vec()),
+        ..Default::default()
+    });
+    content.set_length(46);
+
+    let meta = playlist_meta_from_content(&content);
+
+    assert_eq!(meta.name, Some("Night Drive".to_owned()));
+    assert_eq!(meta.description, Some("late hours".to_owned()));
+    assert_eq!(meta.tracks, Some(46), "the declared length, not the window");
+    assert_eq!(meta.owner, Some("alice".to_owned()));
+    assert_eq!(
+        meta.access,
+        Some(PlaylistAccess {
+            revision: revision(b"rev"),
+            editable: true,
+        })
+    );
+    assert_eq!(
+        meta.picture,
+        CoverUrl::from_file_id(&PICTURE).map(CoverSet::single)
+    );
+    assert!(
+        meta.head.is_empty(),
+        "a chosen picture costs no head labels"
+    );
+}
+
+#[test]
+fn a_pictureless_window_skips_non_tracks_and_still_fills_the_head() {
+    // The server sends `META_WINDOW` items; one episode and one local file sit
+    // inside the first thirteen slots.
+    let mut uris = vec![episode_uri()];
+    uris.extend((0..=10).map(track_uri));
+    uris.push(local_uri());
+    uris.extend((11..=21).map(track_uri));
+    assert_eq!(uris.len(), META_WINDOW as usize);
+
+    let meta = playlist_meta_from_content(&window(&uris));
+
+    let expected: Vec<String> = (0..HEAD_TRACKS as u8).map(track_uri).collect();
+    assert_eq!(
+        meta.head, expected,
+        "an episode and a local file are not tracks, and the cap keeps twelve"
+    );
+}
+
+#[test]
+fn a_window_naming_no_attributes_maps_to_an_empty_meta() {
+    let mut content = window(&[track_uri(0)]);
+    content.attributes = MessageField::none();
+
+    assert_eq!(playlist_meta_from_content(&content), PlaylistMeta::empty());
+}
+
+#[test]
+fn a_window_naming_no_length_counts_zero() {
+    let mut content = window(&[track_uri(0)]);
+    content.length = None;
+
+    assert_eq!(
+        playlist_meta_from_content(&content).tracks,
+        Some(0),
+        "an absent length is the protobuf default, not a missing count"
+    );
+}
+
+#[test]
+fn a_window_naming_no_name_or_owner_maps_to_none() {
+    let mut content = window(&[track_uri(0)]);
+    content.attributes = MessageField::some(ListAttributes::default());
+    content.owner_username = None;
+
+    let meta = playlist_meta_from_content(&content);
+
+    assert_eq!(meta.name, None);
+    assert_eq!(meta.owner, None);
+}
+
+#[test]
+fn a_blank_owner_maps_to_none() {
+    let mut content = window(&[track_uri(0)]);
+    content.set_owner_username("   ".to_owned());
+
+    assert_eq!(playlist_meta_from_content(&content).owner, None);
+}
+
+#[test]
+fn a_window_naming_no_revision_has_no_access() {
+    let mut content = window(&[track_uri(0)]);
+    content.revision = None;
+
+    assert_eq!(playlist_meta_from_content(&content).access, None);
+}
+
+#[test]
+fn a_window_naming_no_capabilities_is_not_editable() {
+    let mut content = window(&[track_uri(0)]);
+    content.capabilities = MessageField::none();
+
+    let access = playlist_meta_from_content(&content)
+        .access
+        .expect("a revision still names an access");
+
+    assert_eq!(access.revision, revision(b"rev"));
+    assert!(!access.editable);
 }

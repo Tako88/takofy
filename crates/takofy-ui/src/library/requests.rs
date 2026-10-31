@@ -4,7 +4,7 @@ use crate::home::Budget;
 use crate::message::Command;
 use crate::route::Page;
 
-use super::{Library, Load, albums_chosen, artists_chosen, listed};
+use super::{Library, Load, albums_chosen, artists_chosen, listed, restore};
 
 impl Library {
     /// Marks a playlist as wanted and returns the command that loads it.
@@ -141,15 +141,26 @@ impl Library {
     /// Marks the playlists loading again and returns the command that fetches
     /// them.
     ///
-    /// The followed lists restart with them: a playlist retry is the root's
-    /// Retry, so every half of the page asks again. A reply already in flight
-    /// from before the retry still lands, and its list is valid — only a little
-    /// older than the retry's.
+    /// The followed lists re-arm with them: a playlist retry is the root's
+    /// Retry, so every half of the page asks again. The list gates close until
+    /// the new walk answers. A reply already in flight from before the retry
+    /// still lands, and its list is valid — only a little older than the
+    /// retry's. The rows last session's copy gave stay on screen while the walk
+    /// runs, so a retry never blanks the library it is refreshing.
     pub fn reload(&mut self) -> Command {
-        self.playlists = Load::Loading;
-        self.followed = Load::Idle;
-        self.followed_artists = Load::Idle;
-        self.saved_albums = Load::Idle;
+        restore::reset(
+            &mut self.playlists,
+            &mut self.sources.playlists,
+            Load::Loading,
+        );
+        self.session_ready = false;
+        restore::reset(&mut self.followed, &mut self.sources.shows, Load::Idle);
+        restore::reset(
+            &mut self.followed_artists,
+            &mut self.sources.artists,
+            Load::Idle,
+        );
+        restore::reset(&mut self.saved_albums, &mut self.sources.albums, Load::Idle);
         self.likes.reload();
         self.held_since = None;
         self.hold_spent = false;
@@ -189,6 +200,12 @@ impl Library {
     /// cover; a settled page has no reply coming, so its dropped cover must be
     /// asked for like any other.
     pub fn tracks_request(&mut self) -> Option<Command> {
+        // A read of the playlists' rows may only be sent once the session's own
+        // list is on screen: a playlist row from the copy names no access, so a
+        // reply for it could not be written and its ask would be spent.
+        if !self.playlists_live() {
+            return None;
+        }
         if let Some(Page::Playlist(playlist)) = self.history.current() {
             let playlist = playlist.clone();
             if listed(&self.playlists, &playlist, |entry| &entry.uri)
@@ -264,7 +281,7 @@ impl Library {
     /// This is the list's own Retry, so it asks directly rather than going
     /// through the playlists.
     pub fn reload_followed(&mut self) -> Command {
-        self.followed = Load::Loading;
+        restore::asked(&mut self.followed, &mut self.sources.shows);
         Command::LoadFollowedShows
     }
 
@@ -272,15 +289,14 @@ impl Library {
     ///
     /// The list is want-driven rather than chained onto the rootlist, so the
     /// worker's update stream is unchanged. It asks exactly when nothing has
-    /// been asked for yet and the playlists can name a signed-in window; a
-    /// window that never loads its playlists therefore never asks for shows.
+    /// been asked for yet and the session is ready, which is after the walk
+    /// rather than after the labels; a window that never reaches a walked
+    /// rootlist therefore never asks for shows.
     pub fn followed_request(&mut self) -> Option<Command> {
-        if self.followed == Load::Idle && matches!(self.playlists, Load::Ready(_)) {
-            self.followed = Load::Loading;
-            Some(Command::LoadFollowedShows)
-        } else {
-            None
+        if !self.session_ready {
+            return None;
         }
+        self.shows_ask()
     }
 
     /// Marks the followed-artists list loading again and returns the command
@@ -291,7 +307,7 @@ impl Library {
     /// still lands, and its list is valid — only a little older than the
     /// retry's.
     pub fn reload_followed_artists(&mut self) -> Command {
-        self.followed_artists = Load::Loading;
+        restore::asked(&mut self.followed_artists, &mut self.sources.artists);
         Command::LoadFollowedArtists
     }
 
@@ -300,28 +316,25 @@ impl Library {
     ///
     /// The followed-artists shape, one list over.
     pub fn reload_saved_albums(&mut self) -> Command {
-        self.saved_albums = Load::Loading;
+        restore::asked(&mut self.saved_albums, &mut self.sources.albums);
         Command::LoadSavedAlbums
     }
 
     /// The command that starts the followed-artists load, if one is due.
     ///
     /// Like the followed shows it is want-driven: it asks exactly when nothing
-    /// has been asked for yet, the playlists can name a signed-in window, and a
-    /// chip naming artists is the one the user is looking at.
+    /// has been asked for yet, the session is ready, and a chip naming artists
+    /// is the one the user is looking at.
     pub fn followed_artists_request(&mut self) -> Option<Command> {
-        if self.followed_artists == Load::Idle
-            && matches!(self.playlists, Load::Ready(_))
-            && (artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+        if !self.session_ready
+            || !(artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
                 // Home's related shelf reads them, and the chip that would ask
                 // for them is not on screen there.
                 || self.on_home())
         {
-            self.followed_artists = Load::Loading;
-            Some(Command::LoadFollowedArtists)
-        } else {
-            None
+            return None;
         }
+        self.artists_ask()
     }
 
     /// The command that starts the saved-albums load, if one is due.
@@ -330,17 +343,33 @@ impl Library {
     /// whatever chip the root was left on: its shelf draws albums, and the chip
     /// that would ask for them is not on screen to do it.
     pub fn saved_albums_request(&mut self) -> Option<Command> {
-        if self.saved_albums == Load::Idle
-            && matches!(self.playlists, Load::Ready(_))
-            && (albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+        if !self.session_ready
+            || !(albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
                 || self.on_artist_page()
                 || self.on_home())
         {
-            self.saved_albums = Load::Loading;
-            Some(Command::LoadSavedAlbums)
-        } else {
-            None
+            return None;
         }
+        self.albums_ask()
+    }
+
+    /// Asks for the followed shows once, when nothing has been asked for the
+    /// list and the session is ready.
+    fn shows_ask(&mut self) -> Option<Command> {
+        restore::ask(&mut self.followed, &mut self.sources.shows)
+            .then_some(Command::LoadFollowedShows)
+    }
+
+    /// The followed artists' ask, in the same shape.
+    fn artists_ask(&mut self) -> Option<Command> {
+        restore::ask(&mut self.followed_artists, &mut self.sources.artists)
+            .then_some(Command::LoadFollowedArtists)
+    }
+
+    /// The saved albums' ask, in the same shape.
+    fn albums_ask(&mut self) -> Option<Command> {
+        restore::ask(&mut self.saved_albums, &mut self.sources.albums)
+            .then_some(Command::LoadSavedAlbums)
     }
 
     /// Whether the page on screen draws a heart on releases it did not read.
@@ -353,11 +382,11 @@ impl Library {
 
     /// The command that starts the liked-songs read, if one is due.
     ///
-    /// It waits for the playlists, because a signed-out window has no set to
-    /// read and no heart to draw; every later sweep is the set's own to ask for.
+    /// It waits for the session, because a signed-out window has no set to read
+    /// and no heart to draw; every later sweep is the set's own to ask for.
     pub fn likes_request(&mut self) -> Option<Command> {
         self.likes
-            .request(matches!(self.playlists, Load::Ready(_)))
+            .request(self.session_ready)
             .then_some(Command::LoadLikedTracks)
     }
 

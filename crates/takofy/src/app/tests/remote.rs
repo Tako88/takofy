@@ -4,6 +4,7 @@ use super::test_support::*;
 use eframe::App;
 use std::sync::mpsc::channel;
 use takofy_model::{Device, DeviceKind, Landing, RemotePlayback, RemoteState, Status};
+use takofy_ui::library::Load;
 use takofy_ui::message::{DeviceUpdate, Failure, TransportUpdate};
 
 /// A window whose updates the test can feed, so `logic` drains them.

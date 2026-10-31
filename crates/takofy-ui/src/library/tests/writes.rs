@@ -18,6 +18,7 @@ fn write_in_flight_is_any_pending_write() {
 #[test]
 fn a_failed_like_reverts_and_the_healing_read_clears_the_sentence() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
     library.apply(&Update::LikedTracks(Vec::new()));
@@ -50,6 +51,7 @@ fn a_failed_like_reverts_and_the_healing_read_clears_the_sentence() {
 #[test]
 fn a_like_confirmation_ends_the_write_and_leaves_the_heart_on() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
     library.apply(&Update::LikedTracks(Vec::new()));
@@ -61,6 +63,7 @@ fn a_like_confirmation_ends_the_write_and_leaves_the_heart_on() {
     // A sweep asked for after the click is answered after it: it carries the
     // set from before the write, so adopting it would wipe the confirmed like.
     let _ = library.reload();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(
         library.likes_request(),
@@ -88,6 +91,7 @@ fn a_like_confirmation_ends_the_write_and_leaves_the_heart_on() {
 #[test]
 fn a_failure_sentence_does_not_survive_a_page_change() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
     library.apply(&Update::LikedTracks(Vec::new()));

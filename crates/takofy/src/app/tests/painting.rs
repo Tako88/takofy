@@ -94,6 +94,43 @@ fn the_viewport_uses_the_layout_sizes() {
 }
 
 #[test]
+fn a_retrying_cover_keeps_a_wake_at_its_deadline() {
+    let mut art = Art::default();
+    let now = Instant::now();
+    let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+    art.begin_frame();
+    art.look(Some(&set(&url)), 64, now);
+    let _ = art.requests(now);
+    art.apply(&Update::CoverFailed { url: url.clone() }, now);
+
+    // Jump to the frame the retry is due in, and send it.
+    let due = now + Duration::from_secs(5);
+    art.begin_frame();
+    let _ = art.look(Some(&set(&url)), 64, due);
+    assert_eq!(art.requests(due).len(), 1, "the retry is sent");
+
+    let ctx = egui::Context::default();
+    // Warm up so egui's own first-frame work is not mistaken for a cover wake.
+    for _ in 0..2 {
+        let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+        warm.textures_delta.clear();
+    }
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        schedule_wake(ui.ctx(), &art, due + Duration::from_secs(1));
+    });
+    output.textures_delta.clear();
+    let delay = output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .expect("the root viewport")
+        .repaint_delay;
+    assert!(
+        delay <= takofy_ui::cover::cache::IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
+        "the in-flight retry kept no deadline, the window woke in {delay:?}"
+    );
+}
+
+#[test]
 fn a_failed_cover_asks_for_a_wake_at_its_retry() {
     let mut art = Art::default();
     let now = Instant::now();

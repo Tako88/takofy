@@ -381,10 +381,12 @@ fn a_failure_shows_as_failed() {
 }
 
 #[test]
-fn the_in_flight_cap_holds_at_six() {
+fn the_in_flight_cap_holds_at_the_constant() {
     let now = base();
     let mut art = Art::new();
-    let urls: Vec<CoverUrl> = (0..10).map(|i| url(&format!("u{i}"))).collect();
+    let urls: Vec<CoverUrl> = (0..MAX_IN_FLIGHT + 4)
+        .map(|i| url(&format!("u{i}")))
+        .collect();
     for url in &urls {
         art.look(Some(&set(url)), 64, now);
     }
@@ -395,6 +397,174 @@ fn the_in_flight_cap_holds_at_six() {
     // One answer frees one slot.
     cover(&mut art, &urls[0], now);
     assert_eq!(art.requests(now).len(), 1);
+}
+
+#[test]
+fn a_freed_slot_is_refilled_on_the_same_frame() {
+    let now = base();
+    let mut art = Art::new();
+    art.begin_frame();
+    let urls: Vec<CoverUrl> = (0..MAX_IN_FLIGHT + 3)
+        .map(|i| url(&format!("u{i:02}")))
+        .collect();
+    for url in &urls {
+        art.look(Some(&set(url)), 64, now);
+    }
+    assert_eq!(art.requests(now).len(), MAX_IN_FLIGHT);
+    assert!(art.requests(now).is_empty(), "the cap is full");
+
+    // An arrival frees a slot, and the next unserved URL takes it without
+    // another look.
+    art.apply(
+        &Update::Cover {
+            url: urls[0].clone(),
+            image: image(),
+        },
+        now,
+    );
+    assert_eq!(
+        art.requests(now),
+        vec![Command::Fetch {
+            url: urls[MAX_IN_FLIGHT].clone()
+        }]
+    );
+
+    // A failure frees its slot the same way, and the failed URL is not resent
+    // while its retry is in the future.
+    art.apply(
+        &Update::CoverFailed {
+            url: urls[1].clone(),
+        },
+        now,
+    );
+    assert_eq!(
+        art.requests(now),
+        vec![Command::Fetch {
+            url: urls[MAX_IN_FLIGHT + 1].clone()
+        }]
+    );
+    assert!(!art.in_flight.contains_key(&urls[1]));
+}
+
+#[test]
+fn a_retry_that_arrives_draws_ready() {
+    let now = base();
+    let mut art = Art::new();
+    let url = url("a");
+    art.begin_frame();
+    art.look(Some(&set(&url)), 64, now);
+    assert_eq!(art.requests(now).len(), 1);
+    art.apply(&Update::CoverFailed { url: url.clone() }, now);
+
+    // The retry is due, sent, and answered.
+    let due = now + Duration::from_secs(5);
+    art.begin_frame();
+    let _ = art.look(Some(&set(&url)), 64, due);
+    assert_eq!(art.requests(due).len(), 1, "the retry is sent");
+    art.apply(
+        &Update::Cover {
+            url: url.clone(),
+            image: image(),
+        },
+        due,
+    );
+    assert_ne!(
+        art.look(Some(&set(&url)), 64, due),
+        Cover::Failed,
+        "the image arrived"
+    );
+}
+
+#[test]
+fn a_retry_is_sent_through_the_cap_like_any_other_fetch() {
+    let now = base();
+    let mut art = Art::new();
+    let retried = url("retried");
+    art.begin_frame();
+    art.look(Some(&set(&retried)), 64, now);
+    assert_eq!(art.requests(now).len(), 1);
+    art.apply(
+        &Update::CoverFailed {
+            url: retried.clone(),
+        },
+        now,
+    );
+
+    // Every slot goes to a first attempt in a later frame, and the retry falls
+    // due in that same frame.
+    let due = now + Duration::from_secs(5);
+    art.begin_frame();
+    let fillers: Vec<CoverUrl> = (0..MAX_IN_FLIGHT)
+        .map(|i| url(&format!("u{i:02}")))
+        .collect();
+    for filler in &fillers {
+        art.look(Some(&set(filler)), 64, due);
+    }
+    assert_eq!(
+        art.look(Some(&set(&retried)), 64, due),
+        Cover::Failed,
+        "the retry draws the hole"
+    );
+    assert_eq!(art.requests(due).len(), MAX_IN_FLIGHT);
+    assert!(
+        !art.in_flight.contains_key(&retried),
+        "the retry waits for a slot"
+    );
+
+    // A slot frees and the retry is the one sent.
+    art.apply(
+        &Update::Cover {
+            url: fillers[0].clone(),
+            image: image(),
+        },
+        due,
+    );
+    assert_eq!(
+        art.requests(due),
+        vec![Command::Fetch {
+            url: retried.clone()
+        }]
+    );
+}
+
+#[test]
+fn an_in_flight_retry_that_expires_fails_again_and_schedules_the_next_delay() {
+    let now = base();
+    let mut art = Art::new();
+    let url = url("a");
+    art.begin_frame();
+    art.look(Some(&set(&url)), 64, now);
+    assert_eq!(art.requests(now).len(), 1);
+    art.apply(&Update::CoverFailed { url: url.clone() }, now);
+
+    // The first retry goes out, and the worker never answers it.
+    let retry = now + Duration::from_secs(5);
+    art.begin_frame();
+    assert_eq!(art.look(Some(&set(&url)), 64, retry), Cover::Failed);
+    assert_eq!(art.requests(retry).len(), 1, "the retry is sent");
+
+    let expired = retry + cache::IN_FLIGHT_TIMEOUT;
+    art.begin_frame();
+    assert_eq!(art.look(Some(&set(&url)), 64, expired), Cover::Failed);
+    assert!(art.requests(expired).is_empty());
+    assert!(art.in_flight.is_empty());
+
+    // The expiry burns the retry, so the next one is due thirty seconds after
+    // it rather than five.
+    art.begin_frame();
+    assert_eq!(
+        art.look(Some(&set(&url)), 64, expired + Duration::from_secs(5)),
+        Cover::Failed,
+        "five seconds after the expiry is not the retry"
+    );
+    assert!(art.requests(expired + Duration::from_secs(5)).is_empty());
+    art.begin_frame();
+    assert_eq!(
+        art.look(Some(&set(&url)), 64, expired + Duration::from_secs(30)),
+        Cover::Failed,
+        "the third attempt is due"
+    );
+    assert_eq!(art.requests(expired + Duration::from_secs(30)).len(), 1);
 }
 
 #[test]
@@ -447,7 +617,7 @@ fn requests_send_in_look_order_not_alphabetical() {
 }
 
 #[test]
-fn a_due_failure_retries_once_and_stops_after_three_attempts() {
+fn a_due_failure_retries_once_looking_failed_and_stops_after_three_attempts() {
     let now = base();
     let mut art = Art::new();
     let url = url("a");
@@ -465,11 +635,12 @@ fn a_due_failure_retries_once_and_stops_after_three_attempts() {
     );
     assert!(art.requests(now + Duration::from_secs(4)).is_empty());
 
-    // Due at five seconds: exactly one fetch, the second attempt.
+    // Due at five seconds: exactly one fetch, the second attempt, and the box
+    // keeps the hole while it runs.
     art.begin_frame();
     assert_eq!(
         art.look(Some(&set(&url)), 64, now + Duration::from_secs(5)),
-        Cover::Loading
+        Cover::Failed
     );
     assert_eq!(
         art.requests(now + Duration::from_secs(5)).len(),
@@ -485,7 +656,7 @@ fn a_due_failure_retries_once_and_stops_after_three_attempts() {
     art.begin_frame();
     assert_eq!(
         art.look(Some(&set(&url)), 64, now + Duration::from_secs(35)),
-        Cover::Loading
+        Cover::Failed
     );
     assert_eq!(
         art.requests(now + Duration::from_secs(35)).len(),
@@ -527,10 +698,10 @@ fn a_late_failure_after_the_in_flight_expiry_is_ignored() {
     assert_eq!(art.look(Some(&set(&url)), 64, expired), Cover::Failed);
 
     // The first retry is still due five seconds after the expiry, and it is
-    // the second attempt rather than the third.
+    // the second attempt rather than the third. It reads as the same failure.
     let retry = expired + Duration::from_secs(5);
     art.begin_frame();
-    assert_eq!(art.look(Some(&set(&url)), 64, retry), Cover::Loading);
+    assert_eq!(art.look(Some(&set(&url)), 64, retry), Cover::Failed);
     assert_eq!(art.requests(retry).len(), 1);
     art.apply(&Update::CoverFailed { url: url.clone() }, retry);
 
@@ -541,8 +712,13 @@ fn a_late_failure_after_the_in_flight_expiry_is_ignored() {
     );
     assert_eq!(
         art.look(Some(&set(&url)), 64, retry + Duration::from_secs(31)),
-        Cover::Loading,
+        Cover::Failed,
         "the third attempt is still available"
+    );
+    assert_eq!(
+        art.requests(retry + Duration::from_secs(31)).len(),
+        1,
+        "the third attempt is sent"
     );
 }
 

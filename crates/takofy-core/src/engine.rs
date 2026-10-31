@@ -27,7 +27,7 @@ use crate::remote::{
     write_follow, write_like, write_move, write_remove, write_rename, write_rootlist_add,
     write_rootlist_move, write_rootlist_remove, write_saved,
 };
-use crate::rootlist::{RootEntry, RootlistError, fetch_all};
+use crate::rootlist::{RootEntry, RootlistError, Walked, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
 use crate::station::{StationError, read_neighbours, read_station};
@@ -146,6 +146,11 @@ impl Engine {
             .connect(Credentials::with_access_token(token.expose()), false)
             .await?;
         Ok(Self::new(session))
+    }
+
+    /// The account name this session connected as, as the wire spells it.
+    pub fn username(&self) -> String {
+        self.session.username()
     }
 
     /// Whether the session this engine was built on is known to be dead.
@@ -329,17 +334,35 @@ impl Engine {
         }
     }
 
-    /// The user's playlists, labelled, with what the column may write.
-    pub async fn rootlist(&self) -> Result<RootlistRead, EngineError> {
+    /// The user's playlists as the rootlist walks them, without their labels.
+    ///
+    /// Needs only a connected session, so reads that draw no playlist name can
+    /// start before the labels are read.
+    pub async fn walk_rootlist(&self) -> Result<Walked, EngineError> {
         let source = RemoteRootlist {
             session: &self.session,
             wire: ROOTLIST_WIRE,
         };
-        let walked = fetch_all(&source).await?;
-        Ok(RootlistRead {
+        Ok(fetch_all(&source).await?)
+    }
+
+    /// The walked playlists named, with what the column may write with.
+    ///
+    /// Cannot fail: a playlist that cannot be labelled keeps its URI, unnamed.
+    pub async fn label_rootlist(&self, walked: Walked) -> RootlistRead {
+        RootlistRead {
             entries: label_playlists(&self.session, walked.playlists, &self.labels).await,
             access: walked.access,
-        })
+        }
+    }
+
+    /// The user's playlists, labelled, with what the column may write.
+    ///
+    /// Both stages in one call, for callers that do not overlap other work with
+    /// the labels.
+    pub async fn rootlist(&self) -> Result<RootlistRead, EngineError> {
+        let walked = self.walk_rootlist().await?;
+        Ok(self.label_rootlist(walked).await)
     }
 
     /// One playlist as the sidebar draws it: its name, cover and counts.
@@ -655,6 +678,7 @@ impl Engine {
 
 /// The rootlist: its entries, and what the column may write with.
 ///
+/// The answer of [`Engine::label_rootlist`], for the walk it is given.
 /// `access` is `None` when the read named no revision, and its `editable` is
 /// false whenever the read dropped an item, so a row index stops being the
 /// wire's index.

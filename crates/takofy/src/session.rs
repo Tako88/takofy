@@ -15,11 +15,12 @@ use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, Orders, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
+use takofy_core::rootlist::Walked;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
+    Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow,
+    Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
     SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -134,7 +135,28 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         token: &AccessToken,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
-    fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
+    /// The account this session connected as, once it is connected.
+    ///
+    /// A host that never learns a name saves no library copy; the default
+    /// keeps such a host honest without a fake implementation.
+    fn account(&self) -> Option<Account> {
+        None
+    }
+
+    /// The rootlist as the account walks it, before its playlists are named.
+    ///
+    /// Needs only a connected session, so a read that draws no playlist name
+    /// can start before the labels are read.
+    fn walk_rootlist(&self) -> impl Future<Output = Result<Walked, SessionError>> + Send;
+
+    /// The walked playlists named, with what the sidebar may write with.
+    ///
+    /// Cannot fail on the engine's side: a playlist that cannot be named keeps
+    /// its URI.
+    fn label_rootlist(
+        &self,
+        walked: Walked,
+    ) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
 
     /// One playlist as the sidebar draws it, or `None` when the read does not
     /// answer.
@@ -513,9 +535,22 @@ impl SessionHost for LiveSession {
         Ok(())
     }
 
-    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
+    async fn walk_rootlist(&self) -> Result<Walked, SessionError> {
         match &self.engine {
-            Some(engine) => engine.rootlist().await.map_err(SessionError::Engine),
+            Some(engine) => engine.walk_rootlist().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn account(&self) -> Option<Account> {
+        self.engine
+            .as_ref()
+            .and_then(|engine| Account::from_wire(&engine.username()))
+    }
+
+    async fn label_rootlist(&self, walked: Walked) -> Result<RootlistRead, SessionError> {
+        match &self.engine {
+            Some(engine) => Ok(engine.label_rootlist(walked).await),
             None => Err(SessionError::NotConnected),
         }
     }

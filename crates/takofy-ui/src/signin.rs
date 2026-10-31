@@ -41,7 +41,9 @@ impl SignIn {
             }
             (Update::SignInFailed(_), _) => {}
             (
-                Update::Playlists(_)
+                Update::Account(_)
+                | Update::LibraryReady
+                | Update::Playlists(_)
                 | Update::PlaylistFailed(_)
                 | Update::RootlistAccess(_)
                 | Update::PlaylistMoved { .. }

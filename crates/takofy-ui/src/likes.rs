@@ -78,6 +78,11 @@ pub struct Likes {
     set: Option<HashSet<String>>,
     /// The last adopted read's tracks with their dates, in the read's order.
     recent: Vec<LikedTrack>,
+    /// Whether `set` is last session's copy rather than a read.
+    restored: bool,
+    /// The URIs a write confirmed as liked since the last adopted read, in the
+    /// order they were confirmed.
+    fresh: Vec<String>,
     read: Read,
     /// The epoch of the last local flip or revert.
     epoch: u64,
@@ -90,12 +95,76 @@ pub struct Likes {
 }
 
 impl Likes {
+    /// Adopts last session's copy, to draw until a read replaces it.
+    ///
+    /// The copy is drawn but not trusted: no heart, no standing and no write
+    /// may act on a set that another session's writes have moved since.
+    pub fn restored(tracks: Vec<LikedTrack>) -> Self {
+        Self {
+            set: Some(tracks.iter().map(|track| track.uri.clone()).collect()),
+            recent: tracks,
+            restored: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the set on screen is last session's copy.
+    pub fn is_restored(&self) -> bool {
+        self.restored
+    }
+
+    /// Whether a write is in flight against the set.
+    pub fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// The liked rows the library holds: the session's own likes first, then
+    /// the last read's, without the tracks that read no longer holds.
+    ///
+    /// `None` until a read lands or a copy is restored: an empty answer would
+    /// say the library likes nothing, which only a read can say.
+    pub fn kept(&self) -> Option<Vec<LikedTrack>> {
+        let set = self.set.as_ref()?;
+        let mut kept: Vec<LikedTrack> = Vec::new();
+        for uri in &self.fresh {
+            if !set.contains(uri) {
+                continue;
+            }
+            // A like the read names keeps the date it was read with.
+            let saved_at = self
+                .recent
+                .iter()
+                .find(|track| track.uri == *uri)
+                .and_then(|track| track.saved_at);
+            kept.push(LikedTrack {
+                uri: uri.clone(),
+                saved_at,
+            });
+        }
+        for track in &self.recent {
+            if set.contains(&track.uri) && !kept.iter().any(|held| held.uri == track.uri) {
+                kept.push(track.clone());
+            }
+        }
+        Some(kept)
+    }
+
+    /// Drops the restored copy, leaving a set a read landed alone.
+    pub fn discard(&mut self) {
+        if !self.restored {
+            return;
+        }
+        self.restored = false;
+        self.set = None;
+        self.recent.clear();
+    }
+
     /// Whether `uri` is a liked track, or `None` when the set cannot say.
     ///
     /// Only a track has a heart: an episode and a local file are in no liked
     /// set, and the collection set's albums are a different answer.
     pub fn state(&self, uri: &str) -> Option<bool> {
-        if !is_track(uri) {
+        if self.restored || !is_track(uri) {
             return None;
         }
         self.set.as_ref().map(|set| set.contains(uri))
@@ -142,6 +211,9 @@ impl Likes {
 
     /// What `uris` have in common, as the menu's save row reads it.
     pub fn standing(&self, uris: &[&str]) -> Standing {
+        if self.restored {
+            return Standing::Unknown;
+        }
         let Some(set) = self.set.as_ref() else {
             return Standing::Unknown;
         };
@@ -163,7 +235,7 @@ impl Likes {
     /// snapshot is older than the set cannot re-date a track that is already
     /// liked.
     pub fn set(&mut self, uris: &[String], liked: bool) -> Option<Change> {
-        if self.pending.is_some() || self.set.is_none() {
+        if self.restored || self.pending.is_some() || self.set.is_none() {
             return None;
         }
         let mut seen = HashSet::new();
@@ -214,8 +286,8 @@ impl Likes {
     ///
     /// A failed read is not retried until a reload: a request loop behind a
     /// persistent failure would never stop.
-    pub fn request(&mut self, playlists_ready: bool) -> bool {
-        if self.asking.is_some() || !playlists_ready {
+    pub fn request(&mut self, session_ready: bool) -> bool {
+        if self.asking.is_some() || !session_ready {
             return false;
         }
         match self.read {
@@ -269,6 +341,8 @@ impl Likes {
         }
         self.set = Some(tracks.iter().map(|track| track.uri.clone()).collect());
         self.recent = tracks;
+        self.restored = false;
+        self.fresh.clear();
         self.read = Read::Current;
         self.notice = None;
     }
@@ -297,6 +371,12 @@ impl Likes {
         self.pending = None;
         self.notice = None;
         self.epoch = self.epoch.saturating_add(1);
+        for uri in tracks {
+            self.fresh.retain(|held| held != uri);
+            if liked {
+                self.fresh.push(uri.clone());
+            }
+        }
     }
 
     fn fail_write(&mut self, tracks: &[String], failure: Failure) {

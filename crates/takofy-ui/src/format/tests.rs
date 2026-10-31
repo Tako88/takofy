@@ -929,3 +929,29 @@ fn the_home_copy_has_no_counts() {
         );
     }
 }
+
+#[test]
+fn the_copy_note_names_the_library_and_the_refresh_it_missed() {
+    assert_eq!(
+        copy_note(),
+        "Showing last time's library. Could not refresh it."
+    );
+}
+
+#[test]
+fn the_copy_note_is_no_write_notice() {
+    let writes = [
+        SidebarWrite::Reorder,
+        SidebarWrite::Add,
+        SidebarWrite::Create,
+        SidebarWrite::Link,
+        SidebarWrite::Unfilled,
+        SidebarWrite::Unnamed,
+        SidebarWrite::Save,
+        SidebarWrite::Remove,
+        SidebarWrite::Rename,
+    ];
+    for write in writes {
+        assert_ne!(copy_note(), sidebar_notice(write), "{write:?}");
+    }
+}

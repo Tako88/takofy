@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
+    Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
     FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
     RemotePlayback, Removal, Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry,
     TrackLyrics,
@@ -294,6 +294,12 @@ pub enum Update {
     NeedsAuthorization,
     /// An attempt failed and may be retried.
     SignInFailed(Failure),
+    /// The account the session connected as, as a fingerprint, sent once the
+    /// connect succeeded and before [`Self::LibraryReady`].
+    Account(Account),
+    /// The session is connected and the rootlist walked, so reads that need a
+    /// session may be sent. Sent before `Playlists`.
+    LibraryReady,
     /// The user's playlists.
     Playlists(Vec<PlaylistEntry>),
     /// The playlists could not be loaded.
@@ -497,3 +503,89 @@ pub enum Update {
     /// A change the receiver made to what this window is playing.
     Remote(RemoteUpdate),
 }
+
+impl Update {
+    /// Whether this update may change what a saved copy of the five lists the
+    /// library draws would hold.
+    ///
+    /// A list's readiness counts, because a copy omits a list that is not ready
+    /// to draw, so a failed read changes what a save writes even though the rows
+    /// stay on screen. A page write's replies count too: they carry a playlist
+    /// entry's cover and length.
+    pub fn changes_lists(&self) -> bool {
+        match self {
+            Self::Playlists(_)
+            | Self::PlaylistFailed(_)
+            | Self::PlaylistMoved { .. }
+            | Self::PlaylistMoveFailed
+            | Self::PlaylistRemoved { .. }
+            | Self::PlaylistRemoveFailed { .. }
+            | Self::PlaylistLinked { .. }
+            | Self::PlaylistLinkFailed { .. }
+            | Self::PlaylistCreated { .. }
+            | Self::PlaylistCreateFailed
+            | Self::PlaylistUnlinked
+            | Self::PlaylistUnfilled { .. }
+            | Self::PlaylistUnnamed { .. }
+            | Self::PlaylistRenamed { .. }
+            | Self::PlaylistRenameFailed { .. }
+            | Self::Saved { .. }
+            | Self::SavedFailed { .. }
+            | Self::TrackAdded { .. }
+            | Self::AddFailed { .. }
+            | Self::Tracks { .. }
+            | Self::TrackMoved { .. }
+            | Self::MoveFailed { .. }
+            | Self::TracksRemoved { .. }
+            | Self::RemoveFailed { .. }
+            | Self::FollowedShows(_)
+            | Self::FollowedShowsFailed(_)
+            | Self::FollowedArtists(_)
+            | Self::FollowedArtistsFailed(_)
+            | Self::SavedAlbums(_)
+            | Self::SavedAlbumsFailed(_)
+            | Self::LikedTracks(_)
+            | Self::LikedTracksFailed(_)
+            | Self::Liked { .. }
+            | Self::LikeFailed { .. }
+            | Self::Followed { .. }
+            | Self::FollowFailed { .. } => true,
+            Self::SignedIn
+            | Self::NeedsAuthorization
+            | Self::SignInFailed(_)
+            | Self::Account(_)
+            | Self::LibraryReady
+            | Self::RootlistAccess(_)
+            | Self::SavedState { .. }
+            | Self::TracksFailed { .. }
+            | Self::Album(_)
+            | Self::AlbumFailed { .. }
+            | Self::Artist(_)
+            | Self::ArtistFailed { .. }
+            | Self::Show(_)
+            | Self::ShowFailed { .. }
+            | Self::Related { .. }
+            | Self::RelatedFailed { .. }
+            | Self::SavedLabelled { .. }
+            | Self::SavedLabelFailed { .. }
+            | Self::ReleaseTracks { .. }
+            | Self::ReleaseTracksFailed { .. }
+            | Self::Cover { .. }
+            | Self::CoverFailed { .. }
+            | Self::Lyrics { .. }
+            | Self::LyricsFailed { .. }
+            | Self::Search { .. }
+            | Self::SearchFailed { .. }
+            | Self::Portraits { .. }
+            | Self::PortraitsFailed { .. }
+            | Self::Home(_)
+            | Self::HomeFailed { .. }
+            | Self::Transport(_)
+            | Self::Devices(_)
+            | Self::Remote(_) => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -19,7 +19,7 @@ fn a_rename_reads_the_state_then_writes_and_announces_the_reply_revision() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RenamePlaylist {
@@ -62,7 +62,7 @@ fn a_rename_of_a_list_that_is_not_editable_is_refused_without_a_write() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RenamePlaylist {
@@ -93,7 +93,7 @@ fn a_rename_with_no_state_fails_without_a_write() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RenamePlaylist {
@@ -129,7 +129,7 @@ fn a_failed_rename_write_announces_the_failure() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RenamePlaylist {

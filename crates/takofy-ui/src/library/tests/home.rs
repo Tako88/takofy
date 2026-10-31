@@ -38,6 +38,7 @@ fn settled(
     tracks: Vec<LikedTrack>,
 ) -> Library {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(playlists));
     library.apply(&Update::SavedAlbums(albums));
     assert_eq!(
@@ -469,6 +470,7 @@ fn a_failed_counted_label_read_leaves_the_dated_shelf_alone() {
 /// liked song whose label nobody has asked for yet.
 fn home_with_a_liked_song() -> Library {
     let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(
         library.likes_request(),
@@ -555,6 +557,7 @@ fn home_asks_for_the_albums_and_the_likes_under_every_chip() {
     for kind in crate::library_filter::ROW {
         let mut library = Library::starting_home(1_700_000_000_000);
         library.root_filter.choose(kind);
+        library.apply(&Update::LibraryReady);
         library.apply(&Update::Playlists(Vec::new()));
 
         assert_eq!(
@@ -623,6 +626,7 @@ fn home_asks_for_a_label_once_per_uri() {
 #[test]
 fn home_asks_for_no_label_until_every_source_has_settled() {
     let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
     library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 5_000)]));
@@ -719,6 +723,7 @@ fn a_retry_after_a_failed_label_read_asks_for_the_labels_again() {
 /// dated feeds asked and left in flight.
 fn feeds_out() -> Library {
     let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(
         library.saved_albums_request(),
@@ -773,6 +778,7 @@ fn the_dated_label_leads() {
 /// whose one liked song nobody has labelled yet.
 fn every_shelf_ready() -> Library {
     let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(vec![dated_playlist(
         "spotify:playlist:a",
         5_000,
@@ -1093,6 +1099,7 @@ fn retrying_the_dated_shelf_leads_with_its_label_again() {
 #[test]
 fn retrying_the_dated_shelf_waits_for_the_feed_it_re_reads() {
     let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(
         library.saved_albums_request(),
@@ -1132,5 +1139,41 @@ fn retrying_the_dated_shelf_waits_for_the_feed_it_re_reads() {
     assert!(
         matches!(asks.first(), Some(Command::LabelSaved { .. })),
         "the label leads once the feed lands: {asks:?}"
+    );
+}
+
+#[test]
+fn home_asks_start_before_the_labels() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::FollowedArtists(vec![followed_artist(
+        "spotify:artist:a",
+    )]));
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the likes are out"
+    );
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 5_000)]));
+    assert_eq!(
+        library.playlists,
+        Load::Loading,
+        "arrange: the labels are still out"
+    );
+
+    let start = Instant::now();
+    assert!(
+        library.home_asks(start).is_empty(),
+        "the dated shelf holds the built asks while its label is owed"
+    );
+    assert!(library.home_held());
+
+    let spent = library.home_asks(start + HOME_HOLD);
+    assert!(!library.home_held(), "the wait is bounded");
+    assert!(
+        spent.iter().any(|ask| matches!(ask, Command::LoadHome(_))),
+        "the built asks leave once the hold is spent: {spent:?}"
     );
 }

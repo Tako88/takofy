@@ -22,7 +22,7 @@ use cache::{Cache, Look};
 use tint::{Mean, normalise};
 
 /// The most fetches the window has outstanding at once.
-pub const MAX_IN_FLIGHT: usize = 6;
+pub const MAX_IN_FLIGHT: usize = 12;
 
 /// The target of the one line an uploaded texture writes.
 pub const COVER_LOG_TARGET: &str = "takofy_ui::cover";
@@ -44,11 +44,12 @@ pub fn want_px(points: f32, pixels_per_point: f32) -> u32 {
 pub enum Cover {
     /// The image is decoded and uploaded; this is its texture.
     Ready(TextureId),
-    /// A fetch or upload is in progress, or a failed entry is waiting to retry.
+    /// A first fetch or an upload is in progress.
     Loading,
     /// The box names no cover.
     Missing,
-    /// The cover could not be fetched or decoded.
+    /// The cover could not be fetched or decoded, and any retry is still running
+    /// or pending.
     Failed,
 }
 
@@ -89,8 +90,8 @@ impl Art {
     /// Records that `cover` is wanted this frame and reports what to draw.
     ///
     /// `None` is [`Cover::Missing`]. A URL that has never been looked at starts
-    /// loading; a failure that is due to retry becomes loading again; a
-    /// permanent failure stays failed.
+    /// loading; a cover that has failed stays failed through its retries until
+    /// an image arrives.
     pub fn look(&mut self, cover: Option<&CoverSet>, want_px: u32, now: Instant) -> Cover {
         let Some(url) = cover.and_then(|set| set.pick(want_px)) else {
             return Cover::Missing;

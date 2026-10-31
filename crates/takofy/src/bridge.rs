@@ -29,9 +29,11 @@ mod playback;
 mod reads;
 mod rebuild;
 mod signin;
+mod startup;
 mod wake;
 
 pub(crate) use orders::LANDING_LOG_TARGET;
+pub(crate) use startup::STARTUP_LOG_TARGET;
 pub(crate) use wake::{Notifier, UiEnd};
 
 use covers::{Drains, handle_fetch, reap_finished_covers};
@@ -39,11 +41,12 @@ use devices::{Devices, adopt_watch, arm_watch};
 use errors::{ends_playability, library_failure, playback_failure};
 use orders::{deliver_answer, run_ordered, serve_order};
 use playback::{ensure_drain, interrupts_attempt, play, start_load};
-use reads::{Class, Immediate, Read, classify, log_unclaimed, run_batch};
+use reads::{Class, Immediate, Read, classify, log_unclaimed, run_reads};
 use rebuild::{
     Rebuilt, Refresh, Step, link_signal_applies, settle, silence_session, start_refresh,
 };
 use signin::{resume_update, spawn_authorize, start};
+use startup::{Stage, Startup};
 use wake::{WakeSlot, Worker};
 
 use std::collections::{HashSet, VecDeque};
@@ -58,6 +61,7 @@ use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::instruction::Instruction;
 use takofy_core::login::{TokenSource, resume};
 use takofy_core::receive::Inbound;
+use takofy_core::rootlist::Walked;
 use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, RequestId, Revision};
 use takofy_ui::message::{
     Command, DeviceUpdate, Failure, RemoteUpdate, Steer, TransportUpdate, Update,
@@ -127,6 +131,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     // signal from a retired drain cannot start a rebuild for the live one.
     let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
     let slot = WakeSlot::default();
+    let startup = Arc::new(Startup::new());
     let notifier = Notifier {
         tx: updates_tx,
         slot: slot.clone(),
@@ -134,11 +139,18 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
 
     {
         let notifier = notifier.clone();
+        let startup = Arc::clone(&startup);
         let tokens = tokens_tx.clone();
         let store = Arc::clone(&store);
         let source = Arc::clone(&source);
         std::thread::spawn(move || {
+            let began = Instant::now();
             let result = resume(store.as_ref(), source.as_ref());
+            startup.record(
+                Stage::SignIn,
+                began,
+                usize::from(matches!(result, Ok(Some(_)))),
+            );
             if let Ok(Some(token)) = &result
                 && tokens.send(token.clone()).is_err()
             {
@@ -195,8 +207,38 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let cover_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS));
         let cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>> = Arc::new(Mutex::new(HashSet::new()));
         let mut cover_tasks = JoinSet::new();
+        // The walk a reload announced and the labels have not answered yet. It
+        // is taken at the next turn of the loop, so a write cannot land between
+        // the list and its names.
+        let mut pending_labels: Option<Walked> = None;
         loop {
             reap_finished_covers(&mut cover_tasks);
+            if let Some(walked) = pending_labels.take() {
+                let mut parts = InstantParts::new(
+                    connected,
+                    devices.watching,
+                    cover_client.as_ref(),
+                    &mut cover_tasks,
+                    Arc::clone(&cover_permits),
+                    Arc::clone(&cover_in_flight),
+                    &mut recovery,
+                );
+                let step = run_reads(
+                    Read::RootlistLabels { walked },
+                    &host,
+                    &mut stop_rx,
+                    &task_notifier,
+                    &startup,
+                    &mut parts,
+                    &mut commands_rx,
+                    &mut deferred,
+                )
+                .await;
+                if step.stopped() {
+                    break;
+                }
+                continue;
+            }
             // A command an attempt set aside, the interrupting one included,
             // is run here in the order it was sent.
             let event = match deferred
@@ -236,16 +278,15 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                             Arc::clone(&cover_in_flight),
                             &mut recovery,
                         );
-                        let step = run_batch(
+                        let step = run_reads(
                             read,
                             &host,
                             &mut stop_rx,
                             &task_notifier,
+                            &startup,
+                            &mut parts,
                             &mut commands_rx,
                             &mut deferred,
-                            &mut |immediate| {
-                                serve_instant(&host, &task_notifier, &mut parts, immediate)
-                            },
                         )
                         .await;
                         if step.stopped() {
@@ -283,10 +324,11 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         continue;
                     }
                     token = Some(received);
-                    let step = load_library(
+                    let loaded = walk_library(
                         &mut host,
                         &mut stop_rx,
                         &task_notifier,
+                        &startup,
                         token.as_ref(),
                         &mut connected,
                     )
@@ -294,8 +336,10 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     if connected {
                         engine_up = true;
                     }
-                    if step.stopped() {
-                        break;
+                    match loaded {
+                        Loaded::Stopped => break,
+                        Loaded::Failed => {}
+                        Loaded::Walked(walked) => pending_labels = Some(walked),
                     }
                 }
                 Event::Token(None) => {}
@@ -398,10 +442,11 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 }
                 Event::Command(Some(Command::ReloadLibrary)) => {
                     let signed_in = connected;
-                    let step = load_library(
+                    let loaded = walk_library(
                         &mut host,
                         &mut stop_rx,
                         &task_notifier,
+                        &startup,
                         token.as_ref(),
                         &mut connected,
                     )
@@ -409,8 +454,10 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     if connected && !signed_in {
                         engine_up = true;
                     }
-                    if step.stopped() {
-                        break;
+                    match loaded {
+                        Loaded::Stopped => break,
+                        Loaded::Failed => {}
+                        Loaded::Walked(walked) => pending_labels = Some(walked),
                     }
                 }
                 Event::Command(Some(Command::SetLiked { tracks, liked })) => {
@@ -709,17 +756,26 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     )
 }
 
-/// Connects if needed and lists the rootlist, announcing the outcome.
+/// What a walk attempt left behind, once the window's stop is out of the way.
+enum Loaded {
+    Stopped,
+    Failed,
+    Walked(Walked),
+}
+
+/// Connects if needed and walks the rootlist, announcing readiness before the
+/// labels are read, so reads that need only a session may start.
 ///
 /// `Stopped` means the window closed while the call was in flight, so the
 /// caller must leave the loop and run the shutdown.
-async fn load_library<H: SessionHost>(
+async fn walk_library<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
+    startup: &Startup,
     token: Option<&AccessToken>,
     connected: &mut bool,
-) -> Step {
+) -> Loaded {
     if !*connected {
         let Some(token) = token else {
             // A reload with nothing to connect with; a retry can only work once
@@ -727,32 +783,41 @@ async fn load_library<H: SessionHost>(
             notifier.send(Update::PlaylistFailed(library_failure(
                 &SessionError::NotConnected,
             )));
-            return Step::Done;
+            return Loaded::Failed;
         };
+        let began = Instant::now();
         match stop_or(stop, host.connect(token)).await {
-            None => return Step::Stopped,
-            Some(Ok(())) => *connected = true,
+            None => return Loaded::Stopped,
+            Some(Ok(())) => {
+                *connected = true;
+                startup.record(Stage::Connect, began, 1);
+                match host.account() {
+                    Some(account) => {
+                        notifier.send(Update::Account(account));
+                    }
+                    None => log::warn!(
+                        "the account name is unavailable: the library will not be cached"
+                    ),
+                }
+            }
             Some(Err(error)) => {
                 notifier.send(Update::PlaylistFailed(library_failure(&error)));
-                return Step::Done;
+                return Loaded::Failed;
             }
         }
     }
 
-    match stop_or(stop, host.rootlist()).await {
-        None => Step::Stopped,
-        Some(Ok(read)) => {
-            notifier.send(Update::Playlists(read.entries));
-            // Sent after the list, and only when the read named a revision: the
-            // list is not reorderable until its own access arrives.
-            if let Some(access) = read.access {
-                notifier.send(Update::RootlistAccess(access));
-            }
-            Step::Done
+    let began = Instant::now();
+    match stop_or(stop, host.walk_rootlist()).await {
+        None => Loaded::Stopped,
+        Some(Ok(walked)) => {
+            startup.record(Stage::Walk, began, walked.playlists.len());
+            notifier.send(Update::LibraryReady);
+            Loaded::Walked(walked)
         }
         Some(Err(error)) => {
             notifier.send(Update::PlaylistFailed(library_failure(&error)));
-            Step::Done
+            Loaded::Failed
         }
     }
 }

@@ -90,6 +90,7 @@ fn followed(uri: &str, portrait: Option<CoverSet>) -> FollowedArtist {
 fn settled(albums: Vec<SavedAlbum>, likes: Vec<LikedTrack>) -> Library {
     let mut library = Library::default();
     library.home.open(NOW_MS);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.apply(&Update::SavedAlbums(albums));
     assert!(
@@ -134,6 +135,7 @@ fn the_ask_waits_for_the_reads_the_ranking_is_built_from() {
     library.home.open(NOW_MS);
     assert_eq!(library.counted_ask(), None, "nothing is known yet");
 
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.counted_ask(), None, "the albums have not answered");
 
@@ -521,6 +523,7 @@ fn a_portrait_is_missing_until_the_followed_artists_answer() {
 fn a_failed_likes_read_with_a_held_set_leaves_the_counted_shelf_ready() {
     let mut library = Library::default();
     library.home.open(NOW_MS);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.apply(&Update::SavedAlbums(vec![album(
         "spotify:album:a",
@@ -700,5 +703,42 @@ fn a_failed_read_is_asked_for_once_more() {
         library.counted_portrait_ask(),
         None,
         "a face that will not read is left blank, not asked a third time"
+    );
+}
+
+#[test]
+fn counted_ask_waits_for_the_playlists() {
+    let mut library = Library::default();
+    library.home.open(NOW_MS);
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::SavedAlbums(vec![album(
+        "spotify:album:a",
+        &[("spotify:artist:a", "A")],
+    )]));
+    assert!(
+        library.likes_request().is_some(),
+        "arrange: the liked read must be in flight"
+    );
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:a")]));
+    assert_eq!(
+        library.playlists,
+        Load::Loading,
+        "arrange: the labels are still out"
+    );
+
+    assert_eq!(
+        library.counted_ask(),
+        None,
+        "a shelf that draws the playlists waits for them"
+    );
+
+    library.apply(&Update::Playlists(Vec::new()));
+    assert!(
+        matches!(
+            library.counted_ask(),
+            Some(Command::LoadHome(HomeAsk::Labels { .. }))
+        ),
+        "every source answered, so the labels are due"
     );
 }

@@ -5,7 +5,7 @@ use takofy_model::{
 
 use super::super::*;
 
-pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
+pub(crate) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
         saved_at: None,
         composed: Vec::new(),
@@ -20,7 +20,7 @@ pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     }
 }
 
-pub(super) fn track(uri: &str) -> TrackEntry {
+pub(crate) fn track(uri: &str) -> TrackEntry {
     TrackEntry {
         uri: uri.to_owned(),
         title: uri.to_owned(),
@@ -37,11 +37,11 @@ pub(super) fn track(uri: &str) -> TrackEntry {
 }
 
 /// The URIs an add would carry, in the order the rows were picked.
-pub(super) fn pick(uris: &[&str]) -> Vec<String> {
+pub(crate) fn pick(uris: &[&str]) -> Vec<String> {
     uris.iter().map(|uri| (*uri).to_owned()).collect()
 }
 
-pub(super) fn tracks_for(playlist: &str, tracks: Vec<TrackEntry>) -> TracksFor {
+pub(crate) fn tracks_for(playlist: &str, tracks: Vec<TrackEntry>) -> TracksFor {
     TracksFor {
         playlist: playlist.to_owned(),
         tracks,
@@ -50,11 +50,11 @@ pub(super) fn tracks_for(playlist: &str, tracks: Vec<TrackEntry>) -> TracksFor {
     }
 }
 
-pub(super) fn revision(byte: u8) -> Revision {
+pub(crate) fn revision(byte: u8) -> Revision {
     Revision::from_wire(&[byte, 0x0a]).expect("a revision")
 }
 
-pub(super) fn access(byte: u8, editable: bool) -> Option<PlaylistAccess> {
+pub(crate) fn access(byte: u8, editable: bool) -> Option<PlaylistAccess> {
     Some(PlaylistAccess {
         revision: revision(byte),
         editable,
@@ -62,7 +62,7 @@ pub(super) fn access(byte: u8, editable: bool) -> Option<PlaylistAccess> {
 }
 
 /// A playlist page showing `uris`, with `access` as what it may change.
-pub(super) fn page_with(playlist: &str, uris: &[&str], access: Option<PlaylistAccess>) -> Library {
+pub(crate) fn page_with(playlist: &str, uris: &[&str], access: Option<PlaylistAccess>) -> Library {
     let mut library = Library::default();
     library.select(playlist);
     library.apply(&Update::Tracks {
@@ -74,17 +74,17 @@ pub(super) fn page_with(playlist: &str, uris: &[&str], access: Option<PlaylistAc
     library
 }
 
-pub(super) fn album(uri: &str) -> Page {
+pub(crate) fn album(uri: &str) -> Page {
     Page::Album(uri.to_owned())
 }
 
-pub(super) fn artist_command(uri: &str) -> Command {
+pub(crate) fn artist_command(uri: &str) -> Command {
     Command::LoadArtist {
         artist: uri.to_owned(),
     }
 }
 
-pub(super) fn artist_detail(uri: &str) -> ArtistDetail {
+pub(crate) fn artist_detail(uri: &str) -> ArtistDetail {
     ArtistDetail {
         uri: uri.to_owned(),
         name: "Vela".to_owned(),
@@ -95,7 +95,7 @@ pub(super) fn artist_detail(uri: &str) -> ArtistDetail {
     }
 }
 
-pub(super) fn release(uri: &str) -> takofy_model::Release {
+pub(crate) fn release(uri: &str) -> takofy_model::Release {
     takofy_model::Release {
         uri: uri.to_owned(),
         name: uri.to_owned(),
@@ -106,7 +106,7 @@ pub(super) fn release(uri: &str) -> takofy_model::Release {
     }
 }
 
-pub(super) fn album_detail(uri: &str) -> AlbumDetail {
+pub(crate) fn album_detail(uri: &str) -> AlbumDetail {
     AlbumDetail {
         uri: uri.to_owned(),
         name: "Record".to_owned(),
@@ -118,15 +118,15 @@ pub(super) fn album_detail(uri: &str) -> AlbumDetail {
     }
 }
 
-pub(super) fn artist(uri: &str) -> Page {
+pub(crate) fn artist(uri: &str) -> Page {
     Page::Artist(uri.to_owned())
 }
 
-pub(super) fn show(uri: &str) -> Page {
+pub(crate) fn show(uri: &str) -> Page {
     Page::Show(uri.to_owned())
 }
 
-pub(super) fn episode(uri: &str) -> Episode {
+pub(crate) fn episode(uri: &str) -> Episode {
     Episode {
         uri: uri.to_owned(),
         title: uri.to_owned(),
@@ -140,7 +140,7 @@ pub(super) fn episode(uri: &str) -> Episode {
     }
 }
 
-pub(super) fn show_detail(uri: &str) -> ShowDetail {
+pub(crate) fn show_detail(uri: &str) -> ShowDetail {
     ShowDetail {
         show: Show {
             uri: uri.to_owned(),
@@ -153,7 +153,7 @@ pub(super) fn show_detail(uri: &str) -> ShowDetail {
     }
 }
 
-pub(super) fn followed_show(uri: &str) -> FollowedShow {
+pub(crate) fn followed_show(uri: &str) -> FollowedShow {
     FollowedShow {
         uri: uri.to_owned(),
         name: uri.to_owned(),
@@ -164,7 +164,7 @@ pub(super) fn followed_show(uri: &str) -> FollowedShow {
     }
 }
 
-pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
+pub(crate) fn followed_artist(uri: &str) -> FollowedArtist {
     FollowedArtist {
         uri: uri.to_owned(),
         name: uri.to_owned(),
@@ -174,7 +174,7 @@ pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
     }
 }
 
-pub(super) fn saved_album(uri: &str) -> SavedAlbum {
+pub(crate) fn saved_album(uri: &str) -> SavedAlbum {
     SavedAlbum {
         saved_at: None,
         uri: uri.to_owned(),
@@ -189,15 +189,15 @@ pub(super) fn saved_album(uri: &str) -> SavedAlbum {
     }
 }
 
-pub(super) fn cover_url(tail: &str) -> CoverUrl {
+pub(crate) fn cover_url(tail: &str) -> CoverUrl {
     CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
 }
 
-pub(super) fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
+pub(crate) fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
     covered(uri, name, PlaylistCover::derived(CoverSet::single(cover)))
 }
 
-pub(super) fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEntry {
+pub(crate) fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEntry {
     PlaylistEntry {
         composed: Vec::new(),
         cover: Some(cover),
@@ -206,13 +206,13 @@ pub(super) fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEn
 }
 
 /// The cover the sidebar row for `uri` holds.
-pub(super) fn entry_cover(library: &Library, uri: &str) -> Option<PlaylistCover> {
+pub(crate) fn entry_cover(library: &Library, uri: &str) -> Option<PlaylistCover> {
     sidebar_entry(library, uri).and_then(|entry| entry.cover)
 }
 
 /// A library whose open page is `a`, showing `uris`, with `cover` on `a`'s
 /// sidebar row.
-pub(super) fn covered_page(cover: &CoverUrl, uris: &[&str]) -> Library {
+pub(crate) fn covered_page(cover: &CoverUrl, uris: &[&str]) -> Library {
     let mut library = page_with("a", uris, access(0x01, true));
     library.playlists = Load::Ready(vec![with_access(
         playlist_with_cover("a", "A", cover.clone()),
@@ -224,7 +224,7 @@ pub(super) fn covered_page(cover: &CoverUrl, uris: &[&str]) -> Library {
 }
 
 /// Whether the band would treat the open page as settled this frame.
-pub(super) fn settled(library: &Library) -> bool {
+pub(crate) fn settled(library: &Library) -> bool {
     !matches!(library.tracks, Load::Loading)
 }
 
@@ -233,7 +233,7 @@ pub(super) fn settled(library: &Library) -> bool {
 ///
 /// The add is begun while another playlist is on screen, because the open
 /// playlist is not an add target.
-pub(super) fn page_dropped_by_an_add(cover: Option<&CoverUrl>) -> Library {
+pub(crate) fn page_dropped_by_an_add(cover: Option<&CoverUrl>) -> Library {
     let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(1));
     let listed = match cover {
         Some(cover) => playlist_with_cover("a", "A", cover.clone()),
@@ -257,7 +257,7 @@ pub(super) fn page_dropped_by_an_add(cover: Option<&CoverUrl>) -> Library {
 }
 
 /// The entry with what the listing read said about writing to it.
-pub(super) fn with_access(
+pub(crate) fn with_access(
     entry: PlaylistEntry,
     byte: u8,
     editable: bool,
@@ -274,7 +274,7 @@ pub(super) fn with_access(
     }
 }
 
-pub(super) fn rootlist_access(byte: u8, editable: bool) -> PlaylistAccess {
+pub(crate) fn rootlist_access(byte: u8, editable: bool) -> PlaylistAccess {
     PlaylistAccess {
         revision: revision(byte),
         editable,
@@ -282,7 +282,7 @@ pub(super) fn rootlist_access(byte: u8, editable: bool) -> PlaylistAccess {
 }
 
 /// A library whose sidebar holds `names`, each read at `byte`.
-pub(super) fn sidebar_library(
+pub(crate) fn sidebar_library(
     names: &[&str],
     byte: u8,
     editable: bool,
@@ -293,31 +293,32 @@ pub(super) fn sidebar_library(
         .iter()
         .map(|name| with_access(playlist(name, name), byte, editable, tracks))
         .collect();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(entries));
     library.apply(&Update::RootlistAccess(rootlist_access(byte, editable)));
     library
 }
 
-pub(super) fn sidebar_order(library: &Library) -> Vec<String> {
+pub(crate) fn sidebar_order(library: &Library) -> Vec<String> {
     match &library.playlists {
         Load::Ready(playlists) => playlists.iter().map(|entry| entry.uri.clone()).collect(),
         Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
     }
 }
 
-pub(super) fn sidebar_entry(library: &Library, uri: &str) -> Option<PlaylistEntry> {
+pub(crate) fn sidebar_entry(library: &Library, uri: &str) -> Option<PlaylistEntry> {
     match &library.playlists {
         Load::Ready(playlists) => playlists.iter().find(|entry| entry.uri == uri).cloned(),
         Load::Idle | Load::Loading | Load::Failed(_) => None,
     }
 }
 
-pub(super) fn names(values: &[&str]) -> Vec<String> {
+pub(crate) fn names(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
 }
 
 /// A one-row drag, with the write's landed range reduced to its start.
-pub(super) fn move_one(
+pub(crate) fn move_one(
     library: &mut Library,
     playlist: &str,
     from: usize,
@@ -329,11 +330,11 @@ pub(super) fn move_one(
         .map(|(command, landed)| (command, landed.start))
 }
 
-pub(super) fn moved(uris: &[&str]) -> Vec<TrackEntry> {
+pub(crate) fn moved(uris: &[&str]) -> Vec<TrackEntry> {
     uris.iter().map(|uri| track(uri)).collect()
 }
 
-pub(super) fn ready(
+pub(crate) fn ready(
     playlist: &str,
     uris: &[&str],
     access: Option<PlaylistAccess>,
@@ -347,7 +348,7 @@ pub(super) fn ready(
 }
 
 /// A sidebar holding `names`, with the head's field open on `name`.
-pub(super) fn naming_library(names: &[&str], name: &str) -> Library {
+pub(crate) fn naming_library(names: &[&str], name: &str) -> Library {
     let mut library = sidebar_library(names, 0x07, true, Some(3));
     library.naming.open();
     library.naming.edit().push_str(name);
@@ -355,7 +356,7 @@ pub(super) fn naming_library(names: &[&str], name: &str) -> Library {
 }
 
 /// The row a create's reply hands the sidebar.
-pub(super) fn created(uri: &str, name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
+pub(crate) fn created(uri: &str, name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
     PlaylistEntry {
         saved_at: None,
         composed: Vec::new(),
@@ -371,7 +372,7 @@ pub(super) fn created(uri: &str, name: &str, access: Option<PlaylistAccess>) -> 
 }
 
 /// A sidebar row as a menu opened on it describes it.
-pub(super) fn item(kind: SidebarKind, uri: &str) -> LibraryItem {
+pub(crate) fn item(kind: SidebarKind, uri: &str) -> LibraryItem {
     LibraryItem {
         kind,
         uri: uri.to_owned(),
@@ -380,8 +381,9 @@ pub(super) fn item(kind: SidebarKind, uri: &str) -> LibraryItem {
 }
 
 /// A library whose four lists are ready and hold one thing each.
-pub(super) fn saved_library() -> Library {
+pub(crate) fn saved_library() -> Library {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.apply(&Update::FollowedShows(vec![followed_show(
         "spotify:show:s",
@@ -393,7 +395,7 @@ pub(super) fn saved_library() -> Library {
     library
 }
 
-pub(super) fn rename_pending(library: &mut Library, uri: &str, surface: crate::naming::Surface) {
+pub(crate) fn rename_pending(library: &mut Library, uri: &str, surface: crate::naming::Surface) {
     library.renaming.open(uri, uri, surface);
     library.sidebar_pending = Some(SidebarPending::Rename {
         playlist: uri.to_owned(),

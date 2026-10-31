@@ -15,7 +15,7 @@ fn a_failed_track_load_is_announced_and_the_task_shuts_down() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadTracks {
@@ -50,7 +50,7 @@ fn run_track_page(page: TrackPage) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadTracks {

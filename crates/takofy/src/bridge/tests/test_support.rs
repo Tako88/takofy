@@ -24,12 +24,13 @@ use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, Store
 use takofy_core::engine::{EngineError, RootlistRead};
 use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
+use takofy_core::rootlist::{RootEntry, Walked};
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
-    AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow, Landing,
-    LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report,
-    RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
+    Account, AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow,
+    Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal,
+    Report, RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
@@ -235,12 +236,14 @@ impl TokenSource for ScriptedSource {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Default)]
 pub(super) enum ConnectScript {
     #[default]
     Ok,
     Fail,
     Pending,
+    /// Answers once the gate is released, so a test can hold the connect.
+    Gated(Arc<tokio::sync::Notify>),
 }
 
 #[derive(Clone)]
@@ -255,6 +258,49 @@ pub(super) enum RootlistScript {
 impl Default for RootlistScript {
     fn default() -> Self {
         Self::Ready(Vec::new())
+    }
+}
+
+/// What one label pass answers, scripted apart from the walk that precedes it.
+#[derive(Clone)]
+pub(super) enum LabelScript {
+    Ready(RootlistRead),
+    /// Never returns, so the worker is left holding a label pass.
+    Pending,
+    /// Answers the read its walk named once the gate is released.
+    Gated(Arc<tokio::sync::Notify>),
+    Fail,
+}
+
+impl Default for LabelScript {
+    fn default() -> Self {
+        Self::Ready(RootlistRead::default())
+    }
+}
+
+/// A walk of the scripted entries, which is all the walk stage holds: the names
+/// arrive with the labels.
+fn walked(entries: Vec<PlaylistEntry>, access: Option<PlaylistAccess>) -> Walked {
+    Walked {
+        playlists: entries
+            .into_iter()
+            .map(|entry| RootEntry {
+                uri: entry.uri,
+                saved_at: None,
+            })
+            .collect(),
+        access,
+    }
+}
+
+/// Takes the next script from `queue`, keeping the last one once the queue runs
+/// out, so a single-entry queue behaves like a fixed script.
+fn next_script<T: Clone>(queue: &Mutex<Vec<T>>) -> Option<T> {
+    let mut scripts = queue.lock().expect("lock");
+    match scripts.len() {
+        0 => None,
+        1 => scripts.first().cloned(),
+        _ => Some(scripts.remove(0)),
     }
 }
 
@@ -422,7 +468,12 @@ pub(super) enum Call {
 #[derive(Default)]
 pub(super) struct FakeState {
     pub(super) connect_scripts: Mutex<Vec<ConnectScript>>,
-    pub(super) rootlist_script: Mutex<RootlistScript>,
+    pub(super) rootlist_scripts: Mutex<Vec<RootlistScript>>,
+    pub(super) label_scripts: Mutex<Vec<LabelScript>>,
+    /// The read the last successful walk named, so a label pass with no script
+    /// of its own answers what that walk found. A failed or pending walk clears
+    /// it.
+    pub(super) walked_read: Mutex<RootlistRead>,
     pub(super) entry_script: Mutex<EntryScript>,
     pub(super) entry_reads: AtomicUsize,
     pub(super) tracks_script: Mutex<TracksScript>,
@@ -492,8 +543,11 @@ pub(super) struct FakeState {
     /// Every request the loop refused, in order.
     pub(super) refusals: Mutex<Vec<RequestId>>,
     pub(super) connected: AtomicBool,
+    /// The account the fake session connected as; `None` names none.
+    pub(super) account: Mutex<Option<Account>>,
     pub(super) connects: AtomicUsize,
     pub(super) rootlists: AtomicUsize,
+    pub(super) labelled: AtomicUsize,
     pub(super) tracks: AtomicUsize,
     pub(super) albums: AtomicUsize,
     pub(super) shows: AtomicUsize,
@@ -623,6 +677,11 @@ impl FakeState {
             hold.acquire().await.expect("the hold stays open").forget();
         }
     }
+
+    /// Drops the read the last walk named, so no label pass answers a stale one.
+    fn forget_walk(&self) {
+        *self.walked_read.lock().expect("lock") = RootlistRead::default();
+    }
 }
 
 /// Leaves the in-flight count when the read it counted ends, however it ends.
@@ -652,15 +711,33 @@ impl FakeHost {
         connect: Vec<ConnectScript>,
         rootlist: RootlistScript,
     ) -> Self {
+        Self::with_rootlist_scripts(connect, vec![rootlist], Vec::new())
+    }
+
+    /// One walk script and one label script per attempt; the last of each
+    /// repeats once its queue runs out. With no label scripts, a pass answers
+    /// the read its walk named, so one walk script still answers one read.
+    pub(super) fn with_rootlist_scripts(
+        connect: Vec<ConnectScript>,
+        roots: Vec<RootlistScript>,
+        labels: Vec<LabelScript>,
+    ) -> Self {
         Self {
             shared: Arc::new(FakeState {
                 connect_scripts: Mutex::new(connect),
-                rootlist_script: Mutex::new(rootlist),
+                rootlist_scripts: Mutex::new(roots),
+                label_scripts: Mutex::new(labels),
                 // A fresh app starts at full, as `Volume::default()` does.
                 last_volume: AtomicUsize::new(100),
                 ..FakeState::default()
             }),
         }
+    }
+
+    /// The account the fake session connects as.
+    pub(super) fn with_account(self, account: Account) -> Self {
+        *self.shared.account.lock().expect("lock") = Some(account);
+        self
     }
 
     /// Builds the fake player once, holding the event stream a drain takes.
@@ -718,7 +795,7 @@ impl SessionHost for FakeHost {
             if scripts.len() > 1 {
                 scripts.remove(0)
             } else {
-                scripts.first().copied().unwrap_or_default()
+                scripts.first().cloned().unwrap_or_default()
             }
         };
         let shared = Arc::clone(&self.shared);
@@ -730,25 +807,72 @@ impl SessionHost for FakeHost {
                 }
                 ConnectScript::Fail => Err(SessionError::NotConnected),
                 ConnectScript::Pending => std::future::pending().await,
+                ConnectScript::Gated(gate) => {
+                    gate.notified().await;
+                    shared.connected.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
             }
         }
     }
 
-    fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send {
+    fn account(&self) -> Option<Account> {
+        *self.shared.account.lock().expect("lock")
+    }
+
+    fn walk_rootlist(&self) -> impl Future<Output = Result<Walked, SessionError>> + Send {
         self.shared.rootlists.fetch_add(1, Ordering::SeqCst);
         if let Some(tx) = self.shared.rootlist_started.lock().expect("lock").take() {
             let _ = tx.send(());
         }
-        let script = self.shared.rootlist_script.lock().expect("lock").clone();
+        let script = next_script(&self.shared.rootlist_scripts).unwrap_or_default();
+        let shared = Arc::clone(&self.shared);
         async move {
             match script {
-                RootlistScript::Ready(list) => Ok(RootlistRead {
-                    entries: list,
-                    access: None,
-                }),
-                RootlistScript::ReadyWith(read) => Ok(read),
-                RootlistScript::Fail => Err(SessionError::NotConnected),
-                RootlistScript::Pending => std::future::pending().await,
+                RootlistScript::Ready(list) => {
+                    *shared.walked_read.lock().expect("lock") = RootlistRead {
+                        entries: list.clone(),
+                        access: None,
+                    };
+                    Ok(walked(list, None))
+                }
+                RootlistScript::ReadyWith(read) => {
+                    *shared.walked_read.lock().expect("lock") = read.clone();
+                    Ok(walked(read.entries, read.access))
+                }
+                // A walk that fails or hangs names no read, so a later pass has
+                // nothing stale to answer.
+                RootlistScript::Fail => {
+                    shared.forget_walk();
+                    Err(SessionError::NotConnected)
+                }
+                RootlistScript::Pending => {
+                    shared.forget_walk();
+                    std::future::pending().await
+                }
+            }
+        }
+    }
+
+    fn label_rootlist(
+        &self,
+        _walked: Walked,
+    ) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send {
+        self.shared.labelled.fetch_add(1, Ordering::SeqCst);
+        let walked_read = self.shared.walked_read.lock().expect("lock").clone();
+        let script = match next_script(&self.shared.label_scripts) {
+            Some(script) => script,
+            None => LabelScript::Ready(walked_read.clone()),
+        };
+        async move {
+            match script {
+                LabelScript::Ready(read) => Ok(read),
+                LabelScript::Pending => std::future::pending().await,
+                LabelScript::Gated(gate) => {
+                    gate.notified().await;
+                    Ok(walked_read)
+                }
+                LabelScript::Fail => Err(SessionError::NotConnected),
             }
         }
     }
@@ -1925,6 +2049,30 @@ pub(super) fn expect_updates(ui_end: &UiEnd, count: usize) -> Vec<Update> {
     (0..count)
         .map(|_| ui_end.updates.recv().expect("update"))
         .collect()
+}
+
+/// Reads the updates a start delivers before a command is taken: the sign-in,
+/// the readiness, and the playlists listed or failed.
+pub(super) fn expect_library(ui_end: &UiEnd) -> Vec<Update> {
+    let mut seen = Vec::new();
+    loop {
+        let update = match ui_end.updates.recv_timeout(Duration::from_secs(5)) {
+            Ok(update) => update,
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("waited for the playlists listed or failed, and neither came")
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the worker went away before the playlists listed or failed")
+            }
+        };
+        // Readiness alone is not the list: it opens the gates, then the labels
+        // name the rows.
+        let listed = matches!(update, Update::Playlists(_) | Update::PlaylistFailed(_));
+        seen.push(update);
+        if listed {
+            return seen;
+        }
+    }
 }
 
 pub(super) fn track(uri: &str) -> TrackEntry {

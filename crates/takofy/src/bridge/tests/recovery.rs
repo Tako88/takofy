@@ -202,7 +202,7 @@ fn a_drop_while_playing_retires_then_connects_then_reloads_in_place() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 1_000);
         watched.down.store(true, Ordering::SeqCst);
         until("the reload", || {
@@ -283,7 +283,7 @@ fn a_drop_while_paused_reloads_paused_and_says_where() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 1_000);
         events(&watched)
             .send(PlaybackEvent::Paused {
@@ -348,7 +348,7 @@ fn a_drop_with_nothing_loaded_rebuilds_without_a_flash_or_a_load() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watched.down.store(true, Ordering::SeqCst);
         until("the rebuilt session", || {
             watched.connects.load(Ordering::SeqCst) == 2
@@ -384,7 +384,7 @@ fn the_eighth_failed_refresh_is_said_in_words_and_retries_continue() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         watched.down.store(true, Ordering::SeqCst);
         let mut seen = Vec::new();
@@ -445,7 +445,7 @@ fn a_store_that_cannot_be_read_is_a_failed_attempt_without_a_connect() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         // The store fails from here on, which is the `Err` arm rather than
         // a refused exchange.
@@ -482,7 +482,7 @@ fn a_failed_refresh_makes_no_connect_and_keeps_trying() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (release, started) = probe.hold_next();
         let (release_next, started_next) = probe.hold_next();
         watched.down.store(true, Ordering::SeqCst);
@@ -519,7 +519,7 @@ fn a_failed_reload_retries_without_reconnecting() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         *watched.load_script.lock().expect("lock") = LoadScript::Fail;
         watched.down.store(true, Ordering::SeqCst);
@@ -557,7 +557,7 @@ fn a_session_that_dies_mid_recovery_is_retired_before_it_is_replaced() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         *watched.load_script.lock().expect("lock") = LoadScript::Fail;
         // The first rebuild connects, and its reload fails, so recovery
@@ -641,7 +641,7 @@ fn a_command_that_does_not_retarget_waits_for_the_attempt() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         watch_now(&ui_end, &watched);
         let (release, started) = probe.hold_next();
@@ -800,7 +800,7 @@ fn an_answer_during_the_attempt_is_delivered_without_ending_it() {
 
     run_window_patient(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         let id = RequestId(77);
         hold_request(&watched, id);
@@ -866,7 +866,7 @@ fn a_command_during_the_watch_does_not_spend_the_start() {
 
     let updates = run_window_patient(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         watch_now(&ui_end, &watched);
         // The rebuild's watch is held open, and a second start on the same
@@ -944,7 +944,7 @@ fn a_cancelled_attempt_reuses_the_refresh_it_left_in_flight() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         let (release, started) = probe.hold_next();
         watched.down.store(true, Ordering::SeqCst);
@@ -1010,7 +1010,7 @@ fn a_stop_during_recovery_leaves_the_transport_stopped() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 10_000);
         let (release, started) = probe.hold_next();
         watched.down.store(true, Ordering::SeqCst);
@@ -1063,7 +1063,7 @@ fn a_stall_with_nothing_to_reload_ends_when_the_link_returns() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         watched.down.store(true, Ordering::SeqCst);
         await_update(&ui_end, "the stall words", |update| {
             *update == Update::Transport(TransportUpdate::Failed(Failure::Reconnect))
@@ -1108,7 +1108,7 @@ fn a_play_during_the_connect_loads_the_pressed_track_afterwards() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (started, start) = channel();
         *watched.connect_started.lock().expect("lock") = Some(started);
         watched.down.store(true, Ordering::SeqCst);
@@ -1170,7 +1170,7 @@ fn a_pause_during_the_rebuild_reloads_paused() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 30_000);
         let (started, start) = channel();
         *watched.connect_started.lock().expect("lock") = Some(started);
@@ -1224,7 +1224,7 @@ fn a_stop_during_the_rebuild_leaves_nothing_to_reload() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         let (started, start) = channel();
         *watched.connect_started.lock().expect("lock") = Some(started);
@@ -1260,7 +1260,7 @@ fn a_play_during_the_token_refresh_interrupts_it() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (release, started) = probe.hold_next();
         watched.down.store(true, Ordering::SeqCst);
         started.recv().expect("the refresh started");
@@ -1309,7 +1309,7 @@ fn a_play_inside_the_pre_detection_window_costs_one_rebuild_only() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         ui_end
             .commands
@@ -1386,7 +1386,7 @@ fn a_failure_after_the_rebuild_is_forwarded_without_another_rebuild() {
 
     run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         watched.down.store(true, Ordering::SeqCst);
         until("the reload", || {
@@ -1423,7 +1423,7 @@ fn a_dead_flag_withholds_the_failure_and_keeps_the_resume_point() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 30_000);
         watched.down.store(true, Ordering::SeqCst);
         events(&watched)
@@ -1535,7 +1535,7 @@ fn a_retired_session_does_not_say_the_devices_are_lost() {
 
     let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         play_anchored(&ui_end, &watched, TRACK, 0);
         watch_now(&ui_end, &watched);
         let old_events = events(&watched);
@@ -1590,7 +1590,7 @@ fn a_stop_during_the_retire_still_shuts_down() {
 
     let watched = Arc::clone(&shared);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (started, start) = channel();
         *watched.retire_started.lock().expect("lock") = Some(started);
         watched.down.store(true, Ordering::SeqCst);
@@ -1625,7 +1625,7 @@ fn a_stop_during_the_token_refresh_still_shuts_down() {
 
     let window_release = Arc::clone(&release);
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (release, started) = probe.hold_next();
         *window_release.lock().expect("lock") = Some(release);
         watched.down.store(true, Ordering::SeqCst);
@@ -1663,7 +1663,7 @@ fn a_stop_during_the_rebuild_connect_still_shuts_down() {
     slot.install(Arc::new(RecordingWaker::default()));
 
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let (started, start) = channel();
         *watched.connect_started.lock().expect("lock") = Some(started);
         watched.down.store(true, Ordering::SeqCst);

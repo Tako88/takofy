@@ -341,7 +341,8 @@ exception, a menu's reply filling the page when Enter hands the overlay over,
 because the cache is keyed by artist and the faces are the same faces. An
 artist whose record carries no portrait, whose face never arrived, or whom the
 answer omitted falls back to the cover of the record the match sits on; only a
-read still in flight draws a raised slot.
+read still in flight draws a raised slot, and a portrait whose cover fetch has
+failed draws the sunken hole.
 
 A revealed block belongs to the read on screen, not to the query: a new query
 starts every block at ten and at the top of the page, while a retry or a
@@ -399,6 +400,21 @@ handed over after it has been quiet for 400 ms, and `on_exit` flushes whatever
 is still unsettled. The writer's `Drop` then waits a bounded two seconds for the
 thread and detaches it: a hung filesystem cannot hold the window open longer
 than that.
+
+The library cache is one file in the platform cache directory, read whole before
+the window opens and written by its own `takofy-snapshot` thread, so the UI
+thread never touches it either. It holds the five lists the window draws and the
+fingerprint of the account they belong to; a missing, unreadable, other-account
+or refused copy draws nothing, because a copy that cannot be read whole is a
+miss rather than a partial draw. Restored rows carry no write authority, and a
+mark per list says which lists are still last session's: the reads that would
+name those rows — the cover refresh, the device watch, Home's shelves — wait
+until the session's own reply replaces the list and clears its mark, so nothing
+is asked of a session that is still connecting. A refresh that fails keeps the
+rows and says they are old. The save settles after two seconds of quiet and
+`on_exit` flushes it, on the same rules as the preferences above. Nothing is
+saved before the account is known, and nothing is saved while a sidebar, page or
+like write is in flight: the copy is deferred until the next change.
 
 ## Invariants
 
