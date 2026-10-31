@@ -459,7 +459,7 @@ fn a_root_rows_more_opens_the_sidebar_rows_menu() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, ["Copy link", "Remove from library"]);
+    assert_eq!(labels, ["Copy link", "Start radio", "Remove from library"]);
     assert_eq!(
         window.menu.items().last().map(|item| item.kind),
         Some(crate::menu::Kind::Destructive),

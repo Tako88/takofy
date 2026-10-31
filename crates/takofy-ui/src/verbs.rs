@@ -12,6 +12,7 @@ use takofy_model::uri::{UriKind, parse};
 use crate::likes::Standing;
 use crate::menu::{Door, Item, Kind, LibraryItem, Listing, Request, Verb};
 use crate::route::Page;
+use crate::sidebar_kind::SidebarKind;
 
 /// What applying a verb does, once the shell has the frame's command to spare.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,8 @@ pub struct LibraryRights {
     pub saved: Option<bool>,
 }
 
-/// The commands a sidebar row offers: its rename, its link, and its removal.
+/// The commands a sidebar row offers: its rename, its link, the library's write,
+/// its radio, and its removal.
 ///
 /// A command the library cannot write is absent rather than greyed, and the
 /// removal is the destructive row, so it is drawn last. A sidebar row is one
@@ -96,6 +98,9 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
     if rights.saved == Some(false) {
         items.push(item(Verb::SaveToLibrary, "Save to your library".to_owned()));
     }
+    if radio_seed(row).is_some() {
+        items.push(item(Verb::StartRadio, "Start radio".to_owned()));
+    }
     if rights.removable {
         items.push(Item {
             label: "Remove from library".to_owned(),
@@ -106,6 +111,23 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
         });
     }
     items
+}
+
+/// The seed a sidebar row's radio starts, or `None` when its URI names another
+/// kind than the row's.
+fn radio_seed(row: &LibraryItem) -> Option<StationSeed> {
+    let (kind, named) = match row.kind {
+        SidebarKind::Playlists => (SeedKind::Playlist, UriKind::Playlist),
+        SidebarKind::Albums => (SeedKind::Album, UriKind::Album),
+        SidebarKind::Artists => (SeedKind::Artist, UriKind::Artist),
+        // No show seed is read on the wire.
+        SidebarKind::Podcasts => return None,
+    };
+    let uri = parse(&row.uri)?;
+    (uri.kind == named).then(|| StationSeed {
+        kind,
+        uri: row.uri.clone(),
+    })
 }
 
 /// The request a row or a band posts for its own menu.

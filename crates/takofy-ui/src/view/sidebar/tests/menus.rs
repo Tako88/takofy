@@ -74,10 +74,14 @@ fn a_right_click_on_each_kind_posts_its_library_request() {
                 name: name.to_owned(),
             })
         );
-        let expected = if kind == SidebarKind::Playlists {
-            vec!["Rename", "Copy link", "Remove from library"]
-        } else {
-            vec!["Copy link", "Remove from library"]
+        let expected = match kind {
+            SidebarKind::Playlists => {
+                vec!["Rename", "Copy link", "Start radio", "Remove from library"]
+            }
+            SidebarKind::Albums | SidebarKind::Artists => {
+                vec!["Copy link", "Start radio", "Remove from library"]
+            }
+            SidebarKind::Podcasts => vec!["Copy link", "Remove from library"],
         };
         assert_eq!(
             request
@@ -301,7 +305,7 @@ fn a_playlist_row_that_cannot_be_unlinked_offers_only_its_link() {
             .iter()
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>(),
-        ["Copy link"],
+        ["Copy link", "Start radio"],
         "a row the library cannot write offered a removal"
     );
 }
@@ -330,7 +334,7 @@ fn an_unowned_playlist_still_offers_its_removal() {
             .iter()
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>(),
-        ["Copy link", "Remove from library"],
+        ["Copy link", "Start radio", "Remove from library"],
         "an unowned playlist was not offered its removal"
     );
 }
