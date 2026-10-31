@@ -10,11 +10,13 @@ mod decode;
 mod devices;
 mod headless;
 mod keychain;
+mod latest_writer;
 mod playhead;
 mod preferences;
 mod prompt;
 mod recovery;
 mod session;
+mod small_file;
 
 use std::process::ExitCode;
 use std::sync::Arc;

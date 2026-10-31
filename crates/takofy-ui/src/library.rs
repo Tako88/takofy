@@ -45,11 +45,13 @@ mod nav;
 mod requests;
 mod saved;
 mod shelf_play;
+mod snapshot;
 mod writes;
 
 pub use home::HOME_HOLD;
 use shelf_play::PendingPlay;
 pub use shelf_play::Start;
+pub use snapshot::Snapshot;
 
 /// How the library page draws its saved things.
 ///
@@ -1088,6 +1090,7 @@ impl Library {
             Update::HomeFailed { ask, failure } => self.home.fail(ask, *failure),
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
+            | Update::Account(_)
             | Update::Devices(_)
             | Update::Remote(_)
             | Update::Transport(_)

@@ -1,9 +1,10 @@
-//! Finding, reading and writing the preferences file.
+//! Finding the preferences file, and deciding when it is written.
 //!
-//! This is the only module that touches the filesystem. The path comes from the
-//! platform's configuration directory; with no directory the app runs on the
-//! defaults and writes nothing. A file this version cannot read is refused
-//! whole, so a bad value never half-applies.
+//! The path comes from the platform's configuration directory; with no directory
+//! the app runs on the defaults and writes nothing. A file this version cannot
+//! read is refused whole, so a bad value never half-applies. The bytes go
+//! through [`crate::small_file`], which bounds the read and replaces the file
+//! atomically.
 //!
 //! Writes happen on a `takofy-prefs` thread fed by the settled value, so the
 //! drawing thread never waits on the filesystem. A frame calls
@@ -12,15 +13,15 @@
 //! Closing waits a bounded time for the thread and then detaches it.
 
 use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use log::warn;
 use takofy_ui::prefs::{Prefs, Settle};
+
+use crate::latest_writer::LatestWriter;
+use crate::small_file::{self, Read};
 
 /// The directory under the platform's configuration root.
 const DIR: &str = "takofy";
@@ -30,6 +31,8 @@ const FILE: &str = "preferences.conf";
 const LIMIT: u64 = 64 * 1024;
 /// How long closing waits for the writer thread before detaching it.
 const FLUSH_WAIT: Duration = Duration::from_secs(2);
+/// The writer thread's name, which is also how a warning says who it is.
+const THREAD: &str = "takofy-prefs";
 
 /// What the file held when the app started.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,75 +69,26 @@ pub fn config_file(windows: bool, var: impl Fn(&str) -> Option<OsString>) -> Opt
 
 /// Reads `path`, refusing it whole when any line cannot be read.
 pub fn load(path: &Path) -> Loaded {
-    let meta = match fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Loaded::Absent,
-        Err(_) => return Loaded::Unreadable,
-    };
-    if !meta.is_file() {
-        return Loaded::Unreadable;
-    }
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(_) => return Loaded::Unreadable,
-    };
-    let mut bytes = Vec::new();
-    if file.take(LIMIT + 1).read_to_end(&mut bytes).is_err() {
-        return Loaded::Unreadable;
-    }
-    if bytes.len() as u64 > LIMIT {
-        return Loaded::Refused("file too large".to_owned());
-    }
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(_) => return Loaded::Unreadable,
-    };
-    match Prefs::parse(&text) {
-        Ok(prefs) => Loaded::Found(prefs),
-        Err(refusal) => Loaded::Refused(refusal.to_string()),
+    match small_file::read_text(path, LIMIT) {
+        Read::Absent => Loaded::Absent,
+        Read::Unreadable => Loaded::Unreadable,
+        Read::TooLarge => Loaded::Refused("file too large".to_owned()),
+        Read::Text(text) => match Prefs::parse(&text) {
+            Ok(prefs) => Loaded::Found(prefs),
+            Err(refusal) => Loaded::Refused(refusal.to_string()),
+        },
     }
 }
 
-/// Writes `prefs` to `path` through a temporary file beside it, so a reader
-/// never sees half a file. The temporary name is per process, so two writers in
-/// one process would collide; production has exactly one writer thread.
+/// Renders `prefs` and replaces `path` with it atomically.
 pub fn write_atomic(path: &Path, prefs: &Prefs) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".tmp.{}", std::process::id()));
-    let temp = PathBuf::from(name);
-    let written = write_then_rename(&temp, path, prefs);
-    if written.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    written
+    small_file::write(path, &prefs.render())
 }
 
-fn write_then_rename(temp: &Path, path: &Path, prefs: &Prefs) -> io::Result<()> {
-    let mut file = File::create(temp)?;
-    file.write_all(prefs.render().as_bytes())?;
-    drop(file);
-    fs::rename(temp, path)
-}
-
-/// Signals that the writer thread has ended, whether the sink finished, panicked
-/// or the channel closed.
-struct Done(mpsc::Sender<()>);
-
-impl Drop for Done {
-    fn drop(&mut self) {
-        let _ = self.0.send(());
-    }
-}
-
-/// The thread that writes settled values, coalescing a burst into the last one.
+/// The thread that saves settled preferences, coalescing a burst into the last
+/// one.
 pub struct PrefsWriter {
-    values: Option<mpsc::Sender<Prefs>>,
-    done: mpsc::Receiver<()>,
-    handle: Option<JoinHandle<()>>,
-    wait: Duration,
+    writer: LatestWriter<Prefs>,
 }
 
 impl PrefsWriter {
@@ -142,7 +96,8 @@ impl PrefsWriter {
     /// cannot start.
     pub fn start(path: &Path) -> Option<Self> {
         let path = path.to_path_buf();
-        Self::spawn(move |prefs| write_atomic(&path, prefs), FLUSH_WAIT)
+        LatestWriter::start(THREAD, move |prefs| write_atomic(&path, prefs), FLUSH_WAIT)
+            .map(|writer| Self { writer })
     }
 
     /// Starts a writer over `sink`, waiting `wait` for the thread at close.
@@ -151,66 +106,11 @@ impl PrefsWriter {
         sink: impl Fn(&Prefs) -> io::Result<()> + Send + 'static,
         wait: Duration,
     ) -> Option<Self> {
-        Self::spawn(sink, wait)
-    }
-
-    fn spawn(
-        sink: impl Fn(&Prefs) -> io::Result<()> + Send + 'static,
-        wait: Duration,
-    ) -> Option<Self> {
-        let (values, received) = mpsc::channel();
-        let (done, finished) = mpsc::channel();
-        let body = move || {
-            let _done = Done(done);
-            while let Ok(mut latest) = received.recv() {
-                while let Ok(next) = received.try_recv() {
-                    latest = next;
-                }
-                if let Err(error) = sink(&latest) {
-                    warn!("writing preferences failed: {:?}", error.kind());
-                }
-            }
-        };
-        match thread::Builder::new()
-            .name("takofy-prefs".to_owned())
-            .spawn(body)
-        {
-            Ok(handle) => Some(Self {
-                values: Some(values),
-                done: finished,
-                handle: Some(handle),
-                wait,
-            }),
-            Err(error) => {
-                warn!("preferences writer could not start: {:?}", error.kind());
-                None
-            }
-        }
+        LatestWriter::start(THREAD, sink, wait).map(|writer| Self { writer })
     }
 
     fn send(&self, prefs: Prefs) {
-        if let Some(values) = &self.values {
-            let _ = values.send(prefs);
-        }
-    }
-}
-
-impl Drop for PrefsWriter {
-    fn drop(&mut self) {
-        drop(self.values.take());
-        match self.done.recv_timeout(self.wait) {
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
-                if let Some(handle) = self.handle.take()
-                    && let Err(error) = handle.join()
-                {
-                    warn!("preferences writer ended unexpectedly: {error:?}");
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                warn!("preferences writer still running after {:?}", self.wait);
-                drop(self.handle.take());
-            }
-        }
+        self.writer.send(prefs);
     }
 }
 
