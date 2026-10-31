@@ -7,6 +7,7 @@ mod drag_add;
 mod drag_targets;
 mod panel;
 mod queue;
+mod radio;
 mod remove;
 mod rename;
 mod reorder;

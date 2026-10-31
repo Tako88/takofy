@@ -642,7 +642,7 @@ async fn load_search<H: SessionHost>(host: &H, notifier: &Notifier, query: &str)
     };
 }
 
-/// Reads one track's radio and announces the rows.
+/// Reads one seed's radio and announces the rows.
 ///
 /// The seed is echoed verbatim, like a search's query, because the window drops
 /// a reply for a seed it has stopped waiting on.

@@ -635,7 +635,7 @@ impl Engine {
         Ok(read_station(&self.session, &self.labels, seed).await?)
     }
 
-    /// A radio read from one track, its rows labelled in the station's order.
+    /// A radio read from one seed, its rows labelled in the station's order.
     ///
     /// Unlike [`Self::station`] the rows are the answer: a radio is what the
     /// queue is handed, so there is no head, no picture and no title.

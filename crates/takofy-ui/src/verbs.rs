@@ -12,11 +12,12 @@ use takofy_model::uri::{UriKind, parse};
 use crate::likes::Standing;
 use crate::menu::{Door, Item, Kind, LibraryItem, Listing, Request, Verb};
 use crate::route::Page;
+use crate::sidebar_kind::SidebarKind;
 
 /// What applying a verb does, once the shell has the frame's command to spare.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The station this track seeds.
+    /// The station this track, album, artist or playlist seeds.
     StartRadio { seed: StationSeed },
     /// These rows, in the order the menu took them.
     Queue(Vec<TrackEntry>),
@@ -80,7 +81,8 @@ pub struct LibraryRights {
     pub saved: Option<bool>,
 }
 
-/// The commands a sidebar row offers: its rename, its link, and its removal.
+/// The commands a sidebar row offers: its rename, its link, the library's write,
+/// its radio, and its removal.
 ///
 /// A command the library cannot write is absent rather than greyed, and the
 /// removal is the destructive row, so it is drawn last. A sidebar row is one
@@ -96,6 +98,9 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
     if rights.saved == Some(false) {
         items.push(item(Verb::SaveToLibrary, "Save to your library".to_owned()));
     }
+    if radio_seed(row).is_some() {
+        items.push(item(Verb::StartRadio, "Start radio".to_owned()));
+    }
     if rights.removable {
         items.push(Item {
             label: "Remove from library".to_owned(),
@@ -106,6 +111,23 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
         });
     }
     items
+}
+
+/// The seed a sidebar row's radio starts, or `None` when its URI names another
+/// kind than the row's.
+fn radio_seed(row: &LibraryItem) -> Option<StationSeed> {
+    let (kind, named) = match row.kind {
+        SidebarKind::Playlists => (SeedKind::Playlist, UriKind::Playlist),
+        SidebarKind::Albums => (SeedKind::Album, UriKind::Album),
+        SidebarKind::Artists => (SeedKind::Artist, UriKind::Artist),
+        // No show seed is read on the wire.
+        SidebarKind::Podcasts => return None,
+    };
+    let uri = parse(&row.uri)?;
+    (uri.kind == named).then(|| StationSeed {
+        kind,
+        uri: row.uri.clone(),
+    })
 }
 
 /// The request a row or a band posts for its own menu.
@@ -142,6 +164,7 @@ pub fn library_request(
 /// when the verb is applied.
 pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
     match verb {
+        Verb::StartRadio => radio_seed(row).map(|seed| Outcome::StartRadio { seed }),
         Verb::CopyLink => spotify_link(&row.uri).map(Outcome::Copy),
         Verb::RemoveFromLibrary => Some(Outcome::Unlink(row.clone())),
         Verb::SaveToLibrary => Some(Outcome::Save(row.clone())),
@@ -156,8 +179,8 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
 
 /// The request an artist's band posts for its own menu.
 ///
-/// An artist's library entry is its follow, so the menu's rows are that write and
-/// the link; nothing else in the vocabulary acts on an artist.
+/// An artist's library entry is its follow, so the menu's rows are that write,
+/// the radio and the link; nothing else in the vocabulary acts on an artist.
 pub fn artist_request(
     artist: LibraryItem,
     door: Door,
@@ -172,6 +195,9 @@ pub fn artist_request(
         },
         if unfollowed { "Follow" } else { "Unfollow" }.to_owned(),
     )];
+    if radio_seed(&artist).is_some() {
+        items.push(item(Verb::StartRadio, "Start radio".to_owned()));
+    }
     if spotify_link(&artist.uri).is_some() {
         items.push(item(Verb::CopyLink, "Copy link".to_owned()));
     }
@@ -221,8 +247,7 @@ pub fn track_items(
         items.push(item);
     }
 
-    // A station is seeded by one track, so the row is only there for a pick that
-    // is exactly that.
+    // A pick seeds a track's radio only when it is exactly one track.
     if let [only] = targets
         && only.is_track()
     {

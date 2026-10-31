@@ -714,6 +714,7 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
         && let Some(outcome) = verbs::library_outcome(verb, &item)
     {
         return match outcome {
+            verbs::Outcome::StartRadio { seed } => Some(screen.library.start_radio(seed)),
             verbs::Outcome::Copy(text) => {
                 ui.ctx().copy_text(text);
                 None

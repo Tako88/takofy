@@ -44,8 +44,8 @@ pub enum StationError {
     /// The answer was not the JSON a station is.
     #[error("the station answer was not a station")]
     Parse,
-    /// The seed names no track, so there is no station address to read.
-    #[error("the seed names no track to start a radio from")]
+    /// The seed's URI does not name its kind, so there is no station address to read.
+    #[error("the seed names no station to start a radio from")]
     Seed,
     /// The station answered with nothing to play.
     #[error("the station had no rows")]
@@ -101,17 +101,22 @@ pub(crate) async fn read_station(
     Ok(station)
 }
 
-/// The station address a seed's radio is read from, or `None` when the seed is
-/// not a single track.
+/// The station address a seed's radio is read from, or `None` when its URI
+/// does not name the kind the seed says.
 pub(crate) fn radio_uri(seed: &StationSeed) -> Option<String> {
-    if seed.kind != SeedKind::Song {
-        return None;
-    }
     let uri = uri::parse(&seed.uri)?;
-    if uri.kind != UriKind::Track {
+    let segment = match (seed.kind, uri.kind) {
+        (SeedKind::Song, UriKind::Track) => "track",
+        (SeedKind::Playlist, UriKind::Playlist) => "playlist",
+        (SeedKind::Album, UriKind::Album) => "album",
+        (SeedKind::Artist, UriKind::Artist) => "artist",
+        _ => return None,
+    };
+    // A station is read by one id, and an address carrying colons is not one.
+    if uri.id.contains(':') {
         return None;
     }
-    Some(format!("spotify:station:track:{}", uri.id))
+    Some(format!("spotify:station:{segment}:{}", uri.id))
 }
 
 /// A station's rows as the addresses the label read takes, in the station's own
@@ -125,7 +130,7 @@ pub(crate) fn radio_rows(positions: Vec<PageTrack>) -> Result<Vec<String>, Stati
     Ok(positions.into_iter().map(|position| position.uri).collect())
 }
 
-/// A radio read from one track, its rows labelled in the station's order.
+/// A radio read from one seed, its rows labelled in the station's order.
 ///
 /// The read is a bounded walk of the station context rather than the station
 /// endpoint, because the context's pages carry the order the radio plays in.
