@@ -354,6 +354,19 @@ pub(super) enum StationScript {
     Fail,
 }
 
+/// A scripted autoplay read; the default answers nothing fresh.
+#[derive(Clone)]
+pub(super) enum RadioMoreScript {
+    Ready(Vec<TrackEntry>),
+    Fail,
+}
+
+impl Default for RadioMoreScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
 /// A scripted rootlist move; the default names a revision the window has
 /// not seen.
 #[derive(Clone)]
@@ -492,6 +505,9 @@ pub(super) struct FakeState {
     pub(super) portrait_script: Mutex<PortraitScript>,
     pub(super) release_script: Mutex<ReleaseScript>,
     pub(super) station_script: Mutex<StationScript>,
+    pub(super) radio_more_script: Mutex<RadioMoreScript>,
+    /// Every autoplay read the loop made, with the arguments it named.
+    pub(super) radio_mores: Mutex<Vec<(String, Vec<String>)>>,
     pub(super) follow_script: Mutex<FollowScript>,
     pub(super) move_script: Mutex<MoveScript>,
     pub(super) remove_script: Mutex<MoveScript>,
@@ -1014,6 +1030,29 @@ impl SessionHost for FakeHost {
             match script {
                 StationScript::Ready => Ok(canned_station(&seed).rows),
                 StationScript::Fail => Err(SessionError::NotConnected),
+            }
+        }
+    }
+
+    fn radio_more(
+        &self,
+        context: &str,
+        recent: &[String],
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send {
+        let connected = self.shared.connected.load(Ordering::SeqCst);
+        self.shared
+            .radio_mores
+            .lock()
+            .expect("lock")
+            .push((context.to_owned(), recent.to_vec()));
+        let script = self.shared.radio_more_script.lock().expect("lock").clone();
+        async move {
+            if !connected {
+                return Err(SessionError::NotConnected);
+            }
+            match script {
+                RadioMoreScript::Ready(rows) => Ok(rows),
+                RadioMoreScript::Fail => Err(SessionError::NotConnected),
             }
         }
     }

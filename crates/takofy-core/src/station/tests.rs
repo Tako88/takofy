@@ -1,4 +1,8 @@
-use super::{StationError, radio_rows, radio_uri};
+use librespot::protocol::context::Context;
+use librespot::protocol::context_page::ContextPage;
+use librespot::protocol::context_track::ContextTrack;
+
+use super::{StationError, autoplay_request, autoplay_uris, radio_rows, radio_uri};
 use crate::context::PageTrack;
 use takofy_model::home::{SeedKind, StationSeed};
 use takofy_model::uri::UriKind;
@@ -142,4 +146,82 @@ fn radio_rows_keeps_the_seed_where_the_station_put_it() {
 #[test]
 fn a_station_with_no_rows_is_not_a_station() {
     assert!(matches!(radio_rows(Vec::new()), Err(StationError::Empty)));
+}
+
+const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+const TRACK_B: &str = "spotify:track:6rqhFgbbKwnb9MLmUQDhG6";
+const TRACK_C: &str = "spotify:track:0VjIjW4GlUZAMYd2vXMi3b";
+
+/// One row of a context page, whose URI may be missing.
+fn context_track(uri: Option<&str>) -> ContextTrack {
+    ContextTrack {
+        uri: uri.map(str::to_owned),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_autoplay_request_names_the_context_it_continues() {
+    let recent = vec![
+        "spotify:track:a".to_owned(),
+        "spotify:track:b".to_owned(),
+        "spotify:track:c".to_owned(),
+    ];
+
+    let request = autoplay_request("spotify:track:seed", &recent);
+
+    assert_eq!(request.context_uri.as_deref(), Some("spotify:track:seed"));
+    assert_eq!(
+        request.recent_track_uri, recent,
+        "the rows go in the order the queue played them"
+    );
+}
+
+#[test]
+fn an_autoplay_request_with_nothing_played_names_no_recent_row() {
+    let request = autoplay_request("spotify:track:seed", &[]);
+
+    assert!(request.recent_track_uri.is_empty());
+}
+
+#[test]
+fn autoplay_uris_flattens_the_pages_in_order() {
+    let context = Context {
+        pages: vec![
+            ContextPage {
+                tracks: vec![context_track(Some(TRACK_A)), context_track(Some(TRACK_B))],
+                ..Default::default()
+            },
+            ContextPage {
+                tracks: vec![context_track(Some(TRACK_C))],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert_eq!(autoplay_uris(&context), vec![TRACK_A, TRACK_B, TRACK_C]);
+}
+
+#[test]
+fn autoplay_uris_drops_rows_that_cannot_play_and_rows_with_no_uri() {
+    let context = Context {
+        pages: vec![ContextPage {
+            tracks: vec![
+                context_track(Some(TRACK_A)),
+                context_track(Some("spotify:album:4uLU6hMCjMI75M1A2tKUQC")),
+                context_track(None),
+                context_track(Some(TRACK_B)),
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    assert_eq!(autoplay_uris(&context), vec![TRACK_A, TRACK_B]);
+}
+
+#[test]
+fn an_empty_autoplay_answer_holds_no_rows() {
+    assert_eq!(autoplay_uris(&Context::default()), Vec::<String>::new());
 }

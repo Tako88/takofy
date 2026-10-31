@@ -687,6 +687,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     | Command::LoadLikedTracks
                     | Command::LoadHome(_)
                     | Command::StartRadio { .. }
+                    | Command::ContinueRadio { .. }
                     | Command::Search { .. }
                     | Command::LoadPortraits { .. }
                     | Command::LoadReleaseTracks { .. }

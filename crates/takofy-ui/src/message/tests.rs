@@ -401,6 +401,13 @@ fn cases() -> Vec<(bool, Update)> {
         ),
         (
             false,
+            Update::RadioMore {
+                ask: 1,
+                rows: Vec::new(),
+            },
+        ),
+        (
+            false,
             Update::HomeFailed {
                 ask: HomeAsk::Related {
                     artist: "spotify:artist:a".to_owned(),

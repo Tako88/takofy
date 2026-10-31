@@ -39,7 +39,7 @@ impl Library {
         // client cannot page, so there is no context another device could
         // resume. Empty rows are the worker's own failure to send, and land
         // here as a sentence rather than as a queue with nothing in it.
-        if !self.want_play_rows(None, rows) {
+        if !self.want_radio_rows(rows) {
             self.sidebar_notice = Some(SidebarWrite::Radio);
         }
     }

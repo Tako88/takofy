@@ -7,12 +7,14 @@ mod art;
 mod parse;
 
 use librespot::core::Session;
+use librespot::protocol::autoplay_context_request::AutoplayContextRequest;
+use librespot::protocol::context::Context;
 use takofy_model::FollowedArtist;
 use takofy_model::TrackEntry;
 use takofy_model::home::{SeedKind, Station, StationSeed};
 use takofy_model::uri::{self, UriKind};
 
-use crate::context::{PageTrack, first_pages};
+use crate::context::{PageTrack, first_pages, page_from_proto};
 use crate::remote::{LabelCache, RemoteContext, label_tracks, read_release_tracks};
 
 /// How many rows a neighbour read asks for.
@@ -144,6 +146,54 @@ pub(crate) async fn read_radio(
         .await
         .map_err(|error| StationError::Source(error.to_string()))?;
     let uris = radio_rows(positions)?;
+    Ok(read_release_tracks(session, &uris, labels).await)
+}
+
+/// The request that asks a station for rows continuing `context`, from the rows
+/// already played.
+///
+/// The rows are offered in the order they were played, because the station
+/// continues from the nearest one.
+pub(crate) fn autoplay_request(context: &str, recent: &[String]) -> AutoplayContextRequest {
+    AutoplayContextRequest {
+        context_uri: Some(context.to_owned()),
+        recent_track_uri: recent.to_vec(),
+        ..Default::default()
+    }
+}
+
+/// Every playable row an autoplay answer holds, page by page, in its order.
+pub(crate) fn autoplay_uris(context: &Context) -> Vec<String> {
+    context
+        .pages
+        .iter()
+        .flat_map(|page| page_from_proto(page).tracks)
+        .map(|row| row.uri)
+        .collect()
+}
+
+/// Rows that continue a radio from `context` and the `recent` rows it played.
+///
+/// The answer is one page: a continuation has no page after it to follow, so
+/// reading one more would spend a request on rows a later ask reads again.
+/// Nothing to play is an empty answer rather than a failure, because a radio
+/// with no more rows to give is not an error.
+pub(crate) async fn read_radio_more(
+    session: &Session,
+    labels: &LabelCache,
+    context: &str,
+    recent: &[String],
+) -> Result<Vec<TrackEntry>, StationError> {
+    let request = autoplay_request(context, recent);
+    let answer = session
+        .spclient()
+        .get_autoplay_context(&request)
+        .await
+        .map_err(|error| StationError::Source(error.to_string()))?;
+    let uris = autoplay_uris(&answer);
+    if uris.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(read_release_tracks(session, &uris, labels).await)
 }
 

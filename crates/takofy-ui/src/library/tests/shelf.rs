@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+
+use crate::player::Transport;
+use crate::queue::Queue;
 use takofy_model::Move;
 
 #[test]
@@ -46,6 +49,7 @@ fn the_next_page_write_carries_the_rename_replys_revision() {
 fn start(uri: &str, uris: &[&str]) -> Start {
     Start {
         origin: Some(uri.to_owned()),
+        radio: false,
         tracks: uris.iter().map(|uri| track(uri)).collect(),
     }
 }
@@ -523,8 +527,37 @@ fn want_play_rows_keeps_an_origin_it_is_given() {
         library.take_play(),
         Some(Start {
             origin: Some("spotify:station:x".to_owned()),
+            radio: false,
             tracks: vec![track("t0")],
         })
+    );
+}
+
+/// A play pressed on a shelf is a list, not a station: its rows never ask for
+/// more once they run short.
+#[test]
+fn a_shelf_play_never_marks_a_radio() {
+    let mut library = Library::default();
+    let rows: Vec<TrackEntry> = (0..5)
+        .map(|index| track(&format!("spotify:track:t{index}")))
+        .collect();
+    assert!(library.want_play_rows(None, rows));
+
+    let start = library.take_play().expect("the shelf's rows start");
+    assert!(!start.radio, "a shelf play marked its rows as a radio");
+
+    let mut queue = Queue::default();
+    let mut transport = Transport::default();
+    assert!(
+        queue
+            .start(&start.tracks, 0, start.origin.as_deref(), &mut transport)
+            .is_some()
+    );
+    assert!(queue.jump(4, &mut transport).is_some());
+    assert_eq!(
+        queue.drift_wants(),
+        None,
+        "four rows ahead made a plain play ask for more"
     );
 }
 
@@ -545,6 +578,7 @@ fn want_play_rows_refuses_an_empty_list() {
         library.take_play(),
         Some(Start {
             origin: None,
+            radio: false,
             tracks: vec![track("t0")],
         }),
         "the pending play is untouched"
