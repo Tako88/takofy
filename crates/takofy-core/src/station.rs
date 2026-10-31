@@ -8,10 +8,12 @@ mod parse;
 
 use librespot::core::Session;
 use takofy_model::FollowedArtist;
-use takofy_model::home::{Station, StationSeed};
+use takofy_model::TrackEntry;
+use takofy_model::home::{SeedKind, Station, StationSeed};
+use takofy_model::uri::{self, UriKind};
 
-use crate::context::PageTrack;
-use crate::remote::{LabelCache, label_tracks};
+use crate::context::{PageTrack, first_pages};
+use crate::remote::{LabelCache, RemoteContext, label_tracks, read_release_tracks};
 
 /// How many rows a neighbour read asks for.
 ///
@@ -27,6 +29,12 @@ const NO_ROWS: usize = 20;
 /// short answer is a shorter station rather than a second read.
 const ROWS: usize = 50;
 
+/// How many pages a radio read walks: the inline page and its one `next`.
+///
+/// The page after that is dead, so a longer walk would spend a request on
+/// nothing (#80).
+const RADIO_PAGES: usize = 2;
+
 /// Why a station read failed.
 #[derive(Debug, thiserror::Error)]
 pub enum StationError {
@@ -36,6 +44,12 @@ pub enum StationError {
     /// The answer was not the JSON a station is.
     #[error("the station answer was not a station")]
     Parse,
+    /// The seed names no track, so there is no station address to read.
+    #[error("the seed names no track to start a radio from")]
+    Seed,
+    /// The station answered with nothing to play.
+    #[error("the station had no rows")]
+    Empty,
 }
 
 /// The artists a station names as related to `artist`, for the shelf built from
@@ -86,3 +100,47 @@ pub(crate) async fn read_station(
     station.rows = parse::merge(station.rows, named);
     Ok(station)
 }
+
+/// The station address a seed's radio is read from, or `None` when the seed is
+/// not a single track.
+pub(crate) fn radio_uri(seed: &StationSeed) -> Option<String> {
+    if seed.kind != SeedKind::Song {
+        return None;
+    }
+    let uri = uri::parse(&seed.uri)?;
+    if uri.kind != UriKind::Track {
+        return None;
+    }
+    Some(format!("spotify:station:track:{}", uri.id))
+}
+
+/// A station's rows as the addresses the label read takes, in the station's own
+/// order.
+///
+/// Repeats stay: only the station decides what it plays twice.
+pub(crate) fn radio_rows(positions: Vec<PageTrack>) -> Result<Vec<String>, StationError> {
+    if positions.is_empty() {
+        return Err(StationError::Empty);
+    }
+    Ok(positions.into_iter().map(|position| position.uri).collect())
+}
+
+/// A radio read from one track, its rows labelled in the station's order.
+///
+/// The read is a bounded walk of the station context rather than the station
+/// endpoint, because the context's pages carry the order the radio plays in.
+pub(crate) async fn read_radio(
+    session: &Session,
+    labels: &LabelCache,
+    seed: &StationSeed,
+) -> Result<Vec<TrackEntry>, StationError> {
+    let uri = radio_uri(seed).ok_or(StationError::Seed)?;
+    let positions = first_pages(RemoteContext { session }, &uri, RADIO_PAGES)
+        .await
+        .map_err(|error| StationError::Source(error.to_string()))?;
+    let uris = radio_rows(positions)?;
+    Ok(read_release_tracks(session, &uris, labels).await)
+}
+
+#[cfg(test)]
+mod tests;

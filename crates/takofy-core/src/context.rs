@@ -142,6 +142,32 @@ pub(crate) async fn resolve_uris<S: PageSource>(
     Ok(uris)
 }
 
+/// The positions of a context's first `limit` pages, in the walker's order.
+///
+/// A short read is a shorter context rather than a failed one: a page that
+/// fails after the first is logged and ends the walk, keeping the rows already
+/// read. Only a failure on the first page leaves nothing to return.
+pub(crate) async fn first_pages<S: PageSource>(
+    source: S,
+    uri: &str,
+    limit: usize,
+) -> Result<Vec<PageTrack>, ContextError> {
+    let mut walker = Walker::new(source, uri);
+    let mut positions = Vec::new();
+    for page in 0..limit {
+        match walker.next_page().await {
+            Ok(Some(read)) => positions.extend(read.tracks),
+            Ok(None) => break,
+            Err(error) if page == 0 => return Err(error),
+            Err(error) => {
+                log::warn!("context page {page} failed: {error}");
+                break;
+            }
+        }
+    }
+    Ok(positions)
+}
+
 /// Walks a context: all inline pages first, then pending URLs in discovery order.
 pub(crate) struct Walker<S> {
     source: S,

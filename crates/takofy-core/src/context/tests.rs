@@ -5,8 +5,8 @@ use librespot::protocol::context_page::ContextPage;
 use librespot::protocol::context_track::ContextTrack;
 
 use super::{
-    ContextError, MAX_PAGES, Page, PageSource, PageTrack, Resolved, Walker, page_from_proto,
-    parse_page_json, resolve_uris,
+    ContextError, MAX_PAGES, Page, PageSource, PageTrack, Resolved, Walker, first_pages,
+    page_from_proto, parse_page_json, resolve_uris,
 };
 use takofy_model::{AddedAt, CoverSet, CoverUrl};
 
@@ -150,6 +150,70 @@ async fn resolve_uris_keeps_duplicates() {
         resolve_uris(fake, "context").await.expect("walk"),
         vec!["a", "a", "a"],
         "a row repeated in the context must resolve at every row"
+    );
+}
+
+#[tokio::test]
+async fn first_pages_reads_a_page_and_its_next() {
+    let fake = Fake::new(vec![page(&["a", "b"], Some("u1"))]).with_next("u1", page(&["c"], None));
+    assert_eq!(
+        first_pages(fake, "station", 2).await.expect("read"),
+        page(&["a", "b", "c"], None).tracks
+    );
+}
+
+#[tokio::test]
+async fn first_pages_keeps_the_rows_it_read_when_the_next_page_fails() {
+    let mut fake = Fake::new(vec![page(&["a"], Some("u1"))]);
+    fake.fail_next = true;
+    assert_eq!(
+        first_pages(fake, "station", 2)
+            .await
+            .expect("the first page is a shorter read, not a failed one"),
+        page(&["a"], None).tracks
+    );
+}
+
+#[tokio::test]
+async fn first_pages_propagates_a_resolve_error() {
+    let mut fake = Fake::new(vec![page(&["a"], None)]);
+    fake.fail_resolve = true;
+    let error = first_pages(fake, "station", 2)
+        .await
+        .expect_err("nothing was read at all");
+    assert!(matches!(error, ContextError::Source(_)));
+}
+
+#[tokio::test]
+async fn first_pages_never_fetches_a_next_off_the_last_page_it_reads() {
+    let fake = Fake::new(vec![page(&["a"], Some("u1"))])
+        .with_next("u1", page(&["b"], Some("u2")))
+        .with_next("u2", page(&["c"], None));
+    assert_eq!(
+        first_pages(fake, "station", 2).await.expect("read"),
+        page(&["a", "b"], None).tracks,
+        "the limit is reached, so u2 must not be fetched"
+    );
+}
+
+#[tokio::test]
+async fn first_pages_of_one_page_fetches_no_next() {
+    // `u1` is unregistered, so a fetch would be an error rather than a page.
+    let fake = Fake::new(vec![page(&["a"], Some("u1"))]);
+    assert_eq!(
+        first_pages(fake, "station", 1).await.expect("one page"),
+        page(&["a"], None).tracks
+    );
+}
+
+#[tokio::test]
+async fn first_pages_counts_inline_pages_toward_the_limit() {
+    // Two inline pages fill a limit of two, so the next is never fetched:
+    // `u1` is unregistered, and a fetch would be an error.
+    let fake = Fake::new(vec![page(&["a"], None), page(&["b"], Some("u1"))]);
+    assert_eq!(
+        first_pages(fake, "station", 2).await.expect("two pages"),
+        page(&["a", "b"], None).tracks
     );
 }
 
