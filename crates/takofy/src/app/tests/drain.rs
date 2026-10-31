@@ -773,7 +773,7 @@ fn drain_hands_a_radio_more_answer_to_the_queue() {
     let rows: Vec<TrackEntry> = (0..6)
         .map(|index| track(&format!("spotify:track:t{index}")))
         .collect();
-    let _ = queue.start_radio(&rows, &mut transport);
+    let _ = queue.start(&rows, 0, None, &mut transport);
     let _ = queue.jump(2, &mut transport);
     let ask = match queue.drift_wants() {
         Some(Command::ContinueRadio { ask, .. }) => ask,

@@ -194,7 +194,7 @@ fn a_landed_radio_starts_a_queue_that_asks_for_more() {
 }
 
 #[test]
-fn a_shelf_play_of_the_same_rows_never_asks_for_more() {
+fn a_shelf_play_of_the_same_rows_asks_for_more() {
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -211,10 +211,9 @@ fn a_shelf_play_of_the_same_rows_never_asks_for_more() {
         Some("spotify:track:t0"),
         "the shell never started the play"
     );
-    assert_eq!(
-        queue.drift_wants(),
-        None,
-        "a shelf play asked for rows that continue nothing"
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "a shelf play near its end asked for nothing"
     );
 }
 

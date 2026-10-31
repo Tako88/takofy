@@ -322,7 +322,7 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.queue.label_wants() {
             let _ = self.ui_end.commands.send(command);
         }
-        // A radio whose rows have run short asks for more here, never in `ui`.
+        // A queue whose rows have run short asks for more here, never in `ui`.
         if let Some(command) = self.queue.drift_wants() {
             let _ = self.ui_end.commands.send(command);
         }
