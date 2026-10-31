@@ -1,15 +1,26 @@
 # Takofy
 
 A fast, lean Spotify client for Windows and Linux, in Rust. One binary, no
-Electron, no web view.
+Electron, no web view. Your library is drawn from a local cache the moment the
+window opens, and replaced by the real thing as the network answers.
 
 ![The library as a grid of covers, beside the Now Playing queue and the transport bar](docs/screenshot.png)
 
 ## Features
 
-Your playlists, albums, artists, shows and Liked Songs in a three-column window
-that gives up columns as it narrows, down to a drawer for the sidebar.
+Spotify Connect in both directions: send the sound to your phone or a speaker,
+or let the phone play through this window. The row it lands on is the row it
+keeps playing.
 
+- Radio from anything. A track, an album, an artist or a playlist starts a
+  station, and a queue that reaches its end keeps going from what it has just
+  played.
+- Editing without leaving the window. Drag a row to reorder, drag a playlist to
+  the sidebar to move it, press Delete to remove, click the heart to like. A
+  row's menu has the rest: add to a playlist or the queue, open the album or the
+  artist, copy the link.
+- Your playlists, albums, artists, shows and Liked Songs in a three-column
+  window that gives up columns as it narrows, down to a drawer for the sidebar.
 - Artist pages carry the discography and the artists it is heard with. Shows
   list their episodes, albums their tracks.
 - Library filters for playlists, artists, albums and podcasts, and the same set
@@ -20,13 +31,7 @@ that gives up columns as it narrows, down to a drawer for the sidebar.
   when the track carries timings.
 - Transport with drag-to-seek, shuffle, and repeat off, all or one. The queue is
   reorderable by dragging.
-- Editing without leaving the window: drag a row to reorder, drag a playlist to
-  the sidebar to move it, press Delete to remove, click the heart to like. A
-  row's menu has the rest: add to a playlist or the queue, open the album or the
-  artist, copy the link.
 - Make playlists. Follow artists.
-- Spotify Connect in both directions. Send the sound to your phone or speaker,
-  or let the phone play through this window.
 - Every cover is fetched at the size its box draws it, so a full-width band is
   not a stretched thumbnail.
 
