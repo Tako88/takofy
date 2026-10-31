@@ -178,8 +178,8 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
 
 /// The request an artist's band posts for its own menu.
 ///
-/// An artist's library entry is its follow, so the menu's rows are that write and
-/// the link; nothing else in the vocabulary acts on an artist.
+/// An artist's library entry is its follow, so the menu's rows are that write,
+/// the radio and the link; nothing else in the vocabulary acts on an artist.
 pub fn artist_request(
     artist: LibraryItem,
     door: Door,
@@ -194,6 +194,9 @@ pub fn artist_request(
         },
         if unfollowed { "Follow" } else { "Unfollow" }.to_owned(),
     )];
+    if radio_seed(&artist).is_some() {
+        items.push(item(Verb::StartRadio, "Start radio".to_owned()));
+    }
     if spotify_link(&artist.uri).is_some() {
         items.push(item(Verb::CopyLink, "Copy link".to_owned()));
     }

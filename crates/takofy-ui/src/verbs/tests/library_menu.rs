@@ -26,7 +26,7 @@ fn rights(renamable: bool, removable: bool) -> LibraryRights {
 }
 
 #[test]
-fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
+fn an_artist_band_offers_its_follow_its_radio_and_its_link() {
     let row = crate::menu::LibraryItem {
         kind: crate::sidebar_kind::SidebarKind::Artists,
         uri: "spotify:artist:a".to_owned(),
@@ -44,7 +44,11 @@ fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, ["Unfollow", "Copy link"], "{labels:?}");
+    assert_eq!(
+        labels,
+        ["Unfollow", "Start radio", "Copy link"],
+        "{labels:?}"
+    );
 
     let unfollowed = artist_request(row, door, true, None);
     let labels: Vec<&str> = unfollowed
@@ -52,7 +56,7 @@ fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, ["Follow", "Copy link"], "{labels:?}");
+    assert_eq!(labels, ["Follow", "Start radio", "Copy link"], "{labels:?}");
 }
 
 #[test]
