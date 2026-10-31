@@ -1,4 +1,4 @@
-//! A radio's drift: the ask that keeps it going, and the guards around it.
+//! A queue's drift: the ask that keeps it going, and the guards around it.
 //!
 //! The threshold and the guards live beside the rows they count, so the window
 //! sends an ask and learns nothing else about when one is owed.
@@ -9,51 +9,40 @@ use takofy_model::TrackEntry;
 use takofy_model::uri::{UriKind, parse};
 
 use crate::message::Command;
-use crate::player::Transport;
+use crate::repeat::Repeat;
 
 use super::Queue;
 
-/// Where a radio's drift stands.
+/// Where a queue's drift stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Drift {
-    /// The queue is a list, so it never asks.
+    /// The queue is the phone's, so this client never extends it.
     #[default]
     Off,
-    /// The queue is a radio with room to ask.
+    /// The queue is ours and has room to ask.
     Ready,
     /// An ask is out, and this is the token it carried.
     Asked(u64),
-    /// An answer held nothing fresh, so this radio has nothing more to give.
+    /// An answer held nothing fresh, so this queue has nothing more to give.
     Dry,
 }
 
-/// How many rows ahead of the current one a radio runs down to before it asks.
+/// How many rows ahead of the current one a queue runs down to before it asks.
 const DRIFT_LOW: usize = 5;
 
 /// How many played rows an ask offers the station to continue from.
 const DRIFT_RECENT: usize = 50;
 
 impl Queue {
-    /// Replaces the queue with a radio's rows, starting on the first of them.
+    /// The ask a queue owes, when its rows have run short and none is out.
     ///
-    /// A radio that starts nothing is not marked, so an ask never follows a
-    /// queue with no row to continue from.
-    pub fn start_radio(
-        &mut self,
-        tracks: &[TrackEntry],
-        transport: &mut Transport,
-    ) -> Option<Command> {
-        let command = self.start(tracks, 0, None, transport)?;
-        self.drift = Drift::Ready;
-        Some(command)
-    }
-
-    /// The ask a radio owes, when its rows have run short and none is out.
+    /// A repeating queue never reaches its end, so it never asks.
     ///
     /// Only a track is continued from: a row that names a show or a local file
     /// has no station behind it, so the ask waits for a row that has one.
     pub fn drift_wants(&mut self) -> Option<Command> {
-        if self.drift != Drift::Ready || self.remaining() >= DRIFT_LOW {
+        if self.drift != Drift::Ready || self.repeat != Repeat::Off || self.remaining() >= DRIFT_LOW
+        {
             return None;
         }
         let context = self.current()?.uri.clone();
@@ -77,7 +66,7 @@ impl Queue {
         })
     }
 
-    /// Folds a radio's answer in, appending the rows the queue does not hold.
+    /// Folds an answer in, appending the rows the queue does not hold.
     ///
     /// The only rows it can tell apart are the ones still here, so a row the
     /// user removed from the upcoming list can come back.
@@ -100,7 +89,7 @@ impl Queue {
         self.drift = Drift::Ready;
     }
 
-    /// Says these rows are no longer a radio's.
+    /// Says these rows are the phone's, so this client does not extend them.
     pub(super) fn leave_drift(&mut self) {
         self.drift = Drift::Off;
     }
@@ -118,7 +107,7 @@ impl Queue {
     }
 }
 
-/// Whether `uri` names a track, which is all a radio continues from.
+/// Whether `uri` names a track, which is all an ask continues from.
 fn track_uri(uri: &str) -> bool {
     parse(uri).is_some_and(|parsed| parsed.kind == UriKind::Track)
 }

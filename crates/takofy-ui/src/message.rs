@@ -114,7 +114,7 @@ pub enum Command {
     /// Start a radio from one seed, replacing the queue with the station's
     /// rows.
     StartRadio { seed: StationSeed },
-    /// Ask a station for rows that continue a radio from what it has played.
+    /// Ask a station for rows that continue the queue from what it has played.
     ///
     /// `ask` is echoed back so an answer to a cancelled ask finds no queue
     /// waiting for it, and `recent` is the rows already played, nearest first.
@@ -515,7 +515,7 @@ pub enum Update {
     /// The rows a station answered to continue a radio, echoed with the ask
     /// that asked for them.
     ///
-    /// An empty list is both a radio with nothing more to give and a read that
+    /// An empty list is both a queue with nothing more to give and a read that
     /// failed, because the queue treats the two the same way.
     RadioMore { ask: u64, rows: Vec<TrackEntry> },
     /// A playback change.

@@ -62,7 +62,7 @@ fn an_album_seed_then_an_artist_seed_lands_only_the_artists_answer() {
 }
 
 #[test]
-fn a_landed_radio_marks_its_rows_as_a_radio() {
+fn a_landed_radio_waits_as_a_play_with_no_origin() {
     let mut library = Library::default();
     library.start_radio(seed(RADIO));
 
@@ -75,7 +75,6 @@ fn a_landed_radio_marks_its_rows_as_a_radio() {
         library.take_play(),
         Some(Start {
             origin: None,
-            radio: true,
             tracks: rows(),
         })
     );
@@ -120,7 +119,6 @@ fn a_repeat_press_sends_again_and_keeps_the_first_answer() {
         library.take_play(),
         Some(Start {
             origin: None,
-            radio: true,
             tracks: rows(),
         })
     );

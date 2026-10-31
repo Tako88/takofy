@@ -1120,7 +1120,7 @@ impl Library {
             Update::HomeFailed { ask, failure } => self.home.fail(ask, *failure),
             Update::Radio { seed, rows } => self.land_radio(seed, rows.clone()),
             Update::RadioFailed { seed } => self.fail_radio(seed),
-            // The rows a radio's drift asked for go to the queue, which is the
+            // The rows a drift asked for go to the queue, which is the
             // only store that holds them.
             Update::RadioMore { .. } => {}
             Update::NeedsAuthorization

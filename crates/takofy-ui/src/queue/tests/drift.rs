@@ -1,4 +1,4 @@
-//! A radio's drift: asking for rows that continue what it has played.
+//! A queue's drift: asking for rows that continue what it has played.
 
 use super::super::*;
 use super::test_support::*;
@@ -27,12 +27,12 @@ fn uris_of(entries: &[TrackEntry]) -> Vec<String> {
     entries.iter().map(|entry| entry.uri.clone()).collect()
 }
 
-/// A radio started on `count` rows and moved onto `index`.
+/// A queue started on `count` rows and moved onto `index`.
 fn tuned(count: usize, index: usize) -> (Queue, Transport) {
     let tracks = radio_tracks(count);
     let mut transport = Transport::default();
     let mut queue = Queue::default();
-    assert!(queue.start_radio(&tracks, &mut transport).is_some());
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     if index > 0 {
         assert!(queue.jump(index, &mut transport).is_some());
     }
@@ -52,18 +52,54 @@ fn wanted(queue: &mut Queue) -> (u64, String, Vec<String>) {
 }
 
 #[test]
-fn a_started_list_never_wants() {
+fn a_started_list_wants_near_its_end() {
     let tracks = radio_tracks(6);
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     assert!(queue.jump(4, &mut transport).is_some());
 
-    assert_eq!(queue.drift_wants(), None, "a plain list is not a radio");
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "one row ahead left the queue with nothing to continue it"
+    );
 }
 
 #[test]
-fn a_radio_wants_only_below_five_rows_remaining() {
+fn a_started_list_asks_below_five_rows_ahead() {
+    let tracks = radio_tracks(100);
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
+    assert!(queue.jump(94, &mut transport).is_some());
+    assert_eq!(
+        queue.drift_wants(),
+        None,
+        "five rows ahead are still enough"
+    );
+
+    assert!(queue.jump(95, &mut transport).is_some());
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "four rows ahead are not enough"
+    );
+}
+
+#[test]
+fn a_short_start_asks_on_its_first_tick() {
+    let tracks = radio_tracks(3);
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
+
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "three rows ahead did not ask"
+    );
+}
+
+#[test]
+fn a_queue_wants_only_below_five_rows_remaining() {
     let (mut queue, _transport) = tuned(100, 94);
     assert_eq!(
         queue.drift_wants(),
@@ -108,7 +144,7 @@ fn recent_keeps_only_rows_that_name_a_track() {
     tracks[1] = track("spotify:episode:e0");
     let mut transport = Transport::default();
     let mut queue = Queue::default();
-    assert!(queue.start_radio(&tracks, &mut transport).is_some());
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     assert!(queue.jump(4, &mut transport).is_some());
 
     let (_ask, _context, recent) = wanted(&mut queue);
@@ -134,7 +170,7 @@ fn a_current_row_that_names_no_track_does_not_ask_and_spends_no_token() {
     tracks[5] = track("spotify:episode:e0");
     let mut transport = Transport::default();
     let mut queue = Queue::default();
-    assert!(queue.start_radio(&tracks, &mut transport).is_some());
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     assert!(queue.jump(5, &mut transport).is_some());
 
     assert_eq!(
@@ -148,30 +184,35 @@ fn a_current_row_that_names_no_track_does_not_ask_and_spends_no_token() {
 }
 
 #[test]
-fn an_empty_radio_is_not_marked() {
+fn an_empty_start_marks_nothing() {
     let mut transport = Transport::default();
     let mut queue = Queue::default();
 
-    assert_eq!(queue.start_radio(&[], &mut transport), None);
+    assert_eq!(queue.start(&[], 0, None, &mut transport), None);
 
     queue.append(radio_tracks(3));
     assert!(queue.jump(0, &mut transport).is_some());
-    assert_eq!(queue.drift_wants(), None, "an empty start marked a radio");
+    assert_eq!(queue.drift_wants(), None, "an empty start armed the drift");
 }
 
 #[test]
-fn a_start_clears_the_mark() {
+fn a_start_re_arms_a_dry_queue() {
     let (mut queue, mut transport) = tuned(6, 2);
     let tracks = radio_tracks(6);
+    assert_eq!(wanted(&mut queue).0, 1);
+    queue.land_drift(1, &[]);
 
     assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     assert!(queue.jump(2, &mut transport).is_some());
+    assert_eq!(wanted(&mut queue).0, 2, "a start left the dry queue dry");
 
-    assert_eq!(queue.drift_wants(), None);
+    let before = order(&queue);
+    queue.land_drift(1, &fresh(1));
+    assert_eq!(order(&queue), before, "a late answer to the old ask landed");
 }
 
 #[test]
-fn a_shuffled_start_clears_the_mark() {
+fn a_shuffled_start_wants_near_its_end() {
     let (mut queue, mut transport) = tuned(6, 2);
     let tracks = radio_tracks(6);
 
@@ -182,7 +223,33 @@ fn a_shuffled_start_clears_the_mark() {
     );
     assert!(queue.jump(2, &mut transport).is_some());
 
-    assert_eq!(queue.drift_wants(), None);
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "a shuffled start left nothing asking"
+    );
+}
+
+#[test]
+fn shuffle_off_after_an_answer_keeps_the_appended_rows() {
+    let tracks = radio_tracks(6);
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    assert!(
+        queue
+            .start_with_shuffle(&tracks, 0, None, &mut transport)
+            .is_some()
+    );
+    assert!(queue.jump(4, &mut transport).is_some());
+    assert_eq!(wanted(&mut queue).0, 1);
+    queue.land_drift(1, &fresh(3));
+    let current = queue.current().cloned();
+
+    queue.toggle_shuffle();
+
+    let mut expected = uris_of(&radio_tracks(6));
+    expected.extend(uris_of(&fresh(3)));
+    assert_eq!(order(&queue), expected, "the appended rows were dropped");
+    assert_eq!(queue.current().cloned(), current, "the current row moved");
 }
 
 #[test]
@@ -231,12 +298,12 @@ fn an_answer_to_a_token_the_queue_never_issued_is_dropped() {
 }
 
 #[test]
-fn an_answer_from_another_radios_token_is_dropped() {
+fn an_answer_from_another_queues_token_is_dropped() {
     let (mut queue, mut transport) = tuned(6, 2);
     assert_eq!(wanted(&mut queue).0, 1);
 
     let tracks = radio_tracks(6);
-    assert!(queue.start_radio(&tracks, &mut transport).is_some());
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     assert!(queue.jump(2, &mut transport).is_some());
     assert_eq!(wanted(&mut queue).0, 2);
     let before = order(&queue);
@@ -313,12 +380,13 @@ fn a_failed_transport_never_revives_a_dry_radio() {
 }
 
 #[test]
-fn a_failed_transport_leaves_a_plain_list_alone() {
+fn a_failed_transport_lets_a_plain_queues_ask_go_again() {
     let tracks = radio_tracks(6);
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
     assert!(queue.jump(4, &mut transport).is_some());
+    assert_eq!(wanted(&mut queue).0, 1);
 
     feed(
         &mut queue,
@@ -326,7 +394,26 @@ fn a_failed_transport_leaves_a_plain_list_alone() {
         TransportUpdate::Failed(Failure::Load),
     );
 
-    assert_eq!(queue.drift_wants(), None);
+    assert_eq!(wanted(&mut queue).0, 2, "a failure stranded the ask");
+}
+
+#[test]
+fn an_episode_queue_never_wants() {
+    let mut tracks: Vec<TrackEntry> = (0..6)
+        .map(|index| track(&format!("spotify:episode:e{index}")))
+        .collect();
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
+    assert!(queue.jump(4, &mut transport).is_some());
+
+    assert_eq!(queue.drift_wants(), None, "an episode queue asked for more");
+
+    tracks[4] = track("spotify:local:artist:album:title:222");
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
+    assert!(queue.jump(4, &mut transport).is_some());
+
+    assert_eq!(queue.drift_wants(), None, "a local file asked for more");
 }
 
 #[test]
@@ -471,20 +558,46 @@ fn an_answer_applied_as_an_update_is_folded_in() {
 }
 
 #[test]
-fn a_repeat_one_radio_asks_once_and_stops_when_the_rows_land() {
-    let (mut queue, _transport) = tuned(5, 0);
-    while queue.repeat() != Repeat::One {
-        queue.cycle_repeat();
-    }
+fn a_repeat_one_queue_does_not_ask() {
+    let (mut queue, _transport) = tuned(6, 4);
+    queue.set_repeat(Repeat::One);
 
-    assert_eq!(wanted(&mut queue).0, 1);
+    assert_eq!(queue.drift_wants(), None, "a looping queue asked for more");
+}
 
-    queue.land_drift(1, &fresh(50));
+#[test]
+fn a_repeat_all_queue_does_not_ask() {
+    let (mut queue, _transport) = tuned(6, 4);
+    queue.set_repeat(Repeat::All);
 
-    assert_eq!(
-        queue.drift_wants(),
-        None,
-        "the queue grew past the threshold"
+    assert_eq!(queue.drift_wants(), None, "a looping queue asked for more");
+}
+
+#[test]
+fn turning_repeat_off_lets_the_same_queue_ask() {
+    let (mut queue, _transport) = tuned(6, 4);
+    queue.set_repeat(Repeat::One);
+    assert_eq!(queue.drift_wants(), None);
+
+    queue.set_repeat(Repeat::Off);
+
+    assert!(
+        matches!(
+            queue.drift_wants(),
+            Some(Command::ContinueRadio { ask: 1, .. })
+        ),
+        "the mark was spent while repeating"
     );
-    assert_eq!(queue.repeat(), Repeat::One, "the landing changed the mode");
+}
+
+#[test]
+fn an_answer_to_an_ask_that_never_went_out_is_ignored() {
+    let (mut queue, _transport) = tuned(6, 4);
+    queue.set_repeat(Repeat::One);
+    assert_eq!(queue.drift_wants(), None);
+    let before = order(&queue);
+
+    queue.land_drift(1, &fresh(2));
+
+    assert_eq!(order(&queue), before, "an unanswered ask grew the queue");
 }

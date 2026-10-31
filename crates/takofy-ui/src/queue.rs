@@ -30,10 +30,10 @@
 //! playing entry, and a window that cannot be anchored or parsed changes
 //! nothing.
 //!
-//! A radio keeps going: while fewer than a handful of rows are ahead of the
-//! current one it asks for more that continue from what it has played, and
-//! appends the ones it does not already hold. A list that is not a radio never
-//! asks, and one ask is in flight at a time.
+//! A queue this client started keeps going: while fewer than a handful of rows
+//! are ahead of the current one, and it is not repeating, it asks for more that
+//! continue from what it has played, and appends the ones it does not already
+//! hold. A phone's queue never asks, and one ask is in flight at a time.
 
 mod drift;
 
@@ -155,8 +155,8 @@ pub struct Queue {
     /// because each of those makes these rows no longer the window the revision
     /// names.
     queue_revision: String,
-    /// Where a radio's drift stands: off for a list, asking for more only for a
-    /// radio that has room ahead.
+    /// Where the queue's drift stands: ready to ask for more on a queue this
+    /// client started, off on one the phone owns.
     drift: drift::Drift,
     /// The token the newest drift ask carried. Never reset, so an answer to a
     /// cancelled ask names one no queue is waiting on.
@@ -216,7 +216,7 @@ impl Queue {
         self.refocus = None;
         self.origin = origin.map(str::to_owned);
         self.index = None;
-        self.leave_drift();
+        self.drift = drift::Drift::Ready;
         let first = self.start_shuffled(index);
         self.goto(first, transport)
     }
