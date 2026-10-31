@@ -93,7 +93,7 @@ impl Library {
         true
     }
 
-    /// Starts a play whose rows are already in hand; an empty list starts nothing.
+    /// Holds rows already in hand as the pending play, and says whether they were taken.
     pub fn want_play_rows(&mut self, origin: Option<&str>, rows: Vec<TrackEntry>) -> bool {
         if rows.is_empty() {
             return false;

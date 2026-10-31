@@ -7,11 +7,15 @@ mod art;
 mod parse;
 
 use librespot::core::Session;
+use librespot::protocol::autoplay_context_request::AutoplayContextRequest;
+use librespot::protocol::context::Context;
 use takofy_model::FollowedArtist;
-use takofy_model::home::{Station, StationSeed};
+use takofy_model::TrackEntry;
+use takofy_model::home::{SeedKind, Station, StationSeed};
+use takofy_model::uri::{self, UriKind};
 
-use crate::context::PageTrack;
-use crate::remote::{LabelCache, label_tracks};
+use crate::context::{PageTrack, first_pages, page_from_proto};
+use crate::remote::{LabelCache, RemoteContext, label_tracks, read_release_tracks};
 
 /// How many rows a neighbour read asks for.
 ///
@@ -27,6 +31,12 @@ const NO_ROWS: usize = 20;
 /// short answer is a shorter station rather than a second read.
 const ROWS: usize = 50;
 
+/// How many pages a radio read walks: the inline page and its one `next`.
+///
+/// The page after that is dead, so a longer walk would spend a request on
+/// nothing (#80).
+const RADIO_PAGES: usize = 2;
+
 /// Why a station read failed.
 #[derive(Debug, thiserror::Error)]
 pub enum StationError {
@@ -36,6 +46,12 @@ pub enum StationError {
     /// The answer was not the JSON a station is.
     #[error("the station answer was not a station")]
     Parse,
+    /// The seed's URI does not name its kind, so there is no station address to read.
+    #[error("the seed names no station to start a radio from")]
+    Seed,
+    /// The station answered with nothing to play.
+    #[error("the station had no rows")]
+    Empty,
 }
 
 /// The artists a station names as related to `artist`, for the shelf built from
@@ -86,3 +102,100 @@ pub(crate) async fn read_station(
     station.rows = parse::merge(station.rows, named);
     Ok(station)
 }
+
+/// The station address a seed's radio is read from, or `None` when its URI
+/// does not name the kind the seed says.
+pub(crate) fn radio_uri(seed: &StationSeed) -> Option<String> {
+    let uri = uri::parse(&seed.uri)?;
+    let segment = match (seed.kind, uri.kind) {
+        (SeedKind::Song, UriKind::Track) => "track",
+        (SeedKind::Playlist, UriKind::Playlist) => "playlist",
+        (SeedKind::Album, UriKind::Album) => "album",
+        (SeedKind::Artist, UriKind::Artist) => "artist",
+        _ => return None,
+    };
+    // A station is read by one id, and an address carrying colons is not one.
+    if uri.id.contains(':') {
+        return None;
+    }
+    Some(format!("spotify:station:{segment}:{}", uri.id))
+}
+
+/// A station's rows as the addresses the label read takes, in the station's own
+/// order.
+///
+/// Repeats stay: only the station decides what it plays twice.
+pub(crate) fn radio_rows(positions: Vec<PageTrack>) -> Result<Vec<String>, StationError> {
+    if positions.is_empty() {
+        return Err(StationError::Empty);
+    }
+    Ok(positions.into_iter().map(|position| position.uri).collect())
+}
+
+/// A radio read from one seed, its rows labelled in the station's order.
+///
+/// The read is a bounded walk of the station context rather than the station
+/// endpoint, because the context's pages carry the order the radio plays in.
+pub(crate) async fn read_radio(
+    session: &Session,
+    labels: &LabelCache,
+    seed: &StationSeed,
+) -> Result<Vec<TrackEntry>, StationError> {
+    let uri = radio_uri(seed).ok_or(StationError::Seed)?;
+    let positions = first_pages(RemoteContext { session }, &uri, RADIO_PAGES)
+        .await
+        .map_err(|error| StationError::Source(error.to_string()))?;
+    let uris = radio_rows(positions)?;
+    Ok(read_release_tracks(session, &uris, labels).await)
+}
+
+/// The request that asks a station for rows continuing `context`, from the rows
+/// already played.
+///
+/// The rows are offered in the order they were played, because the station
+/// continues from the nearest one.
+pub(crate) fn autoplay_request(context: &str, recent: &[String]) -> AutoplayContextRequest {
+    AutoplayContextRequest {
+        context_uri: Some(context.to_owned()),
+        recent_track_uri: recent.to_vec(),
+        ..Default::default()
+    }
+}
+
+/// Every playable row an autoplay answer holds, page by page, in its order.
+pub(crate) fn autoplay_uris(context: &Context) -> Vec<String> {
+    context
+        .pages
+        .iter()
+        .flat_map(|page| page_from_proto(page).tracks)
+        .map(|row| row.uri)
+        .collect()
+}
+
+/// Rows that continue a radio from `context` and the `recent` rows it played.
+///
+/// The answer is one page: a continuation has no page after it to follow, so
+/// reading one more would spend a request on rows a later ask reads again.
+/// Nothing to play is an empty answer rather than a failure, because a radio
+/// with no more rows to give is not an error.
+pub(crate) async fn read_radio_more(
+    session: &Session,
+    labels: &LabelCache,
+    context: &str,
+    recent: &[String],
+) -> Result<Vec<TrackEntry>, StationError> {
+    let request = autoplay_request(context, recent);
+    let answer = session
+        .spclient()
+        .get_autoplay_context(&request)
+        .await
+        .map_err(|error| StationError::Source(error.to_string()))?;
+    let uris = autoplay_uris(&answer);
+    if uris.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(read_release_tracks(session, &uris, labels).await)
+}
+
+#[cfg(test)]
+mod tests;

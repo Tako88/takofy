@@ -388,6 +388,26 @@ fn cases() -> Vec<(bool, Update)> {
         (false, Update::Home(HomeAnswer::Episodes(Vec::new()))),
         (
             false,
+            Update::Radio {
+                seed: "spotify:track:a".to_owned(),
+                rows: Vec::new(),
+            },
+        ),
+        (
+            false,
+            Update::RadioFailed {
+                seed: "spotify:track:a".to_owned(),
+            },
+        ),
+        (
+            false,
+            Update::RadioMore {
+                ask: 1,
+                rows: Vec::new(),
+            },
+        ),
+        (
+            false,
             Update::HomeFailed {
                 ask: HomeAsk::Related {
                     artist: "spotify:artist:a".to_owned(),

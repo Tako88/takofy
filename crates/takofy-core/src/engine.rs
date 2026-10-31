@@ -30,7 +30,7 @@ use crate::remote::{
 use crate::rootlist::{RootEntry, RootlistError, Walked, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
-use crate::station::{StationError, read_neighbours, read_station};
+use crate::station::{StationError, read_neighbours, read_radio, read_radio_more, read_station};
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
 use takofy_model::home::{Station, StationSeed};
@@ -633,6 +633,24 @@ impl Engine {
     /// One station read from its seed, its rows labelled.
     pub async fn station(&self, seed: &StationSeed) -> Result<Station, EngineError> {
         Ok(read_station(&self.session, &self.labels, seed).await?)
+    }
+
+    /// A radio read from one seed, its rows labelled in the station's order.
+    ///
+    /// Unlike [`Self::station`] the rows are the answer: a radio is what the
+    /// queue is handed, so there is no head, no picture and no title.
+    pub async fn radio(&self, seed: &StationSeed) -> Result<Vec<TrackEntry>, EngineError> {
+        Ok(read_radio(&self.session, &self.labels, seed).await?)
+    }
+
+    /// Rows that continue a radio from `context` and the `recent` rows it has
+    /// played, labelled in the station's order.
+    pub async fn radio_more(
+        &self,
+        context: &str,
+        recent: &[String],
+    ) -> Result<Vec<TrackEntry>, EngineError> {
+        Ok(read_radio_more(&self.session, &self.labels, context, recent).await?)
     }
 
     /// The artists a station names beside `artist`, which is where this client

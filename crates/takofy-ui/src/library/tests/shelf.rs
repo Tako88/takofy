@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+
+use crate::player::Transport;
+use crate::queue::Queue;
 use takofy_model::Move;
 
 #[test]
@@ -525,6 +528,32 @@ fn want_play_rows_keeps_an_origin_it_is_given() {
             origin: Some("spotify:station:x".to_owned()),
             tracks: vec![track("t0")],
         })
+    );
+}
+
+/// A play pressed on a shelf is a queue like any other: it asks for more once
+/// its rows run short.
+#[test]
+fn a_shelf_play_asks_for_more_near_its_end() {
+    let mut library = Library::default();
+    let rows: Vec<TrackEntry> = (0..5)
+        .map(|index| track(&format!("spotify:track:t{index}")))
+        .collect();
+    assert!(library.want_play_rows(None, rows));
+
+    let start = library.take_play().expect("the shelf's rows start");
+
+    let mut queue = Queue::default();
+    let mut transport = Transport::default();
+    assert!(
+        queue
+            .start(&start.tracks, 0, start.origin.as_deref(), &mut transport)
+            .is_some()
+    );
+    assert!(queue.jump(4, &mut transport).is_some());
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "a shelf play near its end did not ask for more"
     );
 }
 

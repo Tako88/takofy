@@ -266,6 +266,20 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         seed: &StationSeed,
     ) -> impl Future<Output = Result<Station, SessionError>> + Send;
 
+    /// A radio read from one seed, its rows labelled in the station's order.
+    fn radio(
+        &self,
+        seed: &StationSeed,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send;
+
+    /// Rows that continue a radio from `context` and the `recent` rows it has
+    /// played, labelled in the station's order.
+    fn radio_more(
+        &self,
+        context: &str,
+        recent: &[String],
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send;
+
     /// The artists a station names beside `artist`: this client's one read of an
     /// artist's neighbours.
     fn neighbours(
@@ -746,6 +760,27 @@ impl SessionHost for LiveSession {
     async fn station(&self, seed: &StationSeed) -> Result<Station, SessionError> {
         match &self.engine {
             Some(engine) => engine.station(seed).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn radio(&self, seed: &StationSeed) -> Result<Vec<TrackEntry>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.radio(seed).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn radio_more(
+        &self,
+        context: &str,
+        recent: &[String],
+    ) -> Result<Vec<TrackEntry>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .radio_more(context, recent)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

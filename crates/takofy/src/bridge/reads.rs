@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use takofy_core::rootlist::Walked;
-use takofy_model::home::HomeAsk;
+use takofy_model::home::{HomeAsk, StationSeed};
 use takofy_model::{CoverUrl, Report, RequestId};
 use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, Update};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -96,6 +96,8 @@ pub(super) fn classify(command: &Command) -> Class {
         | Command::LoadSavedAlbums
         | Command::LoadLikedTracks
         | Command::LoadHome(_)
+        | Command::StartRadio { .. }
+        | Command::ContinueRadio { .. }
         | Command::Search { .. }
         | Command::LoadPortraits { .. }
         | Command::LoadReleaseTracks { .. }
@@ -199,6 +201,14 @@ pub(super) enum Read {
     SavedAlbums,
     LikedTracks,
     Home(HomeAsk),
+    Radio {
+        seed: StationSeed,
+    },
+    RadioMore {
+        ask: u64,
+        context: String,
+        recent: Vec<String>,
+    },
     Search {
         query: String,
     },
@@ -244,6 +254,16 @@ impl Read {
             Command::LoadSavedAlbums => Self::SavedAlbums,
             Command::LoadLikedTracks => Self::LikedTracks,
             Command::LoadHome(ask) => Self::Home(ask),
+            Command::StartRadio { seed } => Self::Radio { seed },
+            Command::ContinueRadio {
+                ask,
+                context,
+                recent,
+            } => Self::RadioMore {
+                ask,
+                context,
+                recent,
+            },
             Command::Search { query } => Self::Search { query },
             Command::LoadPortraits { query, artists } => Self::Portraits { query, artists },
             Command::LoadReleaseTracks { release, tracks } => {
@@ -305,6 +325,12 @@ impl Read {
                 }
             }
             Self::Search { query } => load_search(host, notifier, &query).await,
+            Self::Radio { seed } => load_radio(host, notifier, &seed).await,
+            Self::RadioMore {
+                ask,
+                context,
+                recent,
+            } => load_radio_more(host, notifier, ask, &context, &recent).await,
             Self::Portraits { query, artists } => {
                 load_portraits(host, notifier, &query, &artists).await;
             }
@@ -633,6 +659,50 @@ async fn load_search<H: SessionHost>(host: &H, notifier: &Notifier, query: &str)
             query: query.to_owned(),
             failure: search_failure(&error),
         }),
+    };
+}
+
+/// Reads one seed's radio and announces the rows.
+///
+/// The seed is echoed verbatim, like a search's query, because the window drops
+/// a reply for a seed it has stopped waiting on.
+async fn load_radio<H: SessionHost>(host: &H, notifier: &Notifier, seed: &StationSeed) {
+    match host.radio(seed).await {
+        Ok(rows) => notifier.send(Update::Radio {
+            seed: seed.uri.clone(),
+            rows,
+        }),
+        Err(error) => {
+            log_device_error(&error);
+            notifier.send(Update::RadioFailed {
+                seed: seed.uri.clone(),
+            })
+        }
+    };
+}
+
+/// Reads the rows a station answers for a radio's drift and announces them.
+///
+/// A failure answers with no rows rather than staying silent: the queue only
+/// learns a radio has nothing more to give from the answer, so a dropped one
+/// would leave it waiting. The error is logged by kind alone, because a read's
+/// message can carry a row.
+async fn load_radio_more<H: SessionHost>(
+    host: &H,
+    notifier: &Notifier,
+    ask: u64,
+    context: &str,
+    recent: &[String],
+) {
+    match host.radio_more(context, recent).await {
+        Ok(rows) => notifier.send(Update::RadioMore { ask, rows }),
+        Err(error) => {
+            log_device_error(&error);
+            notifier.send(Update::RadioMore {
+                ask,
+                rows: Vec::new(),
+            })
+        }
     };
 }
 

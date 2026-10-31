@@ -156,6 +156,7 @@ fn the_band_menu_offers_rename_first_and_never_on_a_read_only_list() {
         [
             crate::menu::Verb::Rename,
             crate::menu::Verb::CopyLink,
+            crate::menu::Verb::StartRadio,
             crate::menu::Verb::RemoveFromLibrary,
         ]
     );

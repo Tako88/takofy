@@ -42,6 +42,7 @@ use crate::track_filter::TrackFilter;
 
 mod home;
 mod nav;
+mod radio;
 mod requests;
 mod restore;
 mod saved;
@@ -289,6 +290,11 @@ pub struct Library {
     ///
     /// Pressing play again is the retry, so the sentence stands alone.
     pub play_notice: Option<Failure>,
+    /// The seed of the radio a menu started, until its read answers.
+    ///
+    /// It is not the shelf play: a radio works from any page, and a page change
+    /// is no reason to drop one still in flight.
+    radio: Option<String>,
 }
 
 /// Which sidebar write is in flight, and what it would put back.
@@ -345,6 +351,8 @@ pub enum SidebarWrite {
     Remove,
     /// A playlist could not be renamed.
     Rename,
+    /// A radio the user asked for did not start.
+    Radio,
 }
 
 /// Whether a ready list of the library holds `uri`.
@@ -1110,6 +1118,11 @@ impl Library {
             // A Home answer lands on the shelf that asked for it, whatever page is shown.
             Update::Home(answer) => self.home.land(answer),
             Update::HomeFailed { ask, failure } => self.home.fail(ask, *failure),
+            Update::Radio { seed, rows } => self.land_radio(seed, rows.clone()),
+            Update::RadioFailed { seed } => self.fail_radio(seed),
+            // The rows a drift asked for go to the queue, which is the
+            // only store that holds them.
+            Update::RadioMore { .. } => {}
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Devices(_)

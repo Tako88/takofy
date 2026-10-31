@@ -88,6 +88,9 @@ impl SignIn {
                 | Update::SavedLabelFailed { .. }
                 | Update::Home(_)
                 | Update::HomeFailed { .. }
+                | Update::Radio { .. }
+                | Update::RadioFailed { .. }
+                | Update::RadioMore { .. }
                 | Update::Liked { .. }
                 | Update::LikeFailed { .. }
                 | Update::Related { .. }

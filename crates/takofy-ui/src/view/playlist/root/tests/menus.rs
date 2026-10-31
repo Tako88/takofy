@@ -84,7 +84,12 @@ fn expect_row_menu(kind: SidebarKind, uri: &str, name: &str, library: &mut Libra
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, vec!["Copy link", "Remove from library"]);
+    let expected: Vec<&str> = if kind == SidebarKind::Podcasts {
+        vec!["Copy link", "Remove from library"]
+    } else {
+        vec!["Copy link", "Start radio", "Remove from library"]
+    };
+    assert_eq!(labels, expected);
     assert!(
         !labels.contains(&"Rename"),
         "the root never offers a rename: {labels:?}"
@@ -181,7 +186,7 @@ fn a_playlist_row_the_user_cannot_write_offers_only_its_link() {
         .collect();
     assert_eq!(
         labels,
-        vec!["Copy link"],
+        vec!["Copy link", "Start radio"],
         "a row that cannot be removed keeps its link"
     );
 }

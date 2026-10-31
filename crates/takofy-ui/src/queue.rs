@@ -29,6 +29,13 @@
 //! rather than a whole list: that window replaces the rows on both sides of the
 //! playing entry, and a window that cannot be anchored or parsed changes
 //! nothing.
+//!
+//! A queue this client started keeps going: while fewer than a handful of rows
+//! are ahead of the current one, and it is not repeating, it asks for more that
+//! continue from what it has played, and appends the ones it does not already
+//! hold. A phone's queue never asks, and one ask is in flight at a time.
+
+mod drift;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -148,6 +155,12 @@ pub struct Queue {
     /// because each of those makes these rows no longer the window the revision
     /// names.
     queue_revision: String,
+    /// Where the queue's drift stands: ready to ask for more on a queue this
+    /// client started, off on one the phone owns.
+    drift: drift::Drift,
+    /// The token the newest drift ask carried. Never reset, so an answer to a
+    /// cancelled ask names one no queue is waiting on.
+    drift_asks: u64,
 }
 
 impl Queue {
@@ -203,6 +216,7 @@ impl Queue {
         self.refocus = None;
         self.origin = origin.map(str::to_owned);
         self.index = None;
+        self.drift = drift::Drift::Ready;
         let first = self.start_shuffled(index);
         self.goto(first, transport)
     }
@@ -274,6 +288,10 @@ impl Queue {
         match update {
             Update::Transport(update) => self.apply_transport(update, transport),
             Update::Remote(update) => self.apply_remote(update, transport),
+            Update::RadioMore { ask, rows } => {
+                self.land_drift(*ask, rows);
+                None
+            }
             _ => None,
         }
     }
@@ -304,11 +322,15 @@ impl Queue {
             }
             TransportUpdate::Failed(_) => {
                 self.awaiting_start = false;
+                self.rearm_drift();
                 None
             }
             // The rebuild keeps the row and its guard: it is neither a load
             // that started nor a row that would not play.
-            TransportUpdate::Reconnecting => None,
+            TransportUpdate::Reconnecting => {
+                self.rearm_drift();
+                None
+            }
             TransportUpdate::Ended => {
                 if self.awaiting_start {
                     return None;
@@ -389,6 +411,7 @@ impl Queue {
         self.selection.clear();
         self.refocus = None;
         self.label_asked.clear();
+        self.leave_drift();
         // A mode the landing names is taken; one it names not at all is the mode
         // the queue already has, not a mode read back as off.
         let (context, track) = self.repeat.flags();
@@ -455,6 +478,7 @@ impl Queue {
         self.selection.clear();
         self.refocus = None;
         self.label_asked.clear();
+        self.leave_drift();
         // The drawn order belonged to the rows the window just replaced.
         self.snapshot.clear();
         Ok(())

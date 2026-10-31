@@ -6,6 +6,17 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+### Added
+
+- **A radio from anything.** A track, an album, an artist or a playlist now has
+  "Start radio" in its "…" menu: the queue fills with that thing's station and
+  starts playing.
+- **Music that keeps going.** A radio no longer stops after its first batch:
+  when it nears the end it asks for more that follow from what it has just
+  played. A playlist, album or pick that reaches its end continues the same way
+  instead of falling silent, and a queue that repeats is left alone — a loop
+  stays a loop.
+
 ## [0.1.3] — 2026-10-31
 
 ### Added

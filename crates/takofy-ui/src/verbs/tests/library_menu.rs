@@ -26,7 +26,7 @@ fn rights(renamable: bool, removable: bool) -> LibraryRights {
 }
 
 #[test]
-fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
+fn an_artist_band_offers_its_follow_its_radio_and_its_link() {
     let row = crate::menu::LibraryItem {
         kind: crate::sidebar_kind::SidebarKind::Artists,
         uri: "spotify:artist:a".to_owned(),
@@ -44,7 +44,11 @@ fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, ["Unfollow", "Copy link"], "{labels:?}");
+    assert_eq!(
+        labels,
+        ["Unfollow", "Start radio", "Copy link"],
+        "{labels:?}"
+    );
 
     let unfollowed = artist_request(row, door, true, None);
     let labels: Vec<&str> = unfollowed
@@ -52,7 +56,96 @@ fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
         .iter()
         .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(labels, ["Follow", "Copy link"], "{labels:?}");
+    assert_eq!(labels, ["Follow", "Start radio", "Copy link"], "{labels:?}");
+}
+
+#[test]
+fn a_library_rows_radio_seed_follows_its_kind() {
+    let cases = [
+        (SidebarKind::Playlists, SeedKind::Playlist),
+        (SidebarKind::Albums, SeedKind::Album),
+        (SidebarKind::Artists, SeedKind::Artist),
+    ];
+    for (kind, seed_kind) in cases {
+        let row = library_row(kind, "Deep Focus");
+        assert_eq!(
+            radio_seed(&row),
+            Some(StationSeed {
+                kind: seed_kind,
+                uri: row.uri.clone(),
+            }),
+            "{kind:?}"
+        );
+    }
+    assert_eq!(
+        radio_seed(&library_row(SidebarKind::Podcasts, "Field Notes")),
+        None,
+        "a show has no station on the wire"
+    );
+}
+
+#[test]
+fn a_row_whose_uri_names_another_kind_offers_no_radio() {
+    let cases = [
+        LibraryItem {
+            kind: SidebarKind::Albums,
+            uri: "spotify:artist:abc".to_owned(),
+            name: "A Record".to_owned(),
+        },
+        LibraryItem {
+            kind: SidebarKind::Playlists,
+            uri: "not a uri".to_owned(),
+            name: "Deep Focus".to_owned(),
+        },
+        library_row(SidebarKind::Podcasts, "Field Notes"),
+    ];
+    for row in cases {
+        let offered = verbs(&library_items(&row, rights(false, true)));
+        assert!(!offered.contains(&Verb::StartRadio), "{row:?}");
+    }
+}
+
+#[test]
+fn radio_sits_right_after_the_library_row_and_before_the_removal() {
+    let row = library_row(SidebarKind::Playlists, "Deep Focus");
+    let items = library_items(
+        &row,
+        LibraryRights {
+            renamable: true,
+            removable: true,
+            saved: Some(false),
+        },
+    );
+
+    assert_eq!(
+        verbs(&items),
+        [
+            Verb::Rename,
+            Verb::CopyLink,
+            Verb::SaveToLibrary,
+            Verb::StartRadio,
+            Verb::RemoveFromLibrary,
+        ]
+    );
+    let radio = &items[3];
+    assert_eq!(radio.kind, Kind::Plain, "a radio is a plain command");
+    assert_eq!(radio.key, None, "a radio has no key hint");
+
+    let saved = |saved, removable| LibraryRights {
+        renamable: false,
+        removable,
+        saved,
+    };
+    assert_eq!(
+        verbs(&library_items(&row, saved(Some(true), true))),
+        [Verb::CopyLink, Verb::StartRadio, Verb::RemoveFromLibrary],
+        "with the library's row already written the radio follows the link"
+    );
+    assert_eq!(
+        verbs(&library_items(&row, saved(None, false))),
+        [Verb::CopyLink, Verb::StartRadio],
+        "a row with no removal keeps the radio last"
+    );
 }
 
 #[test]
@@ -106,17 +199,17 @@ fn a_band_offers_one_direction_of_the_library_write() {
     };
     assert_eq!(
         labels(Some(false)),
-        ["Copy link", "Save to your library"],
+        ["Copy link", "Save to your library", "Start radio"],
         "the identity verb comes before the library's"
     );
     assert_eq!(
         labels(Some(true)),
-        ["Copy link", "Remove from library"],
+        ["Copy link", "Start radio", "Remove from library"],
         "the destructive row stays last"
     );
     assert_eq!(
         labels(None),
-        ["Copy link"],
+        ["Copy link", "Start radio"],
         "an unknown state offers neither write"
     );
 }
@@ -127,16 +220,18 @@ fn a_library_row_offers_its_link_and_the_removal_last() {
         let row = library_row(kind, "Deep Focus");
         let items = library_items(&row, rights(false, true));
 
-        assert_eq!(
-            labels(&items),
-            ["Copy link", "Remove from library"],
-            "{kind:?}"
-        );
-        assert_eq!(
-            verbs(&items),
-            [Verb::CopyLink, Verb::RemoveFromLibrary],
-            "{kind:?}"
-        );
+        let expected_labels: Vec<&str> = if kind == SidebarKind::Podcasts {
+            vec!["Copy link", "Remove from library"]
+        } else {
+            vec!["Copy link", "Start radio", "Remove from library"]
+        };
+        assert_eq!(labels(&items), expected_labels, "{kind:?}");
+        let expected: Vec<Verb> = if kind == SidebarKind::Podcasts {
+            vec![Verb::CopyLink, Verb::RemoveFromLibrary]
+        } else {
+            vec![Verb::CopyLink, Verb::StartRadio, Verb::RemoveFromLibrary]
+        };
+        assert_eq!(verbs(&items), expected, "{kind:?}");
         let removal = items.last().expect("a removal row");
         assert_eq!(removal.kind, Kind::Destructive, "{kind:?}");
         assert_eq!(removal.key, Some("Del"), "{kind:?}");
@@ -153,7 +248,7 @@ fn a_renamable_library_row_offers_rename_first_and_plain() {
 
     assert_eq!(
         labels(&items),
-        ["Rename", "Copy link", "Remove from library"]
+        ["Rename", "Copy link", "Start radio", "Remove from library"]
     );
     assert_eq!(verbs(&items)[0], Verb::Rename);
     assert_eq!(items[0].kind, Kind::Plain);
@@ -173,12 +268,12 @@ fn a_row_that_is_not_renamable_has_no_rename_row() {
 }
 
 #[test]
-fn a_library_row_the_library_cannot_write_offers_only_its_link() {
+fn a_library_row_the_library_cannot_write_offers_only_its_link_and_radio() {
     let row = library_row(SidebarKind::Playlists, "Deep Focus");
 
     assert_eq!(
         labels(&library_items(&row, rights(false, false))),
-        ["Copy link"]
+        ["Copy link", "Start radio"]
     );
     assert!(
         library_items(&row, rights(false, false))
@@ -217,6 +312,42 @@ fn library_outcome_copies_the_link_renames_and_unlinks_the_item() {
     ] {
         assert_eq!(library_outcome(verb, &row), None, "{verb:?}");
     }
+}
+
+#[test]
+fn library_outcome_starts_the_radio_the_kind_seeds() {
+    let cases = [
+        (SidebarKind::Playlists, SeedKind::Playlist),
+        (SidebarKind::Albums, SeedKind::Album),
+        (SidebarKind::Artists, SeedKind::Artist),
+    ];
+    for (kind, seed_kind) in cases {
+        let row = library_row(kind, "Deep Focus");
+        assert_eq!(
+            library_outcome(Verb::StartRadio, &row),
+            Some(Outcome::StartRadio {
+                seed: StationSeed {
+                    kind: seed_kind,
+                    uri: row.uri.clone(),
+                },
+            }),
+            "{kind:?}"
+        );
+    }
+    assert_eq!(
+        library_outcome(
+            Verb::StartRadio,
+            &library_row(SidebarKind::Podcasts, "Field Notes")
+        ),
+        None,
+        "a show seeds no station"
+    );
+    let other = LibraryItem {
+        kind: SidebarKind::Albums,
+        uri: "spotify:artist:abc".to_owned(),
+        name: "A Record".to_owned(),
+    };
+    assert_eq!(library_outcome(Verb::StartRadio, &other), None);
 }
 
 #[test]
@@ -270,7 +401,7 @@ fn library_request_picks_the_listing_from_the_surface() {
             .iter()
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>(),
-        ["Rename", "Copy link", "Remove from library"]
+        ["Rename", "Copy link", "Start radio", "Remove from library"]
     );
     for surface in [crate::naming::Surface::Row, crate::naming::Surface::Band] {
         let request = library_request(row.clone(), door, rights(false, false), None, surface);

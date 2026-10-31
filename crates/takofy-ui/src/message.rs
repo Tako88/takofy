@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use takofy_model::home::{HomeAnswer, HomeAsk};
+use takofy_model::home::{HomeAnswer, HomeAsk, StationSeed};
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
     FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
@@ -111,6 +111,18 @@ pub enum Command {
     LoadLikedTracks,
     /// One read a Home shelf asked for.
     LoadHome(HomeAsk),
+    /// Start a radio from one seed, replacing the queue with the station's
+    /// rows.
+    StartRadio { seed: StationSeed },
+    /// Ask a station for rows that continue the queue from what it has played.
+    ///
+    /// `ask` is echoed back so an answer to a cancelled ask finds no queue
+    /// waiting for it, and `recent` is the rows already played, nearest first.
+    ContinueRadio {
+        ask: u64,
+        context: String,
+        recent: Vec<String>,
+    },
     /// Write these tracks into the liked-songs set, or out of it.
     SetLiked { tracks: Vec<String>, liked: bool },
     /// The tracks one search query answers.
@@ -496,6 +508,16 @@ pub enum Update {
     Home(HomeAnswer),
     /// One Home shelf's read failed, told apart by the ask that named it.
     HomeFailed { ask: HomeAsk, failure: Failure },
+    /// The rows a radio read answered, echoed with the seed that asked.
+    Radio { seed: String, rows: Vec<TrackEntry> },
+    /// A radio read answered nothing to play, echoed with the seed that asked.
+    RadioFailed { seed: String },
+    /// The rows a station answered to continue a radio, echoed with the ask
+    /// that asked for them.
+    ///
+    /// An empty list is both a queue with nothing more to give and a read that
+    /// failed, because the queue treats the two the same way.
+    RadioMore { ask: u64, rows: Vec<TrackEntry> },
     /// A playback change.
     Transport(TransportUpdate),
     /// A change to the account's devices.
@@ -580,6 +602,9 @@ impl Update {
             | Self::PortraitsFailed { .. }
             | Self::Home(_)
             | Self::HomeFailed { .. }
+            | Self::Radio { .. }
+            | Self::RadioFailed { .. }
+            | Self::RadioMore { .. }
             | Self::Transport(_)
             | Self::Devices(_)
             | Self::Remote(_) => false,

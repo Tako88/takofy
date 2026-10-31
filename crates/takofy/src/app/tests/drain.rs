@@ -2,6 +2,7 @@ use super::super::*;
 use super::test_support::*;
 
 use std::sync::mpsc::channel;
+use takofy_model::home::{SeedKind, StationSeed};
 use takofy_model::{CoverImage, CoverUrl, TrackEntry};
 use takofy_ui::library::Load;
 use takofy_ui::message::{Failure, TransportUpdate};
@@ -718,4 +719,91 @@ fn a_page_that_is_not_home_keeps_the_artists_gate() {
 
     assert_eq!(library.followed_artists_request(), None);
     assert_eq!(library.followed_artists, Load::Idle);
+}
+
+#[test]
+fn drain_lands_a_radio_and_leaves_the_start_to_the_frame() {
+    let (tx, rx) = channel();
+    let mut state = SignIn::SignedIn;
+    let mut library = Library::default();
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut devices = Devices::default();
+    let seed = StationSeed {
+        kind: SeedKind::Song,
+        uri: "spotify:track:a".to_owned(),
+    };
+    let _ = library.start_radio(seed);
+    tx.send(Update::Radio {
+        seed: "spotify:track:a".to_owned(),
+        rows: vec![track("spotify:track:a")],
+    })
+    .expect("send");
+
+    let commands = drain(
+        &rx,
+        &mut state,
+        &mut library,
+        &mut transport,
+        &mut queue,
+        &mut devices,
+        &mut Art::default(),
+        &mut Playclock::at(Instant::now()),
+    );
+
+    assert!(
+        commands.is_empty(),
+        "drain started the queue itself instead of the frame"
+    );
+    assert!(queue.current().is_none(), "drain moved the queue");
+    assert!(
+        library.has_landed_play(),
+        "the rows never reached the library"
+    );
+}
+
+#[test]
+fn drain_hands_a_radio_more_answer_to_the_queue() {
+    let (tx, rx) = channel();
+    let mut state = SignIn::SignedIn;
+    let mut library = Library::default();
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut devices = Devices::default();
+    let rows: Vec<TrackEntry> = (0..6)
+        .map(|index| track(&format!("spotify:track:t{index}")))
+        .collect();
+    let _ = queue.start(&rows, 0, None, &mut transport);
+    let _ = queue.jump(2, &mut transport);
+    let ask = match queue.drift_wants() {
+        Some(Command::ContinueRadio { ask, .. }) => ask,
+        other => panic!("the radio asked for {other:?}"),
+    };
+    tx.send(Update::RadioMore {
+        ask,
+        rows: vec![track("spotify:track:f0")],
+    })
+    .expect("send");
+
+    let commands = drain(
+        &rx,
+        &mut state,
+        &mut library,
+        &mut transport,
+        &mut queue,
+        &mut devices,
+        &mut Art::default(),
+        &mut Playclock::at(Instant::now()),
+    );
+
+    assert!(commands.is_empty(), "an answer asked for a command");
+    assert_eq!(
+        queue.upcoming().last().map(|(_, entry)| entry.uri.as_str()),
+        Some("spotify:track:f0"),
+        "the answer never reached the queue"
+    );
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "the answer did not clear the ask in flight"
+    );
 }

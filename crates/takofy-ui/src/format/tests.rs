@@ -141,6 +141,10 @@ fn the_notices_name_what_could_not_be_done() {
         "Could not rename that playlist. Try again."
     );
     assert_eq!(
+        sidebar_notice(SidebarWrite::Radio),
+        "Could not start that radio. Try again."
+    );
+    assert_eq!(
         sidebar_notice(SidebarWrite::Remove),
         "Could not remove that from your library. Try again."
     );

@@ -62,6 +62,7 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     AddToQueue,
+    StartRadio,
     Save,
     Unsave,
     GoToAlbum,

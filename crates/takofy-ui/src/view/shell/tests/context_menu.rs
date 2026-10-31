@@ -1,8 +1,10 @@
 use super::super::*;
 use super::test_support::*;
+use crate::message::Update;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
+use takofy_model::home::{SeedKind, StationSeed};
 
 #[test]
 fn selection_resets_when_the_page_changes() {
@@ -564,7 +566,12 @@ fn a_click_on_now_playings_more_opens_a_current_menu() {
             .iter()
             .map(|item| item.verb)
             .collect::<Vec<_>>(),
-        [Verb::GoToAlbum, Verb::GoToArtist, Verb::CopyLink]
+        [
+            Verb::StartRadio,
+            Verb::GoToAlbum,
+            Verb::GoToArtist,
+            Verb::CopyLink
+        ]
     );
 }
 
@@ -609,4 +616,104 @@ fn now_playings_more_waits_without_a_current_entry() {
         !window.menu.is_open(),
         "a waiting more button opened a menu"
     );
+}
+
+#[test]
+fn a_chosen_start_radio_sends_the_seed_and_closes() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    open_menu(
+        &mut window,
+        Verb::StartRadio,
+        vec![menu_track(0)],
+        Listing::Page,
+        vec![0],
+    );
+    settle_menu(&mut window, &mut transport, &mut queue);
+
+    assert_eq!(
+        press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+        Some(Command::StartRadio { seed: seed() }),
+        "the seed is the row the menu was opened on"
+    );
+    assert!(
+        !window.menu.is_open(),
+        "the menu stayed open after the choice"
+    );
+}
+
+#[test]
+fn pressing_start_radio_twice_sends_twice() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    let seed = seed();
+
+    for _ in 0..2 {
+        open_menu(
+            &mut window,
+            Verb::StartRadio,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+            Some(Command::StartRadio { seed: seed.clone() }),
+            "a repeated press is not refused"
+        );
+    }
+}
+
+#[test]
+fn a_landed_radio_starts_the_queue_on_its_first_row() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    open_menu(
+        &mut window,
+        Verb::StartRadio,
+        vec![menu_track(0)],
+        Listing::Page,
+        vec![0],
+    );
+    settle_menu(&mut window, &mut transport, &mut queue);
+    let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+    let rows = vec![menu_track(1), menu_track(2)];
+    window.library.apply(&Update::Radio {
+        seed: "spotify:track:0".to_owned(),
+        rows: rows.clone(),
+    });
+    assert!(window.library.has_landed_play());
+
+    let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+    assert_eq!(
+        command,
+        Some(Command::Play {
+            uri: "spotify:track:1".to_owned()
+        })
+    );
+    assert_eq!(
+        queue.current().map(|entry| entry.uri.as_str()),
+        Some("spotify:track:1")
+    );
+    assert_eq!(queue.origin(), None, "a radio names no context");
+    assert_eq!(
+        queue
+            .upcoming()
+            .map(|(_, entry)| entry.uri.as_str())
+            .collect::<Vec<_>>(),
+        vec!["spotify:track:2"]
+    );
+}
+
+fn seed() -> StationSeed {
+    StationSeed {
+        kind: SeedKind::Song,
+        uri: "spotify:track:0".to_owned(),
+    }
 }
