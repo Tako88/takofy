@@ -6,6 +6,8 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-31
+
 ### Added
 
 - **A radio from anything.** A track, an album, an artist or a playlist now has
@@ -49,5 +51,6 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
   instead of telling you that you are offline
   ([#79](https://github.com/Tako88/takofy/issues/79)).
 
-[Unreleased]: https://github.com/Tako88/takofy/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Tako88/takofy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Tako88/takofy/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Tako88/takofy/compare/v0.1.2...v0.1.3

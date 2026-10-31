@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 # The floor is the compiler the Flatpak SDK ships, so the release and the
 # sandbox are built by the same rustc.
