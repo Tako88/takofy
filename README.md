@@ -1,16 +1,16 @@
 # Takofy
 
 A fast, lean Spotify client for Windows and Linux, in Rust. One binary, no
-Electron, no web view. Your library is drawn from a local cache the moment the
-window opens, and replaced by the real thing as the network answers.
+Electron, no web view. It draws your library from a local cache the moment the
+window opens, then replaces it as the network answers.
 
 ![The library as a grid of covers, beside the Now Playing queue and the transport bar](docs/screenshot.png)
 
 ## Features
 
 Spotify Connect in both directions: send the sound to your phone or a speaker,
-or let the phone play through this window. The row it lands on is the row it
-keeps playing.
+or let the phone play through this window. It resumes on the row the other
+device stopped at.
 
 - Radio from anything. A track, an album, an artist or a playlist starts a
   station, and a queue that reaches its end keeps going from what it has just
@@ -21,12 +21,11 @@ keeps playing.
   artist, copy the link.
 - Your playlists, albums, artists, shows and Liked Songs in a three-column
   window that gives up columns as it narrows, down to a drawer for the sidebar.
-- Artist pages carry the discography and the artists it is heard with. Shows
-  list their episodes, albums their tracks.
+- Artist pages show the discography and the related artists. Shows list their
+  episodes, albums their tracks.
 - Library filters for playlists, artists, albums and podcasts, and the same set
   as a grid or a list.
-- Search answers tracks, then names the albums and artists those tracks came
-  from.
+- Search finds tracks, then names the albums and artists they came from.
 - A Now Playing panel with the queue and the lyrics, following the current line
   when the track carries timings.
 - Transport with drag-to-seek, shuffle, and repeat off, all or one. The queue is
