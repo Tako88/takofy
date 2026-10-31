@@ -172,6 +172,7 @@ jobs:
           awk -v v="$version" '
             index($0, "## [" v "]") == 1 { on = 1; next }
             on && index($0, "## [") == 1 { exit }
+            on && $0 ~ /^\[[^]]+\]:/ { exit }
             on { print }
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then
