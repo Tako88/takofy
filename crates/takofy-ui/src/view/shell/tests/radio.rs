@@ -4,9 +4,11 @@ use super::super::*;
 use super::test_support::*;
 
 use crate::menu::{Device, Door, LibraryItem};
+use crate::message::Update;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::sidebar_kind::SidebarKind;
+use takofy_model::TrackEntry;
 use takofy_model::home::{SeedKind, StationSeed};
 
 const PLAYLIST_ROW: &str = "spotify:playlist:row";
@@ -92,6 +94,19 @@ fn choose_radio(
     press(window, transport, queue, egui::Key::Enter)
 }
 
+/// One row of a station, whose address is the kind a radio continues from.
+fn radio_row(index: usize) -> TrackEntry {
+    TrackEntry {
+        uri: format!("spotify:track:t{index}"),
+        ..track(index, None)
+    }
+}
+
+/// A radio's rows, `count` of them, as a station answers them.
+fn radio_rows(count: usize) -> Vec<TrackEntry> {
+    (0..count).map(radio_row).collect()
+}
+
 #[test]
 fn a_sidebar_rows_radio_starts_its_stations() {
     let cases = [
@@ -144,6 +159,63 @@ fn a_bands_radio_starts_its_stations() {
             "{kind:?}"
         );
     }
+}
+
+#[test]
+fn a_landed_radio_starts_a_queue_that_asks_for_more() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    let seed = StationSeed {
+        kind: SeedKind::Song,
+        uri: "spotify:track:a".to_owned(),
+    };
+    let _ = window.library.start_radio(seed.clone());
+    window.library.apply(&Update::Radio {
+        seed: seed.uri.clone(),
+        rows: radio_rows(5),
+    });
+
+    let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+    assert!(
+        matches!(command, Some(Command::Play { .. })),
+        "the frame never started the rows: {command:?}"
+    );
+    assert_eq!(
+        queue.current().map(|entry| entry.uri.as_str()),
+        Some("spotify:track:t0"),
+        "the shell never started the radio"
+    );
+    assert!(
+        matches!(queue.drift_wants(), Some(Command::ContinueRadio { .. })),
+        "a landed radio left nothing asking for more"
+    );
+}
+
+#[test]
+fn a_shelf_play_of_the_same_rows_never_asks_for_more() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    assert!(window.library.want_play_rows(None, radio_rows(5)));
+
+    let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+    assert!(
+        matches!(command, Some(Command::Play { .. })),
+        "the frame never started the rows: {command:?}"
+    );
+    assert_eq!(
+        queue.current().map(|entry| entry.uri.as_str()),
+        Some("spotify:track:t0"),
+        "the shell never started the play"
+    );
+    assert_eq!(
+        queue.drift_wants(),
+        None,
+        "a shelf play asked for rows that continue nothing"
+    );
 }
 
 #[test]

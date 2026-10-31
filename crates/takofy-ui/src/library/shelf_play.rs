@@ -22,6 +22,9 @@ pub(super) struct PendingPlay {
     /// `None` is a play that was given its rows as they stand: there is nothing
     /// to ask for and nothing a reply could answer.
     pub(super) kind: Option<SidebarKind>,
+    /// Whether these rows are a radio's, so the queue keeps asking for rows that
+    /// continue it.
+    radio: bool,
     stage: Stage,
 }
 
@@ -45,6 +48,9 @@ pub struct Start {
     /// A station plays without one: its rows are a flat list this client cannot
     /// page, so there is no context another device could resume.
     pub origin: Option<String>,
+    /// Whether the rows are a radio's, which is what makes the queue ask for
+    /// more once they run short.
+    pub radio: bool,
     pub tracks: Vec<TrackEntry>,
 }
 
@@ -88,6 +94,7 @@ impl Library {
             uri: uri.to_owned(),
             origin: Some(uri.to_owned()),
             kind: Some(kind),
+            radio: false,
             stage,
         });
         true
@@ -95,6 +102,19 @@ impl Library {
 
     /// Starts a play whose rows are already in hand; an empty list starts nothing.
     pub fn want_play_rows(&mut self, origin: Option<&str>, rows: Vec<TrackEntry>) -> bool {
+        self.hold_rows(origin, rows, false)
+    }
+
+    /// Holds a radio's rows until a frame can start them.
+    ///
+    /// A radio plays without an origin, so its rows never carry the seed they
+    /// came from.
+    pub(super) fn want_radio_rows(&mut self, rows: Vec<TrackEntry>) -> bool {
+        self.hold_rows(None, rows, true)
+    }
+
+    /// Holds `rows` as the pending play, and says whether they were taken.
+    fn hold_rows(&mut self, origin: Option<&str>, rows: Vec<TrackEntry>, radio: bool) -> bool {
         if rows.is_empty() {
             return false;
         }
@@ -103,6 +123,7 @@ impl Library {
             uri: origin.unwrap_or_default().to_owned(),
             origin: origin.map(str::to_owned),
             kind: None,
+            radio,
             stage: Stage::Landed(rows),
         });
         true
@@ -138,9 +159,14 @@ impl Library {
         match self.play.take() {
             Some(PendingPlay {
                 origin,
+                radio,
                 stage: Stage::Landed(tracks),
                 ..
-            }) if !tracks.is_empty() => Some(Start { origin, tracks }),
+            }) if !tracks.is_empty() => Some(Start {
+                origin,
+                radio,
+                tracks,
+            }),
             Some(PendingPlay {
                 stage: Stage::Landed(_),
                 ..

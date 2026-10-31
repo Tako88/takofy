@@ -970,6 +970,74 @@ fn a_radio_read_answers_the_stations_rows() {
 }
 
 #[test]
+fn a_radio_more_read_echoes_its_ask_and_answers_the_rows() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.radio_more_script.lock().expect("lock") = RadioMoreScript::Ready(vec![track(SECOND)]);
+
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::ContinueRadio {
+                ask: 7,
+                context: TRACK.to_owned(),
+                recent: vec![SECOND.to_owned()],
+            })
+            .expect("radio more");
+        ui_end.updates.recv().expect("rows")
+    });
+
+    assert_eq!(
+        update,
+        Update::RadioMore {
+            ask: 7,
+            rows: vec![track(SECOND)],
+        }
+    );
+    assert_eq!(
+        *shared.radio_mores.lock().expect("lock"),
+        vec![(TRACK.to_owned(), vec![SECOND.to_owned()])],
+        "the read did not name the context and the rows played"
+    );
+}
+
+#[test]
+fn a_failed_radio_more_read_answers_no_rows() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.radio_more_script.lock().expect("lock") = RadioMoreScript::Fail;
+
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::ContinueRadio {
+                ask: 7,
+                context: TRACK.to_owned(),
+                recent: Vec::new(),
+            })
+            .expect("radio more");
+        ui_end.updates.recv().expect("failure")
+    });
+
+    assert_eq!(
+        update,
+        Update::RadioMore {
+            ask: 7,
+            rows: Vec::new(),
+        },
+        "a failed read has nothing more to give, and the queue must hear it"
+    );
+}
+
+#[test]
 fn a_failed_radio_read_echoes_the_seed_it_could_not_read() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));

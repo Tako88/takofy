@@ -322,6 +322,10 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.queue.label_wants() {
             let _ = self.ui_end.commands.send(command);
         }
+        // A radio whose rows have run short asks for more here, never in `ui`.
+        if let Some(command) = self.queue.drift_wants() {
+            let _ = self.ui_end.commands.send(command);
+        }
         self.devices.expire(now);
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.

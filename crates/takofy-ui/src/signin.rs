@@ -90,6 +90,7 @@ impl SignIn {
                 | Update::HomeFailed { .. }
                 | Update::Radio { .. }
                 | Update::RadioFailed { .. }
+                | Update::RadioMore { .. }
                 | Update::Liked { .. }
                 | Update::LikeFailed { .. }
                 | Update::Related { .. }
