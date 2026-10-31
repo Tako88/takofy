@@ -279,6 +279,97 @@ fn rendering_is_deterministic() {
     assert_eq!(render(&full()), render(&full()));
 }
 
+/// Every cover field a copy can hold, with each set built in the wire's order:
+/// the largest variant first, and an unsized one ahead of the sized ones.
+fn wire_order() -> Snapshot {
+    let playlist =
+        |uri: &str, cover: Option<PlaylistCover>, composed: Vec<CoverSet>| PlaylistEntry {
+            uri: uri.to_owned(),
+            name: "One".to_owned(),
+            named: true,
+            cover,
+            composed,
+            description: None,
+            tracks: None,
+            owner: None,
+            access: None,
+            saved_at: None,
+        };
+    Snapshot {
+        playlists: Some(vec![playlist(
+            "spotify:playlist:1",
+            Some(PlaylistCover::chosen(cover(&[
+                (None, 1),
+                (Some((640, 640)), 2),
+            ]))),
+            vec![
+                cover(&[(Some((640, 640)), 3), (None, 4)]),
+                cover(&[(Some((640, 300)), 5), (Some((300, 300)), 6)]),
+                cover(&[(Some((1280, 720)), 7), (Some((640, 360)), 8)]),
+            ],
+        )]),
+        shows: Some(vec![FollowedShow {
+            uri: "spotify:show:1".to_owned(),
+            name: "A show".to_owned(),
+            named: true,
+            publisher: None,
+            episodes: None,
+            cover: Some(cover(&[
+                (None, 9),
+                (Some((640, 640)), 10),
+                (Some((300, 300)), 11),
+            ])),
+        }]),
+        artists: Some(vec![FollowedArtist {
+            uri: "spotify:artist:1".to_owned(),
+            name: "An artist".to_owned(),
+            named: true,
+            portrait: Some(cover(&[
+                (Some((640, 640)), 12),
+                (Some((160, 160)), 13),
+                (Some((300, 200)), 14),
+            ])),
+            releases: None,
+        }]),
+        albums: Some(vec![SavedAlbum {
+            uri: "spotify:album:1".to_owned(),
+            name: "An album".to_owned(),
+            named: true,
+            artists: "Ana".to_owned(),
+            artist_uris: Vec::new(),
+            artist_names: Vec::new(),
+            year: None,
+            cover: Some(cover(&[(Some((640, 640)), 15), (Some((64, 64)), 16)])),
+            tracks: None,
+            saved_at: None,
+        }]),
+        ..Snapshot::new(account())
+    }
+}
+
+#[test]
+fn a_wire_order_copy_renders_like_its_round_trip() {
+    let snapshot = wire_order();
+    let text = render(&snapshot);
+    let read = parse(&text).expect("a read copy");
+    assert_eq!(render(&read), text);
+    assert_eq!(render(&parse(&render(&read)).expect("a read copy")), text);
+}
+
+#[test]
+fn cover_variants_are_written_by_size_and_unsized_last() {
+    let text = render(&wire_order());
+    let portrait = format!(
+        "160x160@{small} 300x200@{wide} 640x640@{large}",
+        small = cdn(13).as_str(),
+        wide = cdn(14).as_str(),
+        large = cdn(12).as_str(),
+    );
+    assert!(text.contains(&portrait), "{text}");
+    let with_unsized = format!("640x640@{} -@{}", cdn(2).as_str(), cdn(1).as_str());
+    assert!(text.contains(&with_unsized), "{text}");
+}
+
 #[test]
 fn access_is_not_written() {
     let revision = Revision::from_wire(b"rev-42").expect("a revision");

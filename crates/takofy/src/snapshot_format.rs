@@ -16,8 +16,8 @@
 use std::fmt::{self, Write as _};
 
 use takofy_model::{
-    Account, CoverOrigin, CoverSet, CoverUrl, FollowedArtist, FollowedShow, LikedTrack, Owner,
-    OwnerName, PlaylistCover, PlaylistEntry, SavedAlbum, SavedAt,
+    Account, CoverOrigin, CoverSet, CoverUrl, CoverVariant, FollowedArtist, FollowedShow,
+    LikedTrack, Owner, OwnerName, PlaylistCover, PlaylistEntry, SavedAlbum, SavedAt,
 };
 use takofy_ui::library::Snapshot;
 
@@ -164,6 +164,10 @@ impl Section {
 ///
 /// Every list the copy holds is written, in the fixed order; a list it does not
 /// hold is left out rather than written empty.
+///
+/// A cover's variants are written in one canonical order rather than the order
+/// the set holds them, so a set read from the wire and the same set read back
+/// from this file render byte for byte alike.
 pub fn render(snapshot: &Snapshot) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{MAGIC}\t{VERSION}");
@@ -681,8 +685,20 @@ fn flag(out: &mut String, value: bool) {
     out.push(if value { '1' } else { '0' });
 }
 
+/// A variant's place in the written order: sized ones by width then height, an
+/// unsized one last, and the URL breaking a tie.
+fn variant_key(variant: &CoverVariant) -> (u8, u32, u32, &str) {
+    match (variant.width, variant.height) {
+        (Some(width), Some(height)) => (0, width, height, variant.url.as_str()),
+        _ => (1, 0, 0, variant.url.as_str()),
+    }
+}
+
 fn cover_field(out: &mut String, set: &CoverSet) {
-    for (index, variant) in set.variants().iter().enumerate() {
+    let mut variants: Vec<&CoverVariant> = set.variants().iter().collect();
+    variants.sort_by_key(|variant| variant_key(variant));
+    variants.dedup_by_key(|variant| variant_key(variant));
+    for (index, variant) in variants.iter().enumerate() {
         if index > 0 {
             out.push(' ');
         }

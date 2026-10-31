@@ -172,8 +172,9 @@ impl SnapshotWriter {
 /// wake reports the window for the generation `observe` last saw. Closing
 /// writes whatever differs now, because there is no next frame.
 pub struct SnapshotSync {
-    /// The copy the file holds, or `None` when it holds none this build trusts.
-    written: Option<Snapshot>,
+    /// The file's text for the copy it holds, or `None` when it holds none this
+    /// build trusts.
+    written: Option<String>,
     /// The library generation `observe` last saw.
     generation: u64,
     /// When the lists last changed, once they have been quiet enough to write.
@@ -197,7 +198,7 @@ impl SnapshotSync {
     #[cfg(test)]
     pub fn for_test(written: Option<Snapshot>, writer: Option<SnapshotWriter>) -> Self {
         Self {
-            written,
+            written: written.as_ref().map(snapshot_format::render),
             generation: 0,
             since: None,
             writer,
@@ -261,12 +262,13 @@ impl SnapshotSync {
         }
     }
 
-    /// Hands `snapshot` to the writer unless the file already holds it.
+    /// Hands `snapshot` to the writer unless the file's text already holds it.
     fn save(&mut self, snapshot: Snapshot) {
-        if self.written.as_ref() == Some(&snapshot) {
+        let text = snapshot_format::render(&snapshot);
+        if self.written.as_ref() == Some(&text) {
             return;
         }
-        self.written = Some(snapshot.clone());
+        self.written = Some(text);
         if let Some(writer) = &self.writer {
             writer.send(snapshot);
         }
@@ -296,7 +298,7 @@ fn open_at(
     };
     let cached = load(&path);
     let written = match &cached {
-        Cached::Found(snapshot) => Some(snapshot.clone()),
+        Cached::Found(snapshot) => Some(snapshot_format::render(snapshot)),
         Cached::Refused(reason) => {
             warn!("library snapshot refused: {reason}");
             None

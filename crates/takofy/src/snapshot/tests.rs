@@ -3,7 +3,9 @@ use std::cell::Cell;
 use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use takofy_model::{Account, LikedTrack, PlaylistEntry};
+use takofy_model::{
+    Account, CoverSet, CoverUrl, LikedTrack, PlaylistAccess, PlaylistCover, PlaylistEntry, Revision,
+};
 
 struct Temp(PathBuf);
 
@@ -436,6 +438,80 @@ fn off_saves_nothing() {
     let mut sync = SnapshotSync::off();
     assert_eq!(sync.observe(Instant::now(), 7, || Some(snapshot())), None);
     sync.close(|| Some(snapshot()));
+}
+
+/// A copy holding every field the file does not keep as it was handed over: a
+/// cover wired largest-first with an unsized variant ahead of the sized ones,
+/// and the access a live read attaches to a playlist row.
+fn wire_order_copy() -> Snapshot {
+    let url = |n: u8| {
+        let mut id = [0u8; 20];
+        id[0] = n;
+        CoverUrl::from_file_id(&id).expect("a file id")
+    };
+    let cover = |n: u8| {
+        CoverSet::from_sizes([(None, url(n)), (Some((640, 640)), url(n))]).expect("a cover set")
+    };
+    Snapshot {
+        playlists: Some(vec![PlaylistEntry {
+            uri: "spotify:playlist:1".to_owned(),
+            name: "One".to_owned(),
+            named: true,
+            cover: Some(PlaylistCover::chosen(cover(1))),
+            composed: vec![cover(2), cover(3)],
+            description: None,
+            tracks: Some(3),
+            owner: None,
+            access: Some(PlaylistAccess {
+                revision: Revision::from_wire(b"rev-1").expect("a revision"),
+                editable: true,
+            }),
+            saved_at: None,
+        }]),
+        liked: snapshot().liked,
+        ..Snapshot::new(account())
+    }
+}
+
+#[test]
+fn a_copy_the_file_already_renders_is_not_written() {
+    let dir = Temp::new("a_copy_the_file_already_renders_is_not_written").make();
+    write(&dir.file(), &wire_order_copy()).expect("a writable copy");
+    let before = fs::metadata(dir.file())
+        .expect("the copy")
+        .modified()
+        .expect("an mtime");
+
+    let (seen, sink) = recorder();
+    let (cached, mut sync) = open_at(Some(dir.file()), move |_| {
+        SnapshotWriter::with_sink(sink, FLUSH_WAIT)
+    });
+    assert!(matches!(cached, Cached::Found(_)));
+    sync.close(|| Some(wire_order_copy()));
+    drop(sync);
+    assert!(
+        writes(&seen).is_empty(),
+        "a copy the file already renders was written"
+    );
+    assert_eq!(
+        fs::metadata(dir.file())
+            .expect("the copy")
+            .modified()
+            .expect("an mtime"),
+        before,
+        "the file was rewritten"
+    );
+
+    let (seen, sink) = recorder();
+    let (_, mut sync) = open_at(Some(dir.file()), move |_| {
+        SnapshotWriter::with_sink(sink, FLUSH_WAIT)
+    });
+    let mut changed = wire_order_copy();
+    changed.playlists.as_mut().expect("playlists")[0].name = "Two".to_owned();
+    sync.close(|| Some(changed.clone()));
+    wait_for(&seen, 1);
+    drop(sync);
+    assert_eq!(writes(&seen), vec![changed]);
 }
 
 #[test]
