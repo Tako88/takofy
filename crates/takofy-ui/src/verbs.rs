@@ -164,6 +164,7 @@ pub fn library_request(
 /// when the verb is applied.
 pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
     match verb {
+        Verb::StartRadio => radio_seed(row).map(|seed| Outcome::StartRadio { seed }),
         Verb::CopyLink => spotify_link(&row.uri).map(Outcome::Copy),
         Verb::RemoveFromLibrary => Some(Outcome::Unlink(row.clone())),
         Verb::SaveToLibrary => Some(Outcome::Save(row.clone())),

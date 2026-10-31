@@ -17,6 +17,51 @@ fn rows() -> Vec<TrackEntry> {
 }
 
 #[test]
+fn an_album_seed_then_an_artist_seed_lands_only_the_artists_answer() {
+    let mut library = Library::default();
+    let album = StationSeed {
+        kind: SeedKind::Album,
+        uri: "spotify:album:r".to_owned(),
+    };
+    let artist = StationSeed {
+        kind: SeedKind::Artist,
+        uri: "spotify:artist:a".to_owned(),
+    };
+
+    assert_eq!(
+        library.start_radio(album.clone()),
+        Command::StartRadio {
+            seed: album.clone()
+        }
+    );
+    assert_eq!(
+        library.start_radio(artist.clone()),
+        Command::StartRadio {
+            seed: artist.clone()
+        }
+    );
+
+    library.apply(&Update::Radio {
+        seed: album.uri.clone(),
+        rows: rows(),
+    });
+    assert!(
+        !library.has_landed_play(),
+        "the replaced album seed still landed"
+    );
+    assert_eq!(library.take_play(), None);
+
+    library.apply(&Update::Radio {
+        seed: artist.uri.clone(),
+        rows: vec![track("t2")],
+    });
+    assert_eq!(
+        library.take_play().map(|start| start.tracks),
+        Some(vec![track("t2")])
+    );
+}
+
+#[test]
 fn a_press_sends_the_command() {
     let mut library = Library::default();
 

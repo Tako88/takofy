@@ -309,10 +309,45 @@ fn library_outcome_copies_the_link_renames_and_unlinks_the_item() {
         Verb::AddToPlaylist,
         Verb::NewPlaylist,
         Verb::Remove,
-        Verb::StartRadio,
     ] {
         assert_eq!(library_outcome(verb, &row), None, "{verb:?}");
     }
+}
+
+#[test]
+fn library_outcome_starts_the_radio_the_kind_seeds() {
+    let cases = [
+        (SidebarKind::Playlists, SeedKind::Playlist),
+        (SidebarKind::Albums, SeedKind::Album),
+        (SidebarKind::Artists, SeedKind::Artist),
+    ];
+    for (kind, seed_kind) in cases {
+        let row = library_row(kind, "Deep Focus");
+        assert_eq!(
+            library_outcome(Verb::StartRadio, &row),
+            Some(Outcome::StartRadio {
+                seed: StationSeed {
+                    kind: seed_kind,
+                    uri: row.uri.clone(),
+                },
+            }),
+            "{kind:?}"
+        );
+    }
+    assert_eq!(
+        library_outcome(
+            Verb::StartRadio,
+            &library_row(SidebarKind::Podcasts, "Field Notes")
+        ),
+        None,
+        "a show seeds no station"
+    );
+    let other = LibraryItem {
+        kind: SidebarKind::Albums,
+        uri: "spotify:artist:abc".to_owned(),
+        name: "A Record".to_owned(),
+    };
+    assert_eq!(library_outcome(Verb::StartRadio, &other), None);
 }
 
 #[test]
