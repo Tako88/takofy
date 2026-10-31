@@ -19,8 +19,8 @@ use takofy_core::rootlist::Walked;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
+    Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow,
+    Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
     SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -134,6 +134,14 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         &mut self,
         token: &AccessToken,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// The account this session connected as, once it is connected.
+    ///
+    /// A host that never learns a name saves no library copy; the default
+    /// keeps such a host honest without a fake implementation.
+    fn account(&self) -> Option<Account> {
+        None
+    }
 
     /// The rootlist as the account walks it, before its playlists are named.
     ///
@@ -532,6 +540,12 @@ impl SessionHost for LiveSession {
             Some(engine) => engine.walk_rootlist().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
+    }
+
+    fn account(&self) -> Option<Account> {
+        self.engine
+            .as_ref()
+            .and_then(|engine| Account::from_wire(&engine.username()))
     }
 
     async fn label_rootlist(&self, walked: Walked) -> Result<RootlistRead, SessionError> {

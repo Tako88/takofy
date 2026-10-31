@@ -4,7 +4,7 @@ use super::test_support::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use takofy_core::engine::RootlistRead;
-use takofy_model::PlaylistAccess;
+use takofy_model::{Account, PlaylistAccess};
 
 /// A waker that peeks at the channel when it runs, so the test can see
 /// whether the update was queued first.
@@ -297,6 +297,138 @@ fn a_token_connects_and_lists_the_rootlist() {
     assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
     assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
     assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_account_is_announced_before_the_library_is_ready() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let account = Account::from_wire("dana").expect("an account");
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default()).with_account(account);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 4)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::Account(account),
+            Update::LibraryReady,
+            Update::Playlists(Vec::new()),
+        ],
+        "the account names whose copy the library holds before any read runs"
+    );
+}
+
+#[test]
+fn a_session_that_names_no_account_announces_none() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 3)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(Vec::new()),
+        ],
+        "nothing is announced for a session that names no account"
+    );
+}
+
+#[test]
+fn a_reload_on_a_live_connection_does_not_announce_the_account_again() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let account = Account::from_wire("dana").expect("an account");
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host =
+        FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list.clone())).with_account(account);
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let mut seen = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::ReloadLibrary)
+            .expect("reload");
+        seen.extend(expect_library(&ui_end));
+        seen
+    });
+
+    assert_eq!(
+        updates
+            .iter()
+            .filter(|update| matches!(update, Update::Account(_)))
+            .count(),
+        1,
+        "the account belongs to the connect, not to every walk: {updates:?}"
+    );
+    assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_read_sent_while_connect_is_in_flight_runs_after_the_walk() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let host = FakeHost::new(
+        ConnectScript::Gated(Arc::clone(&gate)),
+        RootlistScript::Ready(list.clone()),
+    );
+    let shared = Arc::clone(&host.shared);
+    let (started_tx, started_rx) = channel();
+    *shared.connect_started.lock().expect("lock") = Some(started_tx);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        started_rx.recv().expect("connect started");
+        ui_end
+            .commands
+            .send(Command::LoadTracks {
+                playlist: "spotify:playlist:one".to_owned(),
+            })
+            .expect("load");
+        // The loop is waiting on the connect, so the read has nowhere to run.
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            shared.tracks.load(Ordering::SeqCst),
+            0,
+            "a read sent during the connect waits for it"
+        );
+        gate.notify_one();
+        expect_updates(&ui_end, 4)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(list),
+            Update::Tracks {
+                playlist: "spotify:playlist:one".to_owned(),
+                tracks: Vec::new(),
+                cover: None,
+                access: None,
+            },
+        ],
+        "the queued read answers only after the walk"
+    );
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
+    assert_eq!(shared.tracks.load(Ordering::SeqCst), 1);
 }
 
 #[test]

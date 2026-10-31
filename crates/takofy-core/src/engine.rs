@@ -148,6 +148,11 @@ impl Engine {
         Ok(Self::new(session))
     }
 
+    /// The account name this session connected as, as the wire spells it.
+    pub fn username(&self) -> String {
+        self.session.username()
+    }
+
     /// Whether the session this engine was built on is known to be dead.
     ///
     /// librespot sets this on a closed socket and on its keep-alive timeout, so

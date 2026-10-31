@@ -5,4 +5,5 @@ mod painting;
 mod prefs;
 mod remote;
 mod search;
+mod snapshot;
 mod test_support;

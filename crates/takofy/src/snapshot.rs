@@ -8,20 +8,14 @@
 //! not a partial draw.
 //!
 //! Writing waits for quiet: a refresh changes a list many times in a second and
-//! the file should see one copy, not sixty. The copy is built and rendered on a
+//! the file should see one copy, not sixty. The clone that builds a copy happens
+//! once per quiet window, on the UI thread; rendering and writing happen on a
 //! `takofy-snapshot` thread, so the drawing thread never waits on the
 //! filesystem. Closing only hands the last copy over; the bounded wait for that
 //! thread happens when the sync is dropped.
 //!
 //! The copy belongs to one account, and that key is the account line alone:
 //! playlist names and owner names are stored verbatim, by design.
-
-// The window's startup is the only user of this module, and it is not wired to
-// the cache yet.
-#![expect(
-    dead_code,
-    reason = "wired up by the app in a later milestone of this slice"
-)]
 
 use std::ffi::OsString;
 use std::fs;

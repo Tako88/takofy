@@ -28,9 +28,9 @@ use takofy_core::rootlist::{RootEntry, Walked};
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
-    AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow, Landing,
-    LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report,
-    RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
+    Account, AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow,
+    Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal,
+    Report, RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
@@ -236,12 +236,14 @@ impl TokenSource for ScriptedSource {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Default)]
 pub(super) enum ConnectScript {
     #[default]
     Ok,
     Fail,
     Pending,
+    /// Answers once the gate is released, so a test can hold the connect.
+    Gated(Arc<tokio::sync::Notify>),
 }
 
 #[derive(Clone)]
@@ -541,6 +543,8 @@ pub(super) struct FakeState {
     /// Every request the loop refused, in order.
     pub(super) refusals: Mutex<Vec<RequestId>>,
     pub(super) connected: AtomicBool,
+    /// The account the fake session connected as; `None` names none.
+    pub(super) account: Mutex<Option<Account>>,
     pub(super) connects: AtomicUsize,
     pub(super) rootlists: AtomicUsize,
     pub(super) labelled: AtomicUsize,
@@ -730,6 +734,12 @@ impl FakeHost {
         }
     }
 
+    /// The account the fake session connects as.
+    pub(super) fn with_account(self, account: Account) -> Self {
+        *self.shared.account.lock().expect("lock") = Some(account);
+        self
+    }
+
     /// Builds the fake player once, holding the event stream a drain takes.
     fn start_player(&self) {
         if self.shared.player_started.swap(true, Ordering::SeqCst) {
@@ -785,7 +795,7 @@ impl SessionHost for FakeHost {
             if scripts.len() > 1 {
                 scripts.remove(0)
             } else {
-                scripts.first().copied().unwrap_or_default()
+                scripts.first().cloned().unwrap_or_default()
             }
         };
         let shared = Arc::clone(&self.shared);
@@ -797,8 +807,17 @@ impl SessionHost for FakeHost {
                 }
                 ConnectScript::Fail => Err(SessionError::NotConnected),
                 ConnectScript::Pending => std::future::pending().await,
+                ConnectScript::Gated(gate) => {
+                    gate.notified().await;
+                    shared.connected.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
             }
         }
+    }
+
+    fn account(&self) -> Option<Account> {
+        *self.shared.account.lock().expect("lock")
     }
 
     fn walk_rootlist(&self) -> impl Future<Output = Result<Walked, SessionError>> + Send {

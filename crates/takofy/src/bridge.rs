@@ -791,6 +791,14 @@ async fn walk_library<H: SessionHost>(
             Some(Ok(())) => {
                 *connected = true;
                 startup.record(Stage::Connect, began, 1);
+                match host.account() {
+                    Some(account) => {
+                        notifier.send(Update::Account(account));
+                    }
+                    None => log::warn!(
+                        "the account name is unavailable: the library will not be cached"
+                    ),
+                }
             }
             Some(Err(error)) => {
                 notifier.send(Update::PlaylistFailed(library_failure(&error)));
