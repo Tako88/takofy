@@ -10,6 +10,7 @@ mod followed;
 mod history;
 mod home;
 mod moving;
+mod radio;
 mod remove;
 mod rename;
 mod reorder;

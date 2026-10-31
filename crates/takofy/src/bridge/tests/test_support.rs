@@ -1000,6 +1000,24 @@ impl SessionHost for FakeHost {
         }
     }
 
+    fn radio(
+        &self,
+        seed: &StationSeed,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send {
+        let connected = self.shared.connected.load(Ordering::SeqCst);
+        let script = self.shared.station_script.lock().expect("lock").clone();
+        let seed = seed.clone();
+        async move {
+            if !connected {
+                return Err(SessionError::NotConnected);
+            }
+            match script {
+                StationScript::Ready => Ok(canned_station(&seed).rows),
+                StationScript::Fail => Err(SessionError::NotConnected),
+            }
+        }
+    }
+
     fn followed_shows(
         &self,
     ) -> impl Future<Output = Result<Vec<FollowedShow>, SessionError>> + Send {

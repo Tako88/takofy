@@ -58,7 +58,7 @@ pub(super) fn track() -> TrackEntry {
     }
 }
 
-/// The four verbs one track gets on a page, in the sheet's order.
+/// The verbs one track gets on a page, in the sheet's order.
 pub(super) fn items() -> Vec<Item> {
     verbs::track_items(
         &[track()],

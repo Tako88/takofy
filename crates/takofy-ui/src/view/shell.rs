@@ -733,6 +733,7 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
     }
     let targets = screen.menu.targets().to_vec();
     match verbs::outcome(verb, &targets)? {
+        verbs::Outcome::StartRadio { seed } => Some(screen.library.start_radio(seed)),
         verbs::Outcome::Queue(entries) => {
             // An add has no position to choose, so the entries go after the last.
             let _ = screen.queue.append(entries);

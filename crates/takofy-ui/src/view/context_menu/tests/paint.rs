@@ -275,7 +275,7 @@ fn rows_are_named_menu_items_and_the_card_is_a_menu() {
                 (node.role(), node.label().map(str::to_owned))
             })
             .expect("the card is a node");
-        let rows: Vec<_> = (0..4)
+        let rows: Vec<_> = (0..5)
             .map(|index| {
                 ui.ctx()
                     .accesskit_node_builder(area.with(("row", index)), |node| {
@@ -289,7 +289,13 @@ fn rows_are_named_menu_items_and_the_card_is_a_menu() {
 
     assert_eq!(nodes.0.0, egui::Role::Menu);
     assert_eq!(nodes.0.1.as_deref(), Some("Harbour Wall"));
-    let expected = ["Add to queue", "Go to album", "Go to artist", "Copy link"];
+    let expected = [
+        "Add to queue",
+        "Start radio",
+        "Go to album",
+        "Go to artist",
+        "Copy link",
+    ];
     assert_eq!(nodes.1.len(), expected.len());
     for ((role, label), name) in nodes.1.into_iter().zip(expected) {
         assert_eq!(role, egui::Role::MenuItem);

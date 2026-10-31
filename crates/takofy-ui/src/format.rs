@@ -500,6 +500,7 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
         SidebarWrite::Remove => "Could not remove that from your library. Try again.",
         SidebarWrite::Save => "Could not save that to your library. Try again.",
         SidebarWrite::Rename => "Could not rename that playlist. Try again.",
+        SidebarWrite::Radio => "Could not start that radio. Try again.",
     }
 }
 

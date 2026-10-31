@@ -38,7 +38,7 @@ fn enter_chooses_it() {
         drawn.closed,
         Some(Closed {
             opener: Some(opener()),
-            chose: Some(Verb::GoToAlbum),
+            chose: Some(Verb::StartRadio),
         })
     );
     assert!(!menu.is_open());

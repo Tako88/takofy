@@ -3,6 +3,7 @@ use super::test_support::*;
 use crate::session::ArtistPage;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
+use takofy_model::home::{SeedKind, StationSeed};
 use takofy_model::{
     ArtistDetail, ArtistPortrait, CoverSet, LikedTrack, LyricLine, SavedAt, TrackEntry, TrackLyrics,
 };
@@ -937,4 +938,64 @@ fn a_list_command_sent_after_readiness_is_served_while_labels_are_pending() {
     until("the label pass to start", || {
         shared.labelled.load(Ordering::SeqCst) == 1
     });
+}
+
+#[test]
+fn a_radio_read_answers_the_stations_rows() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let seed = StationSeed {
+        kind: SeedKind::Song,
+        uri: TRACK.to_owned(),
+    };
+
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::StartRadio { seed })
+            .expect("radio");
+        ui_end.updates.recv().expect("radio")
+    });
+
+    assert_eq!(
+        update,
+        Update::Radio {
+            seed: TRACK.to_owned(),
+            rows: vec![track(TRACK)],
+        }
+    );
+}
+
+#[test]
+fn a_failed_radio_read_echoes_the_seed_it_could_not_read() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.station_script.lock().expect("lock") = StationScript::Fail;
+
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::StartRadio {
+                seed: StationSeed {
+                    kind: SeedKind::Song,
+                    uri: TRACK.to_owned(),
+                },
+            })
+            .expect("radio");
+        ui_end.updates.recv().expect("failure")
+    });
+
+    assert_eq!(
+        update,
+        Update::RadioFailed {
+            seed: TRACK.to_owned(),
+        }
+    );
 }
