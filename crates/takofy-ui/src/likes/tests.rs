@@ -537,3 +537,130 @@ fn every_read_and_set_combination_has_a_phase() {
         assert_eq!(likes.phase(), expected, "{read:?} with a set: {held}");
     }
 }
+
+#[test]
+fn a_restored_copy_draws_but_answers_nothing() {
+    let copied = vec![dated(A, 5), dated(C, 7)];
+    let mut likes = Likes::restored(copied.clone());
+
+    assert!(likes.is_restored());
+    assert_eq!(likes.state(A), None, "a copied heart is not this session's");
+    assert_eq!(likes.standing(&[A]), Standing::Unknown);
+    assert_eq!(set(&mut likes, &[A], false), None);
+    assert_eq!(likes.notice(), None);
+
+    // The rows are still there to draw, and the next read is due.
+    assert!(likes.any());
+    assert_eq!(likes.kept(), Some(copied.clone()));
+    assert_eq!(likes.recent().expect("rows").count(), 2);
+    assert_eq!(likes.phase(), Phase::Arrived);
+    assert!(likes.request(true));
+}
+
+#[test]
+fn a_read_replaces_the_copy() {
+    let mut likes = Likes::restored(vec![dated(A, 5)]);
+    assert!(likes.request(true));
+
+    likes.apply(&Event::Set(vec![dated(B, 9)]));
+
+    assert!(!likes.is_restored());
+    assert_eq!(likes.state(A), Some(false));
+    assert_eq!(likes.state(B), Some(true));
+    assert_eq!(likes.kept(), Some(vec![dated(B, 9)]));
+}
+
+#[test]
+fn kept_puts_the_session_s_likes_first_and_drops_the_unliked() {
+    let mut likes = likes(&[A, C]);
+    assert_eq!(likes.kept(), Some(undated(&[A, C])));
+
+    assert!(set(&mut likes, &[B], true).is_some());
+    likes.apply(&Event::Confirmed {
+        tracks: vec![B.to_owned()],
+        liked: true,
+    });
+    assert_eq!(
+        likes.kept(),
+        Some(undated(&[B, A, C])),
+        "the like this session made comes before the read's"
+    );
+
+    assert!(set(&mut likes, &[A], false).is_some());
+    likes.apply(&Event::Confirmed {
+        tracks: vec![A.to_owned()],
+        liked: false,
+    });
+    assert_eq!(
+        likes.kept(),
+        Some(undated(&[B, C])),
+        "an unlike leaves the rows the library still holds"
+    );
+}
+
+#[test]
+fn a_session_like_the_read_also_names_keeps_the_read_s_date() {
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    likes.apply(&Event::Set(vec![dated(A, 5)]));
+
+    assert!(set(&mut likes, &[A], false).is_some());
+    likes.apply(&Event::Confirmed {
+        tracks: vec![A.to_owned()],
+        liked: false,
+    });
+    assert!(set(&mut likes, &[A], true).is_some());
+    likes.apply(&Event::Confirmed {
+        tracks: vec![A.to_owned()],
+        liked: true,
+    });
+
+    assert_eq!(likes.kept(), Some(vec![dated(A, 5)]));
+}
+
+#[test]
+fn a_kept_row_needs_a_set_to_say_anything() {
+    assert_eq!(Likes::default().kept(), None, "no read has landed");
+
+    // A read that answered with nothing is an empty library, not an unknown one.
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    likes.apply(&Event::Set(Vec::new()));
+    assert_eq!(likes.kept(), Some(Vec::new()));
+}
+
+#[test]
+fn a_write_in_flight_is_pending() {
+    let mut likes = likes(&[A]);
+    assert!(!likes.pending());
+
+    assert!(set(&mut likes, &[B], true).is_some());
+    assert!(likes.pending());
+
+    likes.apply(&Event::Confirmed {
+        tracks: vec![B.to_owned()],
+        liked: true,
+    });
+    assert!(!likes.pending());
+}
+
+#[test]
+fn discarding_a_copy_leaves_nothing_to_draw_and_asks_again() {
+    let mut likes = Likes::restored(vec![dated(A, 5)]);
+    likes.discard();
+
+    assert!(!likes.is_restored());
+    assert_eq!(likes.kept(), None);
+    assert_eq!(likes.state(A), None);
+    assert_eq!(likes.phase(), Phase::Pending);
+    assert!(likes.request(true), "a discarded copy is read again");
+}
+
+#[test]
+fn discarding_spares_a_set_a_read_landed() {
+    let mut likes = likes(&[A]);
+    likes.discard();
+
+    assert_eq!(likes.state(A), Some(true));
+    assert_eq!(likes.kept(), Some(undated(&[A])));
+}
