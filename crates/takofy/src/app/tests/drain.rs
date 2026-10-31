@@ -3,6 +3,7 @@ use super::test_support::*;
 
 use std::sync::mpsc::channel;
 use takofy_model::{CoverImage, CoverUrl, TrackEntry};
+use takofy_ui::library::Load;
 use takofy_ui::message::{Failure, TransportUpdate};
 
 #[test]

@@ -18,5 +18,5 @@ mod search;
 mod select;
 mod shelf;
 mod show;
-mod test_support;
+pub(crate) mod test_support;
 mod writes;

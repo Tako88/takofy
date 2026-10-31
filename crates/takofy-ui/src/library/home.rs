@@ -76,6 +76,14 @@ impl Library {
             self.hold_spent = false;
             return Vec::new();
         }
+        // Home draws the copy, so its own reads start from live data: while a
+        // list a shelf builds from is still last session's, every ask would
+        // read against rows this session has not been told.
+        if self.restored_waiting() {
+            self.held_since = None;
+            self.hold_spent = false;
+            return Vec::new();
+        }
         let mut asks: Vec<Command> = self.home_labels_request().into_iter().collect();
         if self.home_intake().settled() || self.hold_spent {
             asks.extend(self.home_requests());

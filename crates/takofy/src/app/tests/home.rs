@@ -26,6 +26,8 @@ fn launched() -> TakofyApp {
         UiEnd { updates, commands },
         Loaded::Absent,
         PrefsSync::off(),
+        Cached::Absent,
+        SnapshotSync::off(),
     )
 }
 

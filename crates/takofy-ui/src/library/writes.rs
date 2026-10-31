@@ -4,7 +4,7 @@ use takofy_model::{CoverOrigin, Revision};
 
 use crate::cover_refresh::first_track_uri;
 
-use super::{Library, Load};
+use super::{Library, Load, restore};
 
 impl Library {
     /// Ends the page write for `playlist` and holds `revision` for the next one.
@@ -96,7 +96,13 @@ impl Library {
             }
             // A row the list does not hold needs its name and portrait, which
             // only the read brings.
-            (true, false) => self.followed_artists = Load::Idle,
+            (true, false) => {
+                restore::reset(
+                    &mut self.followed_artists,
+                    &mut self.sources.artists,
+                    Load::Idle,
+                );
+            }
             _ => {}
         }
     }

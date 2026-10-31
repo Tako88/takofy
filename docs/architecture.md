@@ -401,6 +401,21 @@ is still unsettled. The writer's `Drop` then waits a bounded two seconds for the
 thread and detaches it: a hung filesystem cannot hold the window open longer
 than that.
 
+The library cache is one file in the platform cache directory, read whole before
+the window opens and written by its own `takofy-snapshot` thread, so the UI
+thread never touches it either. It holds the five lists the window draws and the
+fingerprint of the account they belong to; a missing, unreadable, other-account
+or refused copy draws nothing, because a copy that cannot be read whole is a
+miss rather than a partial draw. Restored rows carry no write authority, and a
+mark per list says which lists are still last session's: the reads that would
+name those rows — the cover refresh, the device watch, Home's shelves — wait
+until the session's own reply replaces the list and clears its mark, so nothing
+is asked of a session that is still connecting. A refresh that fails keeps the
+rows and says they are old. The save settles after two seconds of quiet and
+`on_exit` flushes it, on the same rules as the preferences above. Nothing is
+saved before the account is known, and nothing is saved while a sidebar, page or
+like write is in flight: the copy is deferred until the next change.
+
 ## Invariants
 
 - No token, auth code or credential reaches a log, a panic message or stdout.

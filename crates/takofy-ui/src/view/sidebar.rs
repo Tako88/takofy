@@ -13,8 +13,8 @@ use takofy_model::{
 use crate::availability::Control;
 use crate::cover::{Art, Cover, want_px};
 use crate::format::{
-    library_count, library_kind, media_type, playlist_detail, rail_nothing, root_empty_label,
-    root_loading_label, sidebar_kind_label, sidebar_notice,
+    copy_note, library_count, library_kind, media_type, playlist_detail, rail_nothing,
+    root_empty_label, root_loading_label, sidebar_kind_label, sidebar_notice,
 };
 use crate::icon::Icon;
 use crate::landing::Zone;
@@ -1033,8 +1033,12 @@ fn rows(
     }
 
     // The failure line sits at the foot of every list, and the rows make room
-    // for it rather than drawing over it.
-    let notice = library.sidebar_notice.map(sidebar_notice);
+    // for it rather than drawing over it. A write's own sentence outranks the
+    // copy's: the write is this session's, and the copy is the older news.
+    let notice = library
+        .sidebar_notice
+        .map(sidebar_notice)
+        .or_else(|| library.copy_failed().then(copy_note));
     let line = egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
     let height = notice.map(|_| ui.fonts_mut(|fonts| fonts.row_height(&line)));
     let (rect, foot) = match height {

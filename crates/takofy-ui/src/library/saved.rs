@@ -5,7 +5,7 @@ use takofy_model::uri::{UriKind, parse};
 
 use crate::message::Command;
 
-use super::{Library, Load, SidebarPending, listed};
+use super::{Library, Load, SidebarPending, Source, listed, restore};
 
 impl Library {
     /// Whether a saved write of `uri` is in flight, in this direction.
@@ -30,32 +30,33 @@ impl Library {
             return Some(*saved);
         }
         let kind = parse(uri)?.kind;
-        let (here, ready) = match kind {
+        let (here, live) = match kind {
             UriKind::Album => (
                 listed(&self.saved_albums, uri, |album| &album.uri),
-                matches!(self.saved_albums, Load::Ready(_)),
+                restore::live(&self.saved_albums, self.sources.albums),
             ),
             UriKind::Show => (
                 listed(&self.followed, uri, |show| &show.uri),
-                matches!(self.followed, Load::Ready(_)),
+                restore::live(&self.followed, self.sources.shows),
             ),
             UriKind::Playlist => (
                 listed(&self.playlists, uri, |entry| &entry.uri),
-                !matches!(self.playlists, Load::Idle | Load::Loading),
+                self.playlists_live(),
             ),
             // An artist's entry in the library is its follow, and the page's own
             // state is the only thing that knows it before the list is read.
             UriKind::Artist => (
                 listed(&self.followed_artists, uri, |artist| &artist.uri)
                     || (self.follow.artist() == Some(uri) && self.follow.confirmed() == Some(true)),
-                !matches!(self.followed_artists, Load::Idle),
+                self.sources.artists == Source::Live
+                    && !matches!(self.followed_artists, Load::Idle),
             ),
             _ => return None,
         };
         if here {
             return Some(true);
         }
-        ready.then_some(false)
+        live.then_some(false)
     }
 
     /// Records one URI's place in the library, replacing an older answer.
@@ -102,8 +103,12 @@ impl Library {
             // Re-arming the read is what puts it in the sidebar; the next visit to
             // the chip that lists this kind draws it there.
             match parse(uri).map(|parsed| parsed.kind) {
-                Some(UriKind::Album) => self.saved_albums = Load::Idle,
-                Some(UriKind::Show) => self.followed = Load::Idle,
+                Some(UriKind::Album) => {
+                    restore::reset(&mut self.saved_albums, &mut self.sources.albums, Load::Idle);
+                }
+                Some(UriKind::Show) => {
+                    restore::reset(&mut self.followed, &mut self.sources.shows, Load::Idle);
+                }
                 _ => {}
             }
             return;

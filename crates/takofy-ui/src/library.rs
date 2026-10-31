@@ -15,8 +15,8 @@ use std::ops::Range;
 use std::time::Instant;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistCover, PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
+    Account, AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow,
+    PlaylistAccess, PlaylistCover, PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
 };
 
 use crate::cover_refresh::CoverRefresh;
@@ -43,13 +43,18 @@ use crate::track_filter::TrackFilter;
 mod home;
 mod nav;
 mod requests;
+mod restore;
 mod saved;
 mod shelf_play;
+mod snapshot;
 mod writes;
 
 pub use home::HOME_HOLD;
+pub use restore::Source;
+use restore::{Sources, fail_list, live};
 use shelf_play::PendingPlay;
 pub use shelf_play::Start;
+pub use snapshot::Snapshot;
 
 /// How the library page draws its saved things.
 ///
@@ -144,6 +149,14 @@ pub struct Library {
     /// Whether the session is connected and the rootlist walked, so reads that
     /// need a session may be asked for.
     session_ready: bool,
+    /// Where each list's rows came from, and what it is owed.
+    sources: Sources,
+    /// The account the session named, once a connect announced it.
+    account: Option<Account>,
+    /// The account whose copy the restored rows belong to.
+    copy_of: Option<Account>,
+    /// How many updates have changed what a saved copy would hold.
+    generation: u64,
     /// The shows the user follows, as the library root draws them.
     pub followed: Load<Vec<FollowedShow>>,
     /// Whether the root draws its saved things as tiles or as rows.
@@ -360,6 +373,9 @@ impl Library {
     /// starts a load that has not started, so a `Playlists` that arrives first
     /// is left alone, and `LibraryReady` opens the list gates whenever it lands.
     pub fn apply(&mut self, update: &Update) {
+        if update.changes_lists() {
+            self.generation = self.generation.saturating_add(1);
+        }
         match update {
             Update::LibraryReady => self.session_ready = true,
             Update::SignedIn => {
@@ -404,6 +420,7 @@ impl Library {
                 // A playlist the read no longer lists is never asked for again.
                 self.cover_refresh.retain(&present);
                 self.playlists = Load::Ready(playlists);
+                self.sources.playlists = Source::Live;
                 // A list is not movable until its own access arrives, so a read
                 // can never be reordered on the previous read's revision.
                 self.rootlist = None;
@@ -415,7 +432,7 @@ impl Library {
                 }
             }
             Update::PlaylistFailed(failure) => {
-                self.playlists = Load::Failed(*failure);
+                fail_list(&mut self.playlists, &mut self.sources.playlists, *failure);
             }
             // Every sidebar write may replace the revision its read named, so an
             // access waits for the reply; the order it belongs to is held either
@@ -987,21 +1004,28 @@ impl Library {
             // accepted whenever it arrives, whatever page is on screen.
             Update::FollowedShows(shows) => {
                 self.followed = Load::Ready(shows.clone());
+                self.sources.shows = Source::Live;
             }
             Update::FollowedShowsFailed(failure) => {
-                self.followed = Load::Failed(*failure);
+                fail_list(&mut self.followed, &mut self.sources.shows, *failure);
             }
             Update::FollowedArtists(artists) => {
                 self.followed_artists = Load::Ready(artists.clone());
+                self.sources.artists = Source::Live;
             }
             Update::FollowedArtistsFailed(failure) => {
-                self.followed_artists = Load::Failed(*failure);
+                fail_list(
+                    &mut self.followed_artists,
+                    &mut self.sources.artists,
+                    *failure,
+                );
             }
             Update::SavedAlbums(albums) => {
                 self.saved_albums = Load::Ready(albums.clone());
+                self.sources.albums = Source::Live;
             }
             Update::SavedAlbumsFailed(failure) => {
-                self.saved_albums = Load::Failed(*failure);
+                fail_list(&mut self.saved_albums, &mut self.sources.albums, *failure);
             }
             // The liked set is a whole set, not keyed by URI: the state keeps its
             // own epoch guard so a read that predates a flip is dropped.
@@ -1093,6 +1117,7 @@ impl Library {
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}
+            Update::Account(account) => self.learn_account(*account),
         }
     }
 
@@ -1185,6 +1210,7 @@ impl Library {
     pub fn rootlist_movable(&self) -> bool {
         self.liftable()
             && self.sidebar_pending.is_none()
+            && self.playlists_live()
             && matches!(self.playlists, Load::Ready(_))
             && self.rootlist.as_ref().is_some_and(|access| access.editable)
     }
@@ -1206,10 +1232,10 @@ impl Library {
             return false;
         }
         match kind {
-            SidebarKind::Playlists => self.rootlist_removable(),
-            SidebarKind::Albums => matches!(self.saved_albums, Load::Ready(_)),
-            SidebarKind::Artists => matches!(self.followed_artists, Load::Ready(_)),
-            SidebarKind::Podcasts => matches!(self.followed, Load::Ready(_)),
+            SidebarKind::Playlists => self.rootlist_removable() && self.playlists_live(),
+            SidebarKind::Albums => live(&self.saved_albums, self.sources.albums),
+            SidebarKind::Artists => live(&self.followed_artists, self.sources.artists),
+            SidebarKind::Podcasts => live(&self.followed, self.sources.shows),
         }
     }
 
@@ -1235,7 +1261,7 @@ impl Library {
         }
         let command = match item.kind {
             SidebarKind::Albums => {
-                if !matches!(self.saved_albums, Load::Ready(_)) {
+                if !live(&self.saved_albums, self.sources.albums) {
                     return None;
                 }
                 Command::SetSaved {
@@ -1244,7 +1270,7 @@ impl Library {
                 }
             }
             SidebarKind::Podcasts => {
-                if !matches!(self.followed, Load::Ready(_)) {
+                if !live(&self.followed, self.sources.shows) {
                     return None;
                 }
                 Command::SetSaved {
@@ -1253,6 +1279,11 @@ impl Library {
                 }
             }
             SidebarKind::Artists => {
+                // A save is a write against a set, and a restored copy's list
+                // may not carry one.
+                if self.sources.artists != Source::Live {
+                    return None;
+                }
                 // A page's own follow write is already in flight; a second one
                 // for the same artist would race it.
                 if self.follow.artist() == Some(item.uri.as_str()) && self.follow.pending() {
@@ -1435,6 +1466,7 @@ impl Library {
     /// dropped. A link that fails anyway takes the same path as any other.
     pub fn creatable(&self) -> bool {
         !self.write_in_flight()
+            && self.playlists_live()
             && matches!(self.playlists, Load::Ready(_))
             && self.rootlist.is_some()
     }
@@ -1444,7 +1476,7 @@ impl Library {
     /// The row's own access says the user may write the list; no rootlist
     /// revision is involved, because a rename names the playlist's own.
     pub fn can_rename(&self, uri: &str) -> bool {
-        if self.write_in_flight() {
+        if self.write_in_flight() || !self.playlists_live() {
             return false;
         }
         let Load::Ready(playlists) = &self.playlists else {

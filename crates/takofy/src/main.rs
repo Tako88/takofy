@@ -10,11 +10,15 @@ mod decode;
 mod devices;
 mod headless;
 mod keychain;
+mod latest_writer;
 mod playhead;
 mod preferences;
 mod prompt;
 mod recovery;
 mod session;
+mod small_file;
+mod snapshot;
+mod snapshot_format;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -135,6 +139,7 @@ fn run_window(flags: &Flags) -> ExitCode {
     // Read once, before the window exists: the first frame draws what the file
     // held, and the writer outlives the window only long enough to flush it.
     let (loaded, prefs) = preferences::open();
+    let (cached, snapshots) = snapshot::open();
 
     let runtime = match build_runtime() {
         Ok(runtime) => runtime,
@@ -151,8 +156,9 @@ fn run_window(flags: &Flags) -> ExitCode {
             Box::new(move |cc| {
                 slot.install(Arc::new(cc.egui_ctx.clone()));
                 cc.egui_ctx.request_repaint();
-                let app: Box<dyn eframe::App> =
-                    Box::new(app::TakofyApp::new(cc, ui_end, loaded, prefs));
+                let app: Box<dyn eframe::App> = Box::new(app::TakofyApp::new(
+                    cc, ui_end, loaded, prefs, cached, snapshots,
+                ));
                 Ok(app)
             }),
         )

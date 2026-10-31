@@ -3,6 +3,7 @@ use super::super::*;
 use eframe::App;
 use std::sync::mpsc::channel;
 use takofy_model::{CoverSet, CoverUrl, TrackEntry};
+use takofy_ui::library::Load;
 
 pub(super) fn set(url: &CoverUrl) -> CoverSet {
     CoverSet::single(url.clone())
@@ -35,15 +36,29 @@ pub(super) fn test_window_with(
     loaded: Loaded,
     prefs: PrefsSync,
 ) -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+    test_window_restored(Cached::Absent, SnapshotSync::off(), loaded, prefs)
+}
+
+/// A window whose library copy is `cached`, saving through `snapshots`.
+pub(super) fn test_window_restored(
+    cached: Cached,
+    snapshots: SnapshotSync,
+    loaded: Loaded,
+    prefs: PrefsSync,
+) -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
     let (sender, updates) = channel();
     // Nothing will ever arrive; a disconnected channel is what the window
     // already tolerates.
     drop(sender);
     let (commands, received) = tokio::sync::mpsc::unbounded_channel();
     let (transport, queue) = TakofyApp::restored_state(&loaded);
+    let mut library = Library::default();
+    if let Cached::Found(snapshot) = cached {
+        library.restore(snapshot);
+    }
     let app = TakofyApp {
         state: SignIn::default(),
-        library: Library::default(),
+        library,
         transport,
         queue,
         reporter: Reporter::default(),
@@ -57,6 +72,7 @@ pub(super) fn test_window_with(
         art: Art::new(),
         since: None,
         prefs,
+        snapshots,
     };
     (app, received)
 }

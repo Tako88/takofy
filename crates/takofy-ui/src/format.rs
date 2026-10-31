@@ -503,6 +503,14 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
     }
 }
 
+/// What the library says while it draws a copy it could not refresh.
+///
+/// It is drawn wherever the library's own failure would be said, and it is the
+/// only sentence in the window that describes rows rather than a write.
+pub fn copy_note() -> &'static str {
+    "Showing last time's library. Could not refresh it."
+}
+
 /// The root's filter row labels each chip as the reference writes it.
 pub fn root_filter_label(kind: RootKind) -> &'static str {
     match kind {

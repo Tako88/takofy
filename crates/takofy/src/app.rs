@@ -11,7 +11,7 @@ use takofy_ui::device_list::DeviceList;
 use takofy_ui::devices::{Devices, Source};
 use takofy_ui::drawer::Drawer;
 use takofy_ui::layout::PanePref;
-use takofy_ui::library::{HOME_HOLD, Library, Load};
+use takofy_ui::library::{HOME_HOLD, Library};
 use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, RemoteUpdate, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
@@ -25,6 +25,7 @@ use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
 use crate::preferences::{Loaded, PrefsSync};
+use crate::snapshot::{Cached, SnapshotSync};
 
 /// The shortest delay a wake may ask for. A zero-delay repaint would spin the
 /// frame loop, so a clock that is already due waits this long instead.
@@ -99,6 +100,8 @@ pub(crate) struct TakofyApp {
     since: Option<Instant>,
     /// The values that survive a restart, and the thread that saves them.
     prefs: PrefsSync,
+    /// The last session's library, and the thread that saves this one's.
+    snapshots: SnapshotSync,
 }
 
 impl TakofyApp {
@@ -149,6 +152,8 @@ impl TakofyApp {
         ui_end: UiEnd,
         loaded: Loaded,
         prefs: PrefsSync,
+        cached: Cached,
+        snapshots: SnapshotSync,
     ) -> Self {
         let tokens = Tokens::DARK;
         cc.egui_ctx.set_fonts(fonts::definitions());
@@ -159,9 +164,13 @@ impl TakofyApp {
             options.input_options.line_scroll_speed = scroll::POINTS_PER_LINE;
         });
         let (transport, queue) = Self::restored_state(&loaded);
+        let mut library = Library::starting_home(wall_clock_ms());
+        if let Cached::Found(snapshot) = cached {
+            library.restore(snapshot);
+        }
         Self {
             state: SignIn::default(),
-            library: Library::starting_home(wall_clock_ms()),
+            library,
             transport,
             queue,
             reporter: Reporter::default(),
@@ -175,6 +184,7 @@ impl TakofyApp {
             art: Art::new(),
             since: None,
             prefs,
+            snapshots,
         }
     }
 
@@ -217,6 +227,19 @@ impl eframe::App for TakofyApp {
         self.since = clock.since;
         for command in commands {
             let _ = self.ui_end.commands.send(command);
+        }
+        // The copy belongs to the account that produced it; a window waiting on
+        // the sign-in card keeps nothing of it.
+        if !matches!(&self.state, SignIn::Starting | SignIn::SignedIn) {
+            self.library.discard_copy();
+        }
+        // A save settles after the lists have been quiet; the wake is what runs
+        // the frame that writes it.
+        if let Some(wake) = self
+            .snapshots
+            .observe(now, self.library.generation(), || self.library.snapshot())
+        {
+            ctx.request_repaint_after(wake.max(WAKE_FLOOR));
         }
         // A lost link reply leaves the held rootlist revision naming a list that
         // may already carry the new playlist, so the read that names both again
@@ -280,10 +303,7 @@ impl eframe::App for TakofyApp {
         // says the account can be asked, and the button stays off until an
         // answer arrives. A card that opened asked for one refresh, and a track
         // the holder plays is named once per URI.
-        if let Some(command) = self
-            .devices
-            .watch_request(matches!(self.library.playlists, Load::Ready(_)))
-        {
+        if let Some(command) = self.devices.watch_request(self.library.playlists_live()) {
             let _ = self.ui_end.commands.send(command);
         }
         if let Some(command) = self.devices.refresh_request() {
@@ -333,6 +353,7 @@ impl eframe::App for TakofyApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.prefs
             .close(&Prefs::of(&self.transport.volume, &self.queue));
+        self.snapshots.close(|| self.library.snapshot());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

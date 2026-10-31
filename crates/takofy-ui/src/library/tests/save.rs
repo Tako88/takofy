@@ -374,6 +374,30 @@ fn an_item_the_library_has_is_not_saved_again() {
 }
 
 #[test]
+fn an_artist_save_does_not_wait_for_the_artist_list_to_be_ready() {
+    for load in [Load::Loading, Load::Failed(Failure::FollowedArtists)] {
+        let mut library = Library {
+            followed_artists: load,
+            ..Library::default()
+        };
+        assert_eq!(
+            library.is_saved("spotify:artist:new"),
+            Some(false),
+            "an artist list the session asked for answers not saved"
+        );
+        assert_eq!(
+            library.save_to_library(&item(SidebarKind::Artists, "spotify:artist:new")),
+            Some(Command::SetFollow {
+                artist: "spotify:artist:new".to_owned(),
+                followed: true,
+            }),
+            "an artist save was refused while the list was not ready"
+        );
+        assert!(!library.write_in_flight(), "an artist save holds no write");
+    }
+}
+
+#[test]
 fn a_playlist_is_put_back_on_the_rootlist_by_a_link() {
     let mut library = sidebar_library(&["a"], 0x07, true, None);
     // A playlist the sidebar does not list: the only way one is missing from

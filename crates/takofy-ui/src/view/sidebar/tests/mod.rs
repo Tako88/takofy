@@ -1,6 +1,7 @@
 mod test_support;
 
 mod chips;
+mod copy;
 mod drag;
 mod empty;
 mod filter;

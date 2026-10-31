@@ -1,5 +1,7 @@
 use super::*;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use takofy_ui::prefs::QUIET;
