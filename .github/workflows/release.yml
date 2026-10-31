@@ -161,6 +161,22 @@ jobs:
           cd dist
           sha256sum takofy-* > sha256sums.txt
           cat sha256sums.txt
+      # The changelog is the release notes: one place to read what changed, and
+      # one place to keep them current. A tag with no entry fails here rather
+      # than publishing empty notes.
+      - name: Notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && index($0, "## [") == 1 { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no entry for $version"
+            exit 1
+          fi
+          cat notes.md
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -172,5 +188,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file notes.md \
             $prerelease
