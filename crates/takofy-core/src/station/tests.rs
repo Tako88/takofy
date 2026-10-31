@@ -1,6 +1,15 @@
 use super::{StationError, radio_rows, radio_uri};
 use crate::context::PageTrack;
 use takofy_model::home::{SeedKind, StationSeed};
+use takofy_model::uri::UriKind;
+
+/// Each seed kind with the URI kind it names and that kind's segment.
+const SEEDS: [(SeedKind, UriKind, &str); 4] = [
+    (SeedKind::Song, UriKind::Track, "track"),
+    (SeedKind::Playlist, UriKind::Playlist, "playlist"),
+    (SeedKind::Album, UriKind::Album, "album"),
+    (SeedKind::Artist, UriKind::Artist, "artist"),
+];
 
 fn seed(kind: SeedKind, uri: &str) -> StationSeed {
     StationSeed {
@@ -27,21 +36,90 @@ fn a_song_seed_names_the_track_station() {
 }
 
 #[test]
-fn a_seed_of_another_kind_names_no_station() {
-    for kind in [SeedKind::Playlist, SeedKind::Artist, SeedKind::Album] {
+fn each_seed_names_its_own_station() {
+    let cases = [
+        (
+            SeedKind::Song,
+            "spotify:track:abc",
+            "spotify:station:track:abc",
+        ),
+        (
+            SeedKind::Playlist,
+            "spotify:playlist:abc",
+            "spotify:station:playlist:abc",
+        ),
+        (
+            SeedKind::Album,
+            "spotify:album:abc",
+            "spotify:station:album:abc",
+        ),
+        (
+            SeedKind::Artist,
+            "spotify:artist:abc",
+            "spotify:station:artist:abc",
+        ),
+        (
+            SeedKind::Playlist,
+            "spotify:user:u:playlist:abc",
+            "spotify:station:playlist:abc",
+        ),
+    ];
+    for (kind, uri, station) in cases {
         assert_eq!(
-            radio_uri(&seed(kind, "spotify:track:abc")),
-            None,
-            "{kind:?} seeds no track radio"
+            radio_uri(&seed(kind, uri)),
+            Some(station.to_owned()),
+            "{kind:?} {uri}"
         );
     }
 }
 
 #[test]
-fn a_song_seed_naming_no_track_names_no_station() {
-    assert_eq!(radio_uri(&seed(SeedKind::Song, "spotify:album:abc")), None);
-    assert_eq!(radio_uri(&seed(SeedKind::Song, "spotify:track:")), None);
-    assert_eq!(radio_uri(&seed(SeedKind::Song, "not a uri")), None);
+fn a_seed_whose_uri_names_another_kind_names_no_station() {
+    let mut pairs = 0;
+    for (kind, own, _) in SEEDS {
+        for (_, other, segment) in SEEDS {
+            if other == own {
+                continue;
+            }
+            pairs += 1;
+            assert_eq!(
+                radio_uri(&seed(kind, &format!("spotify:{segment}:abc"))),
+                None,
+                "{kind:?} seed with a {segment} uri"
+            );
+        }
+    }
+    assert_eq!(pairs, 12, "the matrix must cover every off-diagonal pair");
+
+    for (kind, _, _) in SEEDS {
+        for segment in ["show", "episode"] {
+            assert_eq!(
+                radio_uri(&seed(kind, &format!("spotify:{segment}:abc"))),
+                None,
+                "{kind:?} seed with a {segment} uri"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_empty_or_unparseable_uri_names_no_station() {
+    for (kind, _, _) in SEEDS {
+        for uri in ["spotify:track:", "not a uri"] {
+            assert_eq!(radio_uri(&seed(kind, uri)), None, "{kind:?} {uri}");
+        }
+    }
+}
+
+#[test]
+fn an_id_carrying_a_colon_is_not_a_station_id() {
+    for (kind, _, segment) in SEEDS {
+        assert_eq!(
+            radio_uri(&seed(kind, &format!("spotify:{segment}:a:b"))),
+            None,
+            "{kind:?} seed"
+        );
+    }
 }
 
 #[test]

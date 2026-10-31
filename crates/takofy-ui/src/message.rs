@@ -111,7 +111,7 @@ pub enum Command {
     LoadLikedTracks,
     /// One read a Home shelf asked for.
     LoadHome(HomeAsk),
-    /// Start a radio from one track, replacing the queue with the station's
+    /// Start a radio from one seed, replacing the queue with the station's
     /// rows.
     StartRadio { seed: StationSeed },
     /// Write these tracks into the liked-songs set, or out of it.

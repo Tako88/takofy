@@ -266,7 +266,7 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         seed: &StationSeed,
     ) -> impl Future<Output = Result<Station, SessionError>> + Send;
 
-    /// A radio read from one track, its rows labelled in the station's order.
+    /// A radio read from one seed, its rows labelled in the station's order.
     fn radio(
         &self,
         seed: &StationSeed,

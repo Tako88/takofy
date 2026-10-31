@@ -16,7 +16,7 @@ use crate::route::Page;
 /// What applying a verb does, once the shell has the frame's command to spare.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// The station this track seeds.
+    /// The station this track, album, artist or playlist seeds.
     StartRadio { seed: StationSeed },
     /// These rows, in the order the menu took them.
     Queue(Vec<TrackEntry>),
@@ -221,8 +221,7 @@ pub fn track_items(
         items.push(item);
     }
 
-    // A station is seeded by one track, so the row is only there for a pick that
-    // is exactly that.
+    // A pick seeds a track's radio only when it is exactly one track.
     if let [only] = targets
         && only.is_track()
     {
