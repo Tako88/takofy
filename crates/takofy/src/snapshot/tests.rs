@@ -112,13 +112,23 @@ fn writes(seen: &Arc<Mutex<Vec<Snapshot>>>) -> Vec<Snapshot> {
     seen.lock().expect("the recorder").clone()
 }
 
+/// A path the host calls absolute: the same test must run on a Windows runner.
+fn absolute_root() -> &'static str {
+    if cfg!(windows) { "C:\\cache" } else { "/cache" }
+}
+
+fn under(root: &str) -> PathBuf {
+    PathBuf::from(root).join(DIR).join(FILE)
+}
+
 #[test]
 fn the_xdg_cache_home_is_used_when_absolute() {
+    let root = absolute_root();
     let path = cache_file(
         false,
-        vars(&[("XDG_CACHE_HOME", "/cache"), ("HOME", "/home/x")]),
+        vars(&[("XDG_CACHE_HOME", root), ("HOME", "/home/x")]),
     );
-    assert_eq!(path, Some(PathBuf::from("/cache/takofy/library.snapshot")));
+    assert_eq!(path, Some(under(root)));
 }
 
 #[test]
@@ -130,7 +140,7 @@ fn a_relative_or_empty_xdg_cache_home_is_ignored() {
         );
         assert_eq!(
             path,
-            Some(PathBuf::from("/home/x/.cache/takofy/library.snapshot")),
+            Some(PathBuf::from("/home/x").join(".cache").join(DIR).join(FILE)),
             "XDG_CACHE_HOME={value:?}"
         );
     }
@@ -140,7 +150,7 @@ fn a_relative_or_empty_xdg_cache_home_is_ignored() {
 fn home_names_the_cache_directory_when_nothing_else_does() {
     assert_eq!(
         cache_file(false, vars(&[("HOME", "/home/x")])),
-        Some(PathBuf::from("/home/x/.cache/takofy/library.snapshot"))
+        Some(PathBuf::from("/home/x").join(".cache").join(DIR).join(FILE))
     );
 }
 
@@ -154,7 +164,7 @@ fn no_directory_is_none() {
 fn windows_uses_local_appdata() {
     assert_eq!(
         cache_file(true, vars(&[("LOCALAPPDATA", "C:\\Cache")])),
-        Some(PathBuf::from("C:\\Cache/takofy/library.snapshot"))
+        Some(under("C:\\Cache"))
     );
     assert_eq!(cache_file(true, vars(&[("LOCALAPPDATA", "")])), None);
     assert_eq!(cache_file(true, vars(&[])), None);
