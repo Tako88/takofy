@@ -214,6 +214,7 @@ fn library_outcome_copies_the_link_renames_and_unlinks_the_item() {
         Verb::AddToPlaylist,
         Verb::NewPlaylist,
         Verb::Remove,
+        Verb::StartRadio,
     ] {
         assert_eq!(library_outcome(verb, &row), None, "{verb:?}");
     }

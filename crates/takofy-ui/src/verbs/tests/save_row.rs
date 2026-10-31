@@ -26,6 +26,7 @@ fn an_unsaved_track_gets_save_after_add_to_queue() {
         [
             "Add to queue",
             "Save to your library",
+            "Start radio",
             "Go to album",
             "Go to artist",
             "Copy link",
@@ -38,6 +39,7 @@ fn an_unsaved_track_gets_save_after_add_to_queue() {
         [
             Verb::AddToQueue,
             Verb::Save,
+            Verb::StartRadio,
             Verb::GoToAlbum,
             Verb::GoToArtist,
             Verb::CopyLink,

@@ -77,6 +77,7 @@ fn classes_are_pinned() {
         (Command::LoadFollowedArtists, Class::Read),
         (Command::LoadSavedAlbums, Class::Read),
         (Command::LoadLikedTracks, Class::Read),
+        (Command::StartRadio { seed: seed.clone() }, Class::Read),
         (Command::LoadHome(HomeAsk::Station { seed }), Class::Read),
         (
             Command::Search {

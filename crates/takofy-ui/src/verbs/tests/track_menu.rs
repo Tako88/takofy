@@ -1,8 +1,9 @@
 use super::super::*;
 use super::test_support::*;
+use takofy_model::home::{SeedKind, StationSeed};
 
 #[test]
-fn one_track_gets_the_sheets_six_verbs_in_order() {
+fn one_track_gets_the_sheets_seven_verbs_in_order() {
     let items = track_items(
         &[entry("spotify:track:a")],
         None,
@@ -13,6 +14,7 @@ fn one_track_gets_the_sheets_six_verbs_in_order() {
         labels(&items),
         [
             "Add to queue",
+            "Start radio",
             "Go to album",
             "Go to artist",
             "Copy link",
@@ -24,6 +26,7 @@ fn one_track_gets_the_sheets_six_verbs_in_order() {
         verbs(&items),
         [
             Verb::AddToQueue,
+            Verb::StartRadio,
             Verb::GoToAlbum,
             Verb::GoToArtist,
             Verb::CopyLink,
@@ -81,10 +84,108 @@ fn a_missing_album_or_artist_uri_omits_the_verb() {
         labels(&items),
         [
             "Add to queue",
+            "Start radio",
             "Copy link",
             "Add to playlist",
             "New playlist…"
         ]
+    );
+}
+
+#[test]
+fn start_radio_is_offered_in_every_listing_a_row_can_sit_in() {
+    let targets = [entry("spotify:track:a")];
+    for listing in [
+        Listing::Page,
+        Listing::Queue,
+        Listing::Current,
+        playlist_listing(),
+    ] {
+        let items = track_items(&targets, None, &listing, Standing::Unknown);
+        let radio = items
+            .iter()
+            .find(|item| item.verb == Verb::StartRadio)
+            .unwrap_or_else(|| panic!("one track seeds a radio in {listing:?}"));
+        assert_eq!(radio.label, "Start radio");
+        assert_eq!(radio.kind, Kind::Plain);
+    }
+}
+
+#[test]
+fn start_radio_follows_the_library_row_and_leads_go_to_album() {
+    let at = |items: &[Item], verb: Verb| {
+        items
+            .iter()
+            .position(|item| item.verb == verb)
+            .unwrap_or_else(|| panic!("{verb:?} is offered"))
+    };
+
+    let unknown = track_items(
+        &[entry("spotify:track:a")],
+        None,
+        &Listing::Page,
+        Standing::Unknown,
+    );
+    assert_eq!(
+        at(&unknown, Verb::StartRadio),
+        at(&unknown, Verb::AddToQueue) + 1
+    );
+    assert_eq!(
+        at(&unknown, Verb::GoToAlbum),
+        at(&unknown, Verb::StartRadio) + 1
+    );
+
+    let saved = track_items(
+        &[entry("spotify:track:a")],
+        None,
+        &Listing::Page,
+        Standing::Saved,
+    );
+    assert_eq!(at(&saved, Verb::StartRadio), at(&saved, Verb::Unsave) + 1);
+}
+
+#[test]
+fn a_pick_an_episode_or_a_local_file_offers_no_radio() {
+    let two = [entry("spotify:track:a"), entry("spotify:track:b")];
+    let items = track_items(&two, None, &Listing::Page, Standing::Unknown);
+    assert!(!verbs(&items).contains(&Verb::StartRadio));
+
+    let episode = entry("spotify:episode:e");
+    let items = track_items(&[episode], None, &Listing::Page, Standing::Unknown);
+    assert!(!verbs(&items).contains(&Verb::StartRadio));
+
+    let mut local = entry("spotify:local:A:B:C:1000");
+    local.album_uri = None;
+    local.artist_uris = Vec::new();
+    let items = track_items(&[local], None, &Listing::Page, Standing::Unknown);
+    assert!(!verbs(&items).contains(&Verb::StartRadio));
+}
+
+#[test]
+fn the_radios_outcome_carries_the_track_as_its_seed() {
+    let one = [entry("spotify:track:a")];
+    assert_eq!(
+        outcome(Verb::StartRadio, &one),
+        Some(Outcome::StartRadio {
+            seed: StationSeed {
+                kind: SeedKind::Song,
+                uri: "spotify:track:a".to_owned(),
+            },
+        })
+    );
+    assert_eq!(outcome(Verb::StartRadio, &[]), None);
+    assert_eq!(
+        outcome(
+            Verb::StartRadio,
+            &[entry("spotify:track:a"), entry("spotify:track:b")]
+        ),
+        None,
+        "a pick of two has no one seed"
+    );
+    assert_eq!(
+        outcome(Verb::StartRadio, &[entry("spotify:episode:e")]),
+        None,
+        "an episode seeds no station"
     );
 }
 
@@ -204,6 +305,7 @@ fn a_playlist_pick_labels_the_count() {
         labels(&one),
         [
             "Add to queue",
+            "Start radio",
             "Go to album",
             "Go to artist",
             "Copy link",
@@ -237,6 +339,7 @@ fn a_queue_pick_labels_the_count_without_a_noun() {
     assert_eq!(
         labels(&one),
         [
+            "Start radio",
             "Go to album",
             "Go to artist",
             "Copy link",
@@ -303,6 +406,7 @@ fn the_current_listing_has_neither_add_nor_remove() {
     assert_eq!(
         verbs(&items),
         [
+            Verb::StartRadio,
             Verb::GoToAlbum,
             Verb::GoToArtist,
             Verb::CopyLink,

@@ -2,6 +2,7 @@ use super::super::*;
 use super::test_support::*;
 
 use std::sync::mpsc::channel;
+use takofy_model::home::{SeedKind, StationSeed};
 use takofy_model::{CoverImage, CoverUrl, TrackEntry};
 use takofy_ui::library::Load;
 use takofy_ui::message::{Failure, TransportUpdate};
@@ -718,4 +719,45 @@ fn a_page_that_is_not_home_keeps_the_artists_gate() {
 
     assert_eq!(library.followed_artists_request(), None);
     assert_eq!(library.followed_artists, Load::Idle);
+}
+
+#[test]
+fn drain_lands_a_radio_and_leaves_the_start_to_the_frame() {
+    let (tx, rx) = channel();
+    let mut state = SignIn::SignedIn;
+    let mut library = Library::default();
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut devices = Devices::default();
+    let seed = StationSeed {
+        kind: SeedKind::Song,
+        uri: "spotify:track:a".to_owned(),
+    };
+    let _ = library.start_radio(seed);
+    tx.send(Update::Radio {
+        seed: "spotify:track:a".to_owned(),
+        rows: vec![track("spotify:track:a")],
+    })
+    .expect("send");
+
+    let commands = drain(
+        &rx,
+        &mut state,
+        &mut library,
+        &mut transport,
+        &mut queue,
+        &mut devices,
+        &mut Art::default(),
+        &mut Playclock::at(Instant::now()),
+    );
+
+    assert!(
+        commands.is_empty(),
+        "drain started the queue itself instead of the frame"
+    );
+    assert!(queue.current().is_none(), "drain moved the queue");
+    assert!(
+        library.has_landed_play(),
+        "the rows never reached the library"
+    );
 }

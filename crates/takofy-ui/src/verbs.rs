@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use takofy_model::TrackEntry;
+use takofy_model::home::{SeedKind, StationSeed};
 use takofy_model::uri::{UriKind, parse};
 
 use crate::likes::Standing;
@@ -15,6 +16,8 @@ use crate::route::Page;
 /// What applying a verb does, once the shell has the frame's command to spare.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    /// The station this track seeds.
+    StartRadio { seed: StationSeed },
     /// These rows, in the order the menu took them.
     Queue(Vec<TrackEntry>),
     /// One URL per line, no trailing newline.
@@ -192,8 +195,8 @@ pub fn heart_label(liked: bool) -> &'static str {
     }
 }
 
-/// The rows' commands, in the sheet's order: queue, library, album, artist,
-/// link, remove.
+/// The rows' commands, in the sheet's order: queue, library, radio, album,
+/// artist, link, remove.
 ///
 /// A verb that cannot apply is absent rather than greyed, and a pick only keeps
 /// the verbs that are single-valued across it. The library row is the pick's
@@ -216,6 +219,14 @@ pub fn track_items(
 
     if let Some(item) = library_item(targets, standing) {
         items.push(item);
+    }
+
+    // A station is seeded by one track, so the row is only there for a pick that
+    // is exactly that.
+    if let [only] = targets
+        && only.is_track()
+    {
+        items.push(item(Verb::StartRadio, "Start radio".to_owned()));
     }
 
     if let Some(uri) = single(targets, |entry| entry.album_uri.as_deref())
@@ -283,6 +294,15 @@ pub fn track_items(
 pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
     match verb {
         Verb::AddToQueue => (!targets.is_empty()).then(|| Outcome::Queue(targets.to_vec())),
+        Verb::StartRadio => match targets {
+            [only] if only.is_track() => Some(Outcome::StartRadio {
+                seed: StationSeed {
+                    kind: SeedKind::Song,
+                    uri: only.uri.clone(),
+                },
+            }),
+            _ => None,
+        },
         Verb::CopyLink => {
             let links = links(targets);
             (!links.is_empty()).then(|| Outcome::Copy(links.join("\n")))

@@ -266,6 +266,12 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         seed: &StationSeed,
     ) -> impl Future<Output = Result<Station, SessionError>> + Send;
 
+    /// A radio read from one track, its rows labelled in the station's order.
+    fn radio(
+        &self,
+        seed: &StationSeed,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send;
+
     /// The artists a station names beside `artist`: this client's one read of an
     /// artist's neighbours.
     fn neighbours(
@@ -746,6 +752,13 @@ impl SessionHost for LiveSession {
     async fn station(&self, seed: &StationSeed) -> Result<Station, SessionError> {
         match &self.engine {
             Some(engine) => engine.station(seed).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn radio(&self, seed: &StationSeed) -> Result<Vec<TrackEntry>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.radio(seed).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
