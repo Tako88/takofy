@@ -17,6 +17,8 @@ mod prompt;
 mod recovery;
 mod session;
 mod small_file;
+mod snapshot;
+mod snapshot_format;
 
 use std::process::ExitCode;
 use std::sync::Arc;
