@@ -21,6 +21,7 @@ use librespot::protocol::extension_kind::ExtensionKind;
 use librespot::protocol::metadata::{
     Date as DateMessage, Episode as EpisodeMessage, Track as TrackMessage,
 };
+use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
@@ -249,26 +250,80 @@ fn playlist_length(length: i32) -> Option<usize> {
     usize::try_from(length).ok()
 }
 
+/// The decorate list one playlist metadata read asks for.
+const META_DECORATE: &str = "revision,attributes,length,owner,capabilities,status_code,timestamp";
+
+/// How many items the metadata read asks for.
+///
+/// Twice the head cap, because the window is a slice of the list rather than a
+/// count of tracks: episodes and local files sit inside it and are dropped
+/// before the head is filled, so a window the size of the cap would leave the
+/// head short — or empty, losing the cover it derives. The surplus costs about
+/// 50 bytes an item on the wire.
+const META_WINDOW: u32 = HEAD_TRACKS as u32 * 2;
+
+/// The endpoint one playlist's metadata window is read from.
+fn playlist_meta_path(base: &str) -> String {
+    format!("/playlist/v2/playlist/{base}?decorate={META_DECORATE}&from=0&length={META_WINDOW}")
+}
+
 /// Reads one playlist's name, description, owner, head and picture in a single
 /// request.
+///
+/// The request asks for a window of [`META_WINDOW`] items rather than the whole
+/// list: a listing row names a head, never the tail.
 async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
-    let Ok(id) = SpotifyUri::from_uri(uri) else {
+    let Ok(SpotifyUri::Playlist { id, .. }) = SpotifyUri::from_uri(uri) else {
         return PlaylistMeta::empty();
     };
-    let Ok(playlist) = Playlist::get(session, &id).await else {
+    let Ok(base) = id.to_base62() else {
         return PlaylistMeta::empty();
     };
-    let picture = CoverUrl::from_file_id(&playlist.attributes.picture).map(CoverSet::single);
+    let Ok(bytes) = session
+        .spclient()
+        .request(&Method::GET, &playlist_meta_path(&base), None, None)
+        .await
+    else {
+        return PlaylistMeta::empty();
+    };
+    let Ok(content) = SelectedListContent::parse_from_bytes(&bytes) else {
+        return PlaylistMeta::empty();
+    };
+    playlist_meta_from_content(&content)
+}
+
+/// Maps one metadata window onto the listing's fields.
+///
+/// A body that named no attributes at all carries nothing to draw, so it maps to
+/// an empty meta rather than to a row of blanks.
+fn playlist_meta_from_content(content: &SelectedListContent) -> PlaylistMeta {
+    let Some(attributes) = content.attributes.as_ref() else {
+        return PlaylistMeta::empty();
+    };
+    let picture = attributes
+        .picture
+        .as_deref()
+        .and_then(CoverUrl::from_file_id)
+        .map(CoverSet::single);
+    let items: Vec<SpotifyUri> = content
+        .contents
+        .items
+        .iter()
+        .filter_map(|item| item.uri.as_deref())
+        .filter_map(|uri| SpotifyUri::from_uri(uri).ok())
+        .collect();
     PlaylistMeta {
-        name: Some(playlist.name().to_owned()),
-        head: head_track_uris(picture.as_ref(), playlist.tracks()),
+        name: attributes.name.clone(),
+        head: head_track_uris(picture.as_ref(), items.iter()),
         picture,
-        description: non_blank(&playlist.attributes.description),
-        tracks: playlist_length(playlist.length),
-        owner: playlist_owner(&playlist.id),
+        description: attributes.description.as_deref().and_then(non_blank),
+        // The protobuf accessor defaults the count to zero, so an empty list
+        // still draws a "0 tracks" row rather than a blank.
+        tracks: playlist_length(content.length()),
+        owner: content.owner_username.as_deref().and_then(non_blank),
         access: playlist_edit::listing_access(
-            &playlist.revision,
-            playlist.capabilities.can_edit_items,
+            content.revision.as_deref().unwrap_or_default(),
+            content.capabilities.can_edit_items.unwrap_or(false),
         ),
     }
 }
