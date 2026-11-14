@@ -595,40 +595,45 @@ fn a_follow_up_removal_names_the_shifted_index() {
 }
 
 #[test]
-fn removing_the_open_playlist_goes_home_while_an_album_page_survives() {
-    let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+fn removing_the_open_playlist_leaves_its_page_and_offers_to_add_it_back() {
+    let uri = "spotify:playlist:a";
+    let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::Playlists(vec![
+        with_access(playlist(uri, "A"), 0x07, true, None),
+        with_access(playlist("spotify:playlist:b", "B"), 0x07, true, None),
+    ]));
+    library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
     library.open(album("spotify:album:r"));
-    library.select("a");
-    assert_eq!(library.page(), Some(&Page::Playlist("a".to_owned())));
+    library.select(uri);
+    assert_eq!(library.page(), Some(&Page::Playlist(uri.to_owned())));
 
     assert!(
         library
-            .remove_from_library(&item(SidebarKind::Playlists, "a"))
+            .remove_from_library(&item(SidebarKind::Playlists, uri))
             .is_some()
     );
     library.apply(&Update::PlaylistRemoved {
-        playlist: "a".to_owned(),
+        playlist: uri.to_owned(),
         revision: revision(0x09),
     });
 
     assert_eq!(
         library.page(),
-        None,
-        "the removed page stayed open instead of falling to the root"
+        Some(&Page::Playlist(uri.to_owned())),
+        "the removal took the page it was on away"
     );
-    let removed = Page::Playlist("a".to_owned());
-    assert!(
-        !library.history.pages().any(|page| *page == removed),
-        "the removed playlist stayed in the history: {:?}",
-        library.history
+    assert_eq!(
+        library.band_rights(uri).saved,
+        Some(false),
+        "the page must offer to add the list back"
     );
-    assert_eq!(library.wanted, None, "the removed playlist stayed wanted");
     assert!(
         library
             .history
             .pages()
             .any(|page| *page == Page::Album("spotify:album:r".to_owned())),
-        "the album behind it was pruned with it"
+        "the album behind it was dropped with it"
     );
     assert!(library.can_back());
     library.back();

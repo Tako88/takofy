@@ -882,8 +882,7 @@ pub(super) fn sidebar_order(window: &Window) -> Vec<String> {
 
 /// Puts `rows` in the sidebar, each read at `access`.
 ///
-/// The list is written directly so a page already on screen survives it: a
-/// `Playlists` update prunes a page whose playlist is not in it.
+/// The list is written directly, so setting it up applies no read.
 pub(super) fn sidebar_playlists(
     window: &mut Window,
     rows: &[(&str, Option<usize>)],

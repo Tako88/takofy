@@ -265,8 +265,8 @@ impl History {
 
     /// Every page the history still holds, the one on screen included.
     ///
-    /// A page can be dropped from a stack that is never walked again, so what a
-    /// pruning rule leaves behind has to be readable without moving.
+    /// Both stacks keep moves nothing walks again, so what the history holds has
+    /// to be readable without moving.
     pub fn pages(&self) -> impl Iterator<Item = &Page> + '_ {
         self.current
             .iter()
@@ -322,37 +322,6 @@ impl History {
     /// Whether there is a page to go forward to.
     pub fn can_forward(&self) -> bool {
         !self.forward.is_empty()
-    }
-
-    /// Drops the pages `keep` rejects, then collapses duplicates.
-    ///
-    /// Only `Some` pages are judged: the root is always kept. The current page
-    /// falls back to the root when it fails, and consecutive duplicates are
-    /// collapsed, including a `back` entry equal to the current page, so Back
-    /// never lands where you already are.
-    pub fn retain(&mut self, mut keep: impl FnMut(&Page) -> bool) {
-        if let Some(page) = &self.current
-            && !keep(page)
-        {
-            self.current = None;
-        }
-        for list in [&mut self.back, &mut self.forward] {
-            list.retain(|entry| match entry {
-                Some(page) => keep(page),
-                None => true,
-            });
-            list.dedup();
-        }
-        while self.back.last().is_some_and(|page| *page == self.current) {
-            self.back.pop();
-        }
-        while self
-            .forward
-            .last()
-            .is_some_and(|page| *page == self.current)
-        {
-            self.forward.pop();
-        }
     }
 }
 

@@ -487,6 +487,50 @@ fn a_confirmed_rename_updates_the_pages_head() {
         "the page's own read named the old name, and the band falls back to it"
     );
     assert_eq!(library.selected_name(), Some("New Name"));
+
+    // The band draws from the row while the row is there, and from the page's
+    // own read once the row is gone.
+    assert!(
+        library
+            .remove_from_library(&item(SidebarKind::Playlists, "a"))
+            .is_some()
+    );
+    library.apply(&Update::PlaylistRemoved {
+        playlist: "a".to_owned(),
+        revision: revision(0x09),
+    });
+
+    let source = library
+        .band_source()
+        .expect("the page's own read still heads it");
+    assert_eq!(
+        source.name, "New Name",
+        "the head went back to the name it read before the rename"
+    );
+}
+
+#[test]
+fn a_rename_then_a_library_read_keeps_the_new_name() {
+    let mut library = headed_renaming_library("Old Name");
+    rename_pending(&mut library, "a", crate::naming::Surface::Band);
+
+    library.apply(&Update::PlaylistRenamed {
+        playlist: "a".to_owned(),
+        name: "New Name".to_owned(),
+        revision: revision(0x09),
+    });
+
+    // The read no longer lists the list, so its row is gone.
+    library.apply(&Update::Playlists(Vec::new()));
+
+    let source = library
+        .band_source()
+        .expect("the page's own read still heads it");
+    assert_eq!(
+        source.name, "New Name",
+        "the head went back to the name it read before the rename"
+    );
+    assert_eq!(library.selected_name(), Some("New Name"));
 }
 
 #[test]

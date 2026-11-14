@@ -862,7 +862,7 @@ fn band_page(window: &mut Window) {
 }
 
 #[test]
-fn removing_from_the_band_menu_unlinks_and_takes_the_page_home() {
+fn removing_from_the_band_menu_unlinks_and_leaves_the_page_open() {
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -894,8 +894,8 @@ fn removing_from_the_band_menu_unlinks_and_takes_the_page_home() {
         revision: revision("root-2"),
     });
     assert!(
-        window.library.page().is_none(),
-        "the page stayed after its list left"
+        window.library.page().is_some(),
+        "the page went away with its list"
     );
 }
 

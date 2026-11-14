@@ -147,7 +147,7 @@ fn can_back_and_can_forward_track_the_moves() {
 }
 
 #[test]
-fn a_prune_keeps_an_album_page_and_the_album_and_artist_entries() {
+fn a_playlists_read_keeps_an_album_page_and_the_album_and_artist_entries() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     library.select("a");
@@ -178,7 +178,7 @@ fn a_prune_keeps_an_album_page_and_the_album_and_artist_entries() {
 }
 
 #[test]
-fn a_prune_of_the_current_playlist_returns_to_the_root_without_duplicates() {
+fn an_unlisting_read_leaves_the_current_playlist_page_and_its_history() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     library.select("a");
@@ -192,13 +192,25 @@ fn a_prune_of_the_current_playlist_returns_to_the_root_without_duplicates() {
 
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
-    assert_eq!(library.page(), None);
-    assert_eq!(library.selected(), None);
-    assert_eq!(library.tracks, Load::Idle);
-    assert_eq!(library.wanted, None);
+    assert_eq!(
+        library.page(),
+        Some(&Page::Playlist("a".to_owned())),
+        "a read that omits the page must not take it away"
+    );
+    assert_eq!(library.selected(), Some("a"));
+    assert_eq!(
+        library.tracks,
+        Load::Ready(tracks_for("a", vec![track("t")])),
+        "the page keeps the rows its own read gave it"
+    );
+    assert_eq!(
+        library.wanted.as_deref(),
+        Some("a"),
+        "the page's want survives a read that omits it"
+    );
     assert!(
-        !library.can_back(),
-        "the root must not be duplicated behind the root"
+        library.can_back(),
+        "the root behind the page must not be collapsed away"
     );
 }
 
@@ -241,7 +253,7 @@ fn forward_with_nowhere_to_go_does_not_reload_a_failed_playlist() {
 }
 
 #[test]
-fn a_prune_with_no_wanted_load_clears_ready_tracks() {
+fn a_ready_page_left_at_the_root_outlives_an_unlisting_read() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     library.select("a");
@@ -260,8 +272,8 @@ fn a_prune_with_no_wanted_load_clears_ready_tracks() {
 
     assert_eq!(
         library.tracks,
-        Load::Idle,
-        "the deleted playlist's ready tracks must be freed"
+        Load::Ready(tracks_for("a", vec![track("t")])),
+        "the page Back returns to still holds its rows"
     );
 }
 

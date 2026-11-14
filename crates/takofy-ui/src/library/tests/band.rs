@@ -346,6 +346,25 @@ fn a_head_without_a_picture_falls_back_to_the_replys_cover() {
 }
 
 #[test]
+fn the_band_source_survives_a_playlists_read_that_lists_nothing() {
+    let mut library = headed_page(
+        &["spotify:track:t0"],
+        None,
+        Some(full_head("Pasted", "Windows down", "alice")),
+        None,
+    );
+
+    library.apply(&Update::Playlists(Vec::new()));
+
+    let source = library
+        .band_source()
+        .expect("a page the sidebar names nowhere is headed by its own read");
+    assert_eq!(source.name, "Pasted");
+    assert_eq!(source.description.as_deref(), Some("Windows down"));
+    assert_eq!(source.owner.as_ref().and_then(Owner::name), Some("alice"));
+}
+
+#[test]
 fn the_selected_name_falls_back_to_the_page_head() {
     let library = headed_page(&["spotify:track:t0"], None, Some(head("Pasted")), None);
     assert_eq!(library.selected_name(), Some("Pasted"));

@@ -689,7 +689,7 @@ fn a_sidebar_rows_removal_asks_for_its_kinds_own_write() {
 }
 
 #[test]
-fn a_confirmed_removal_drops_the_row_and_its_open_page_goes_home() {
+fn a_confirmed_removal_drops_the_row_and_leaves_its_open_page() {
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -714,7 +714,11 @@ fn a_confirmed_removal_drops_the_row_and_its_open_page_goes_home() {
         revision: revision("root-2"),
     });
 
-    assert_eq!(window.library.page(), None, "the removed page stayed open");
+    assert_eq!(
+        window.library.page(),
+        Some(&Page::Playlist("playlist:Night Drive".to_owned())),
+        "the removed list took its own page away"
+    );
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     assert!(
         painted_at(&frame, "Deep Focus").is_some(),
@@ -756,8 +760,8 @@ fn a_confirmed_removal_lands_while_the_drawer_covers_the_column() {
 
     assert_eq!(
         window.library.page(),
-        None,
-        "the drawer dropped the removed page's way home"
+        Some(&Page::Playlist("playlist:Night Drive".to_owned())),
+        "the drawer changed the page the removal left open"
     );
     match &window.library.playlists {
         Load::Ready(playlists) => assert!(

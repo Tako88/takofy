@@ -50,7 +50,7 @@ fn playlists_keep_the_tracks_when_the_selection_survives() {
 }
 
 #[test]
-fn playlists_clear_the_tracks_when_the_selection_is_gone() {
+fn a_playlists_read_leaves_an_unlisted_page_alone() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     library.select("a");
@@ -64,8 +64,12 @@ fn playlists_clear_the_tracks_when_the_selection_is_gone() {
 
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
-    assert_eq!(library.tracks, Load::Idle);
-    assert_eq!(library.selected(), None);
+    assert_eq!(
+        library.tracks,
+        Load::Ready(tracks_for("a", vec![track("t")])),
+        "a page the sidebar no longer lists keeps its rows"
+    );
+    assert_eq!(library.selected(), Some("a"));
 }
 
 #[test]

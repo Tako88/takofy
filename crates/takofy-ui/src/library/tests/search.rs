@@ -165,13 +165,20 @@ fn a_playlist_reply_keeps_the_search_pages_in_the_history() {
     library.select("spotify:playlist:a");
     library.open(search("never gonna"));
 
-    // The playlist leaves the library: its page is pruned, the search is not.
+    // The playlist leaves the library: both pages stay.
     library.apply(&Update::Playlists(Vec::new()));
 
     assert_eq!(library.page_search_query(), Some("never gonna"));
-    assert!(library.can_back(), "the pruned playlist was behind it");
+    assert!(
+        library.can_back(),
+        "the playlist page is still behind the search"
+    );
     library.back();
-    assert_eq!(library.page(), None, "the pruned playlist is skipped");
+    assert_eq!(
+        library.page(),
+        Some(&Page::Playlist("spotify:playlist:a".to_owned())),
+        "the page the search was opened from is still there"
+    );
 }
 
 #[test]
@@ -190,7 +197,7 @@ fn a_search_query_that_spells_a_playlist_uri_is_not_that_playlist() {
     assert_eq!(library.wanted, None);
     assert_eq!(library.tracks, Load::Idle);
 
-    // And a playlist reply cannot prune it: the variant decides, not the
+    // And a playlist reply does not reach it: the variant decides, not the
     // text.
     library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(library.page_search_query(), Some(query));

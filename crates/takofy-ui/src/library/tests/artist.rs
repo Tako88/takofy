@@ -236,7 +236,7 @@ fn current_artist_is_none_while_loading_or_for_another_uri() {
 }
 
 #[test]
-fn a_playlist_prune_leaves_the_artist_alone() {
+fn a_playlists_read_leaves_the_artist_alone() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("p", "P")]));
     library.select("p");
@@ -249,7 +249,7 @@ fn a_playlist_prune_leaves_the_artist_alone() {
     assert_eq!(
         library.artist,
         Load::Ready(artist_detail("spotify:artist:a")),
-        "a playlist prune never touches the artist"
+        "a playlists read never touches the artist"
     );
 }
 

@@ -224,20 +224,20 @@ fn to_playlists_clears_the_show_want_and_drops_an_unsettled_load() {
 }
 
 #[test]
-fn a_playlist_prune_leaves_the_show_alone() {
+fn a_playlists_read_leaves_the_show_alone() {
     let mut library = Library::default();
     library.select("a");
     library.open(show("spotify:show:a"));
     library.apply(&Update::Show(show_detail("spotify:show:a")));
 
-    // The list no longer holds the playlist, so its page is pruned.
+    // A playlists read that omits the playlist leaves the show alone.
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
     assert_eq!(library.page(), Some(&show("spotify:show:a")));
     assert_eq!(
         library.show,
         Load::Ready(show_detail("spotify:show:a")),
-        "a playlist prune never touches the show"
+        "a playlists read never touches the show"
     );
     assert_eq!(library.current_show(), Some(&show_detail("spotify:show:a")));
 }

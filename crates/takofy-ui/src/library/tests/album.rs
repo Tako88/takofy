@@ -218,20 +218,20 @@ fn to_playlists_clears_the_album_want_and_drops_an_unsettled_load() {
 }
 
 #[test]
-fn a_playlist_prune_leaves_the_album_alone() {
+fn a_playlists_read_leaves_the_album_alone() {
     let mut library = Library::default();
     library.select("a");
     library.open(album("spotify:album:a"));
     library.apply(&Update::Album(album_detail("spotify:album:a")));
 
-    // The list no longer holds the playlist, so its page is pruned.
+    // A playlists read that omits the playlist leaves the album alone.
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
     assert_eq!(library.page(), Some(&album("spotify:album:a")));
     assert_eq!(
         library.album,
         Load::Ready(album_detail("spotify:album:a")),
-        "a playlist prune never touches the album"
+        "a playlists read never touches the album"
     );
     assert_eq!(
         library.current_album(),

@@ -431,7 +431,7 @@ impl Library {
                     playlists.iter().map(|entry| entry.uri.clone()).collect();
                 self.context_covers.retain(|uri, _| present.contains(uri));
                 let listed = |uri: &str| present.iter().any(|listed| listed == uri);
-                self.prune_playlist_pages(&listed);
+                self.drop_unlisted_state(&listed);
                 self.forget_playlist_echoes();
                 // A playlist the read no longer lists is never asked for again.
                 self.cover_refresh.retain(&present);
@@ -531,15 +531,16 @@ impl Library {
                 }
                 self.context_covers.remove(playlist);
                 self.cover_refresh.forget(playlist);
-                // The removed playlist may be the page on screen; the rule a
-                // playlists read applies is the one that takes it home.
+                // The removed playlist may be the page on screen, and that page
+                // stays: only state keyed to a list the sidebar no longer holds
+                // is dropped.
                 let remaining: Vec<String> = match &self.playlists {
                     Load::Ready(playlists) => {
                         playlists.iter().map(|entry| entry.uri.clone()).collect()
                     }
                     Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
                 };
-                self.prune_playlist_pages(&|uri| remaining.iter().any(|listed| listed == uri));
+                self.drop_unlisted_state(&|uri| remaining.iter().any(|listed| listed == uri));
             }
             // The row stays and the held revision goes: the write may have
             // landed with only its reply lost, so the next read is what heals
@@ -1163,40 +1164,14 @@ impl Library {
         }
     }
 
-    /// Drops every page and read for a playlist `present` no longer lists.
+    /// Closes a rename field and drops a shelf play for a playlist `present`
+    /// no longer lists.
     ///
-    /// Only playlist pages can be pruned; album, artist, show and search pages
-    /// are not in the list and must survive it. A search's query may spell a
-    /// playlist URI, so the variant is what decides, never the payload.
-    fn prune_playlist_pages(&mut self, present: &dyn Fn(&str) -> bool) {
+    /// Pages are not dropped: a playlist page the sidebar no longer names stays
+    /// open, and draws from its own read.
+    fn drop_unlisted_state(&mut self, present: &dyn Fn(&str) -> bool) {
         if self.renaming.is_open() && !present(self.renaming.uri()) {
             self.renaming.force_close();
-        }
-        let page = self.history.current().cloned();
-        self.history.retain(|page| match page {
-            Page::Playlist(uri) => present(uri),
-            Page::Home | Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
-        });
-        if self.history.current().cloned() != page {
-            self.left_page();
-        }
-        if self
-            .wanted
-            .as_deref()
-            .is_some_and(|wanted| !present(wanted))
-        {
-            self.wanted = None;
-            self.tracks = Load::Idle;
-        }
-        // A ready list names its playlist, so it is kept only while that
-        // playlist exists. The root can leave one behind, with no wanted load to
-        // prune it by.
-        let ready = match &self.tracks {
-            Load::Ready(tracks) => Some(tracks.playlist.clone()),
-            Load::Idle | Load::Loading | Load::Failed(_) => None,
-        };
-        if ready.is_some_and(|playlist| !present(&playlist)) {
-            self.tracks = Load::Idle;
         }
         // A shelf play names a playlist too, and one that is gone can never
         // fetch its rows.
