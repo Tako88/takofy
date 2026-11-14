@@ -268,7 +268,7 @@ fn a_landed_with_a_newer_epoch_after_a_loss_is_adopted() {
 }
 
 #[test]
-fn label_wants_name_the_unnamed_rows_after_the_current_once() {
+fn label_wants_name_the_unnamed_current_and_following_rows_once() {
     let mut queue = Queue::default();
     let mut transport = Transport::default();
     queue.adopt(&landing(&["a", "b", "c", "d"], 1), &mut transport);
@@ -276,9 +276,9 @@ fn label_wants_name_the_unnamed_rows_after_the_current_once() {
     assert_eq!(
         queue.label_wants(),
         Some(Command::LabelRows {
-            uris: uris(&["c", "d"]),
+            uris: uris(&["b", "c", "d"]),
         }),
-        "only the rows after the current one owe a name"
+        "the current row owes a name too"
     );
     assert_eq!(queue.label_wants(), None, "a row is asked for once");
 }
@@ -297,14 +297,14 @@ fn a_label_batch_is_capped_and_the_rest_wait_for_the_next_pass() {
         panic!("the unnamed rows owe a request");
     };
     assert_eq!(first.len(), LABEL_BATCH, "one request names one batch");
-    assert_eq!(first, rows[1..=LABEL_BATCH].to_vec());
+    assert_eq!(first, rows[..LABEL_BATCH].to_vec());
 
     let Some(Command::LabelRows { uris: second }) = queue.label_wants() else {
         panic!("the rows left over owe the next request");
     };
     assert_eq!(
         second,
-        rows[LABEL_BATCH + 1..].to_vec(),
+        rows[LABEL_BATCH..].to_vec(),
         "the next pass names the rest, and nothing twice"
     );
     assert_eq!(queue.label_wants(), None);

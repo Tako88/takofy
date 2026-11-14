@@ -485,11 +485,13 @@ impl Queue {
         Ok(())
     }
 
-    /// The rows after the current one that are still only a URI, asked for once.
+    /// The current row and the rows after it that are still only a URI, asked
+    /// for once.
     pub fn label_wants(&mut self) -> Option<Command> {
         let mut uris = Vec::new();
-        for entry in self.tracks.iter().skip(self.first_upcoming()) {
-            if entry.named || self.label_asked.contains(&entry.uri) {
+        for (row, entry) in self.tracks.iter().enumerate() {
+            let wanted = Some(row) == self.index || row >= self.first_upcoming();
+            if !wanted || entry.named || self.label_asked.contains(&entry.uri) {
                 continue;
             }
             uris.push(entry.uri.clone());
@@ -743,6 +745,32 @@ impl Queue {
             return None;
         }
         self.add_next(vec![unnamed(uri)])
+    }
+
+    /// Inserts one row the link names where [`Self::play_next`] puts it, and
+    /// starts it only when the caller allows that and nothing was playing.
+    ///
+    /// An insert leaves an armed queue armed, so a start has to be asked for
+    /// here, and the caller does not ask while another device holds the sound.
+    pub fn play_uri_next(
+        &mut self,
+        uri: &str,
+        transport: &mut Transport,
+        may_start: bool,
+    ) -> Option<Command> {
+        if !spotify_uri(uri) {
+            return None;
+        }
+        // Read before the start, which moves the transport to `Loading`.
+        let at_rest = may_start && nothing_playing(transport.state);
+        let landed = self.play_next(vec![unnamed(uri)])?;
+        // A uri asked about before is asked again, or this row stays nameless.
+        self.label_asked.remove(uri);
+        if at_rest {
+            self.jump(landed.start, transport)
+        } else {
+            None
+        }
     }
 
     /// Bubbles `rows` one row towards `step`, and reports each `(from, to)`.
@@ -1164,6 +1192,18 @@ fn spotify_uri(uri: &str) -> bool {
             UriKind::Track | UriKind::Episode | UriKind::Local
         )
     })
+}
+
+/// Whether the transport has nothing a start would interrupt: the states
+/// [`Queue::toggle`] starts from.
+fn nothing_playing(state: TransportState) -> bool {
+    matches!(
+        state,
+        TransportState::Idle
+            | TransportState::Stopped
+            | TransportState::Unavailable
+            | TransportState::Failed(_)
+    )
 }
 
 #[cfg(test)]

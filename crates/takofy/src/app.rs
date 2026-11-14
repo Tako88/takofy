@@ -317,8 +317,8 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.devices.pick_request() {
             let _ = self.ui_end.commands.send(command);
         }
-        // A hand-over adopts rows the phone named only by URI, so the queue asks
-        // for their names once the landing is in.
+        // A hand-over adopts rows the phone named only by URI, and a pasted link
+        // lands as one, so the queue asks for their names once they are in.
         if let Some(command) = self.queue.label_wants() {
             let _ = self.ui_end.commands.send(command);
         }

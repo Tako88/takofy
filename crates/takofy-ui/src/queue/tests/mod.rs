@@ -2,6 +2,7 @@ mod advance;
 mod drift;
 mod edits;
 mod handover;
+mod play_uri;
 mod reconnect;
 mod repeat;
 mod selection;
