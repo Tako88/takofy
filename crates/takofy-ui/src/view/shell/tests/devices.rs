@@ -6,7 +6,7 @@ use crate::player::{NowPlaying, Transport, TransportState};
 use crate::queue::Queue;
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::{extent, space};
-use takofy_model::{DeviceKind, PlaylistEntry, RemotePlayback, RemoteState};
+use takofy_model::{DeviceKind, PlaylistEntry, RemoteState};
 
 /// The seek track the bar painted inside `column`.
 pub(super) fn painted_seek_track(output: &egui::FullOutput, column: Rect) -> Rect {
@@ -24,17 +24,6 @@ pub(super) fn painted_seek_track(output: &egui::FullOutput, column: Rect) -> Rec
             _ => None,
         })
         .expect("the bar paints its seek track")
-}
-
-/// What the holder is playing, as the cluster reports it.
-fn playback(state: RemoteState, steerable: bool) -> Update {
-    Update::Devices(DeviceUpdate::Playing(Some(RemotePlayback {
-        track: track(9, None),
-        state,
-        position_ms: 3_000,
-        duration_ms: Some(60_000),
-        steerable,
-    })))
 }
 
 #[test]
@@ -729,21 +718,6 @@ fn a_carry_holds_a_landed_shelf_play_until_it_ends() {
     );
 }
 
-/// A window whose watch answered with the phone playing.
-fn remote_window() -> Window {
-    let mut window = Window::new(Vec2::new(1400.0, 900.0));
-    let now = window.now;
-    assert_eq!(
-        window.devices.watch_request(true),
-        Some(Command::WatchDevices)
-    );
-    window.devices.apply(&roster(), now);
-    window
-        .devices
-        .apply(&playback(RemoteState::Playing, true), now);
-    window
-}
-
 /// A window that holds the sound itself, so the card's rows can move it.
 fn holding_window() -> Window {
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -802,16 +776,4 @@ fn armed_queue() -> Queue {
     let rows = vec![track(0, None), track(1, None)];
     assert!(queue.append(rows).is_some());
     queue
-}
-
-/// The account's roster, with the phone holding the sound.
-fn roster() -> Update {
-    Update::Devices(DeviceUpdate::Roster {
-        devices: vec![
-            device("a", "Phone", DeviceKind::Phone),
-            device("b", "Laptop", DeviceKind::Computer),
-        ],
-        holder: Some("a".to_owned()),
-        held_here: false,
-    })
 }

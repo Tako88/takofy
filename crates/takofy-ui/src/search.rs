@@ -11,6 +11,10 @@
 //! bands from; the page holds the whole answer. They are keyed by the same
 //! collapsed query, so one reply can fill both, and a reply for a query the
 //! user has typed past fills neither.
+//!
+//! A query may spell a uri, so a page's payload can still look like one. The
+//! field is where text stops being a query: a link in the field is never
+//! searched (#86).
 
 use takofy_model::TrackEntry;
 
@@ -18,6 +22,7 @@ use crate::library::Load;
 use crate::message::{Command, Failure, Update};
 use crate::portraits::{Ask, Portrait, Portraits, Surface};
 use crate::reveal::Reveal;
+use crate::route::{self, Link};
 use crate::search_index::{Index, Kind, MENU, PAGE, Row, Shape};
 
 /// The most tracks the search route answers. The page's note says "Top N" only
@@ -89,6 +94,8 @@ pub struct KeyInput {
     pub escape: bool,
     /// The text edit reports that its text changed.
     pub typed: bool,
+    /// The text edit took a paste this frame.
+    pub pasted: bool,
     /// The field itself was clicked.
     pub clicked_field: bool,
     /// Whether the field has the keyboard this frame.
@@ -97,8 +104,8 @@ pub struct KeyInput {
 
 /// What the field's keys asked the shell to do.
 ///
-/// Only the actions that reach past the field are here: `Play` and
-/// `OpenResults` are applied by the shell, and only when no other command took
+/// Only the actions that reach past the field are here: `Play`, `OpenResults`
+/// and `OpenLink` are applied by the shell, and only when no other command took
 /// this frame. `Close` says Escape cleared the query, which closed the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Act {
@@ -115,6 +122,9 @@ pub enum Act {
     /// Open the results page for the field's query: what Enter on the field asks
     /// for, and what the floor row asks for.
     OpenResults,
+    /// Route the link in the field: the shell takes it from [`Search::take_link`]
+    /// when it applies the act.
+    OpenLink,
     /// Escape cleared the query and closed the menu, its second step.
     Close,
 }
@@ -211,9 +221,28 @@ impl Search {
         std::mem::take(&mut self.focus_ask)
     }
 
-    /// The query the field stands for, or `None` when it is blank.
+    /// The query the field stands for, or `None` when it is blank or a link.
+    ///
+    /// A link is not a query, so nothing downstream of this searches it (#86).
     pub fn key(&self) -> Option<String> {
-        collapse(&self.text)
+        collapse(&self.text).filter(|key| route::link(key).is_none())
+    }
+
+    /// The destination the field's text names, or `None` when it names none.
+    ///
+    /// [`Self::key`] is `None` for exactly these texts, so a link never reaches
+    /// a read.
+    pub fn link(&self) -> Option<Link> {
+        route::link(&self.text)
+    }
+
+    /// Takes the link the field holds, emptying the field and closing the menu.
+    pub fn take_link(&mut self) -> Option<Link> {
+        let link = self.link()?;
+        self.text.clear();
+        self.text_changed();
+        self.close();
+        Some(link)
     }
 
     /// Whether the drop-down is drawn.
@@ -238,7 +267,7 @@ impl Search {
     /// The current answer with its derived shape, or `None` when the menu read
     /// is not about the text as it stands.
     pub fn listing(&self) -> Option<Listing<'_>> {
-        let key = collapse(&self.text)?;
+        let key = self.key()?;
         if self.menu.key.as_deref() != Some(key.as_str()) {
             return None;
         }
@@ -289,7 +318,7 @@ impl Search {
 
     /// What the drop-down has to say this frame.
     pub fn menu_view(&self) -> MenuView<'_> {
-        let Some(key) = collapse(&self.text) else {
+        let Some(key) = self.key() else {
             return MenuView::Nothing;
         };
         if self.menu.key.as_deref() != Some(key.as_str()) {
@@ -313,7 +342,7 @@ impl Search {
     /// the whole answer the wire returned, so the shell asks for it here rather
     /// than taking the menu's capped prefix.
     pub fn answer(&self) -> Option<&[TrackEntry]> {
-        let key = collapse(&self.text)?;
+        let key = self.key()?;
         if self.menu.key.as_deref() != Some(key.as_str()) {
             return None;
         }
@@ -381,7 +410,7 @@ impl Search {
     /// can never be drawn. A programmatic edit — the clear control — calls
     /// this too, because only the text edit itself reports `typed`.
     pub fn text_changed(&mut self) {
-        let key = collapse(&self.text);
+        let key = self.key();
         Self::want(&mut self.menu, key);
     }
 
@@ -418,6 +447,11 @@ impl Search {
             self.device = Device::Keyboard;
             self.text_changed();
             self.open = self.key().is_some();
+        }
+        if input.pasted && self.link().is_some() {
+            // A pasted link acts at once: it names one destination, so waiting
+            // for Enter would only delay it.
+            return Act::OpenLink;
         }
         // Read after the edit above: the frame that types has no rows yet.
         let rows = self.listing().map_or(0, |listing| listing.shape.len());
@@ -468,6 +502,10 @@ impl Search {
             }
         }
         if input.enter {
+            if self.link().is_some() {
+                // Enter on a link routes it, exactly as a paste does.
+                return Act::OpenLink;
+            }
             // Only a drawn row can act: a closed menu draws nothing, and a
             // stale ordinal resolves to no row.
             let row = if self.open { self.marked() } else { None };

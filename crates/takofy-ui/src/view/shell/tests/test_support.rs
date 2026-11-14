@@ -6,7 +6,7 @@ use crate::device_list::DeviceList;
 use crate::devices::Devices;
 use crate::library::{Library, Load};
 use crate::menu::LibraryItem;
-use crate::message::Update;
+use crate::message::{DeviceUpdate, Update};
 use crate::player::{NowPlaying, Transport};
 use crate::queue::Queue;
 use crate::route::Page;
@@ -16,7 +16,7 @@ use crate::theme::{extent, fonts, space, style};
 use std::time::Instant;
 use takofy_model::{
     CoverSet, CoverUrl, Device, DeviceKind, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, TrackEntry,
+    PlaylistEntry, RemotePlayback, RemoteState, Revision, SavedAlbum, TrackEntry,
 };
 
 pub(super) fn cover_url(tail: &str) -> CoverUrl {
@@ -823,6 +823,44 @@ pub(super) fn queue_of(count: usize, transport: &mut Transport) -> Queue {
     queue
 }
 
+/// What the holder is playing, as the cluster reports it.
+pub(super) fn playback(state: RemoteState, steerable: bool) -> Update {
+    Update::Devices(DeviceUpdate::Playing(Some(RemotePlayback {
+        track: track(9, None),
+        state,
+        position_ms: 3_000,
+        duration_ms: Some(60_000),
+        steerable,
+    })))
+}
+
+/// The account's roster, with the phone holding the sound.
+pub(super) fn roster() -> Update {
+    Update::Devices(DeviceUpdate::Roster {
+        devices: vec![
+            device("a", "Phone", DeviceKind::Phone),
+            device("b", "Laptop", DeviceKind::Computer),
+        ],
+        holder: Some("a".to_owned()),
+        held_here: false,
+    })
+}
+
+/// A window whose watch answered with the phone playing.
+pub(super) fn remote_window() -> Window {
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    let now = window.now;
+    assert_eq!(
+        window.devices.watch_request(true),
+        Some(Command::WatchDevices)
+    );
+    window.devices.apply(&roster(), now);
+    window
+        .devices
+        .apply(&playback(RemoteState::Playing, true), now);
+    window
+}
+
 /// The sidebar column's content box: the panel less its hairline.
 pub(super) fn sidebar_rect(window: &Window) -> Rect {
     let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
@@ -1175,6 +1213,20 @@ pub(super) fn type_query(
     let at = field_box(window, transport, queue).center();
     let _ = window.click(transport, queue, at);
     let _ = window.frame(transport, queue, vec![egui::Event::Text(query.to_owned())]);
+}
+
+/// Clicks the field and pastes `text` into it, answering the frame's command.
+pub(super) fn paste_into_field(
+    window: &mut Window,
+    transport: &mut Transport,
+    queue: &mut Queue,
+    text: &str,
+) -> Option<Command> {
+    let at = field_box(window, transport, queue).center();
+    let _ = window.click(transport, queue, at);
+    window
+        .frame(transport, queue, vec![egui::Event::Paste(text.to_owned())])
+        .0
 }
 
 /// The menu's frame for a given number of rows, solved the way the view

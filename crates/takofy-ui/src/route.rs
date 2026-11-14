@@ -24,10 +24,10 @@ pub enum Page {
     /// A search's results, by query.
     ///
     /// The payload is not a URI: it is the collapsed query the field stands
-    /// for. It can therefore look like one — a query of `spotify:playlist:x`
-    /// is a legitimate thing to type — so every consumer decides by [`Page`]
-    /// variant first and reads the payload second. Nothing may guess a page's
-    /// kind from its payload's shape.
+    /// for. A query can still look like one, so every consumer decides by
+    /// [`Page`] variant first and reads the payload second. Nothing may guess a
+    /// page's kind from its payload's shape. The field never makes this page
+    /// from a link: it routes a link instead of searching it (#86).
     Search(String),
 }
 

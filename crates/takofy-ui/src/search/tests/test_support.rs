@@ -99,6 +99,17 @@ pub(super) fn typed(text: &str) -> Search {
     state
 }
 
+/// Puts `text` in the field as a paste does, and answers what the frame asked.
+pub(super) fn paste_text(state: &mut Search, text: &str) -> Act {
+    state.text = text.to_owned();
+    state.step(KeyInput {
+        typed: true,
+        pasted: true,
+        focused: true,
+        ..KeyInput::default()
+    })
+}
+
 /// A frame with the field focused and only `key` pressed.
 pub(super) fn key(name: &str) -> KeyInput {
     KeyInput {
@@ -107,6 +118,7 @@ pub(super) fn key(name: &str) -> KeyInput {
         enter: name == "enter",
         escape: name == "escape",
         typed: false,
+        pasted: false,
         clicked_field: false,
         focused: true,
     }

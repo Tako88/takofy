@@ -241,3 +241,52 @@ fn back_onto_a_dropped_search_page_asks_for_the_frame_that_sends_it() {
         }
     );
 }
+
+/// A link is not a query, so the field asks for no read on it.
+#[test]
+fn a_link_in_the_field_asks_for_no_search() {
+    let (mut app, mut received) = test_window();
+    type_search(&mut app.library, "https://open.spotify.com/album/abc");
+
+    logic_frame(&mut app);
+    assert!(
+        received.try_recv().is_err(),
+        "a link is routed, not searched"
+    );
+}
+
+#[test]
+fn a_refused_link_still_asks_for_a_search() {
+    let (mut app, mut received) = test_window();
+    type_search(&mut app.library, "https://example.com/x");
+
+    logic_frame(&mut app);
+    assert_eq!(
+        received.try_recv().expect("the refused link's read"),
+        Command::Search {
+            query: "https://example.com/x".to_owned()
+        }
+    );
+}
+
+/// A row a paste started is the current row, so the logic pass owes it a name
+/// the same way it owes the waiting rows one.
+#[test]
+fn a_started_pasted_row_asks_for_its_label_in_the_logic_frame() {
+    let (mut app, mut received) = test_window();
+    assert_eq!(
+        app.queue
+            .play_uri_next("spotify:track:x", &mut app.transport, true),
+        Some(Command::Play {
+            uri: "spotify:track:x".to_owned()
+        })
+    );
+
+    logic_frame(&mut app);
+    assert_eq!(
+        received.try_recv().expect("the label read"),
+        Command::LabelRows {
+            uris: vec!["spotify:track:x".to_owned()]
+        }
+    );
+}

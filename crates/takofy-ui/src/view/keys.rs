@@ -62,5 +62,16 @@ pub(crate) fn pressed_once(input: &InputState, key: Key) -> bool {
     })
 }
 
+/// Whether the frame's input carries a paste.
+///
+/// egui-winit sends one `Paste` for Ctrl+V: no key event and no text event
+/// comes with it, so this is the only place the field can see one.
+pub(crate) fn pasted(input: &InputState) -> bool {
+    input
+        .events
+        .iter()
+        .any(|event| matches!(event, Event::Paste(_)))
+}
+
 #[cfg(test)]
 mod tests;

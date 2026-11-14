@@ -18,7 +18,9 @@ impl Library {
     /// Search is the one page whose identity is a query rather than a URI, so
     /// the shell hands it to the search state instead of a page handle. It is
     /// `None` on every other page, including one whose text happens to spell a
-    /// URL: the page variant decides.
+    /// URL: the page variant decides. The field routes a link instead of
+    /// searching it (#86), so a query that looks like one is only on a page
+    /// reached another way.
     pub fn page_search_query(&self) -> Option<&str> {
         match self.history.current()? {
             Page::Search(query) => Some(query),
@@ -33,7 +35,8 @@ impl Library {
     /// This is `None` on an album, artist, show or search page: the main panel
     /// is not showing a playlist, so the sidebar highlight clears and the entry
     /// and name helpers see no selection. A search whose query spells a playlist
-    /// URI is still a search.
+    /// URI is still a search, though the field routes a link rather than
+    /// searching it (#86).
     pub fn selected(&self) -> Option<&str> {
         match self.history.current()? {
             Page::Playlist(uri) => Some(uri),

@@ -1,4 +1,4 @@
-use super::{pressed, pressed_once};
+use super::{pasted, pressed, pressed_once};
 use egui::{Context, Event, Key, Modifiers, RawInput};
 
 /// One frame of `events` on `ctx`, answering what both readers say for
@@ -24,6 +24,20 @@ fn press(key: Key, repeat: bool, modifiers: Modifiers) -> Event {
         repeat,
         modifiers,
     }
+}
+
+/// One frame of `events` on `ctx`, answering whether it holds a paste.
+fn paste_frame(ctx: &Context, events: Vec<Event>) -> bool {
+    let input = RawInput {
+        events,
+        ..Default::default()
+    };
+    let mut answer = false;
+    let mut output = ctx.run_ui(input, |ui| {
+        ui.input(|state| answer = pasted(state));
+    });
+    output.textures_delta.clear();
+    answer
 }
 
 #[test]
@@ -75,4 +89,43 @@ fn a_release_is_not_a_press() {
         modifiers: Modifiers::NONE,
     };
     assert_eq!(frame(&ctx, vec![release], Key::Enter), (false, false));
+}
+
+#[test]
+fn a_paste_event_is_a_paste() {
+    let ctx = Context::default();
+    assert!(paste_frame(
+        &ctx,
+        vec![Event::Paste("spotify:track:x".to_owned())]
+    ));
+}
+
+#[test]
+fn typing_and_the_v_key_are_not_a_paste() {
+    let ctx = Context::default();
+    assert!(!paste_frame(&ctx, vec![Event::Text("v".to_owned())]));
+    assert!(!paste_frame(
+        &ctx,
+        vec![press(Key::V, false, Modifiers::CTRL)]
+    ));
+}
+
+#[test]
+fn no_events_is_not_a_paste() {
+    let ctx = Context::default();
+    assert!(!paste_frame(&ctx, Vec::new()));
+}
+
+/// The PRIMARY selection is a paste the pointer makes, and it reaches the
+/// field as typing rather than as a key.
+#[test]
+fn middle_click_paste_is_not_counted() {
+    let ctx = Context::default();
+    assert!(!paste_frame(
+        &ctx,
+        vec![Event::MiddleClickPaste {
+            pos: egui::Pos2::ZERO,
+            text: "spotify:track:x".to_owned(),
+        }]
+    ));
 }

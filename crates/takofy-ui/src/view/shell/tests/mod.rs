@@ -11,6 +11,7 @@ mod radio;
 mod remove;
 mod rename;
 mod reorder;
+mod search_link;
 mod search_menu;
 mod search_page;
 mod sidebar;

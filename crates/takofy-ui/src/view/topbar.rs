@@ -28,7 +28,7 @@ use crate::theme::{
 use crate::trail::Target;
 
 use super::controls;
-use super::keys::{FIELD_FILTER, pressed, pressed_once};
+use super::keys::{FIELD_FILTER, pasted, pressed, pressed_once};
 use super::shell::{row_centred, rule};
 use super::text as recipe;
 
@@ -462,7 +462,7 @@ fn search(
     // read that ignored the modifiers while the consume matched them let
     // Cmd+Down mark a row and move the caret at once. Arrow repeats are fine;
     // Enter and Escape act once per press, so a held key cannot do two things.
-    let (down, up, enter, enter_once, escape) = if focused_before {
+    let (down, up, enter, enter_once, escape, pasted_now) = if focused_before {
         ui.input(|input| {
             (
                 pressed(input, Key::ArrowDown),
@@ -470,10 +470,13 @@ fn search(
                 pressed(input, Key::Enter),
                 pressed_once(input, Key::Enter),
                 pressed_once(input, Key::Escape),
+                // Read before the text edit sees it: the edit takes the paste
+                // itself, and this read is the field's own.
+                pasted(input),
             )
         })
     } else {
-        (false, false, false, false, false)
+        (false, false, false, false, false, false)
     };
     if focused_before {
         ui.input_mut(|input| {
@@ -598,12 +601,14 @@ fn search(
         enter: enter_once,
         escape,
         typed,
+        pasted: pasted_now,
         clicked_field,
         focused,
     });
-    // `OpenResults` is applied by the shell, and only when no other command took
-    // the frame; the shell is the one that surrenders the field's focus, so a
-    // dropped action leaves the menu open with the keyboard still in the field.
+    // `OpenResults` and `OpenLink` are applied by the shell, and only when no
+    // other command took the frame; the shell is the one that surrenders the
+    // field's focus, so a dropped action leaves the menu open with the keyboard
+    // still in the field.
 
     Some(Field {
         rect,

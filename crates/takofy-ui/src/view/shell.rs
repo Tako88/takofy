@@ -23,7 +23,7 @@ use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::{Queue, Step};
 use crate::reorder;
-use crate::route::Page;
+use crate::route::{Link, Page};
 use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
 use crate::verbs;
@@ -476,6 +476,25 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                     .search
                     .key()
                     .and_then(|query| screen.library.open(Page::Search(query)))
+            }
+            Act::OpenLink => {
+                if let Some(field) = bar.search_field {
+                    ui.memory_mut(|memory| memory.surrender_focus(field.id));
+                }
+                // The queue drew before the insert, and a paste raises no
+                // follow-up event, so this frame asks for the repaint.
+                ui.ctx().request_repaint();
+                match screen.library.search.take_link() {
+                    Some(Link::Page(page)) => screen.library.open(page),
+                    // Another device holding the sound is never interrupted by
+                    // a paste.
+                    Some(Link::Play(uri)) => screen.queue.play_uri_next(
+                        &uri,
+                        screen.transport,
+                        source == DeviceSource::Local,
+                    ),
+                    None => None,
+                }
             }
             Act::None | Act::Close => None,
         };
