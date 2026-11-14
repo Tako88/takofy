@@ -328,3 +328,219 @@ fn the_same_query_twice_is_one_page() {
     assert!(!history.go(search("never gonna")));
     assert!(history.go(search("never gonna give")));
 }
+
+fn dest_page(page: Page) -> Option<Link> {
+    Some(Link::Page(page))
+}
+
+fn dest_play(uri: &str) -> Option<Link> {
+    Some(Link::Play(uri.to_owned()))
+}
+
+/// Every shape a link arrives in: the bare uri, the account-named playlist,
+/// and the web address, including the older user path and share suffixes.
+#[test]
+fn link_accepts_every_listed_form() {
+    let id = "4uLU6hMCjMI75M1A2tKUQC";
+    let playlist_uri = format!("spotify:playlist:{id}");
+    let album_uri = format!("spotify:album:{id}");
+    let artist_uri = format!("spotify:artist:{id}");
+    let show_uri = format!("spotify:show:{id}");
+    let track_uri = format!("spotify:track:{id}");
+    let episode_uri = format!("spotify:episode:{id}");
+
+    let cases: Vec<(String, Option<Link>)> = vec![
+        // The six kinds as a bare uri.
+        (
+            playlist_uri.clone(),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        (album_uri.clone(), dest_page(Page::Album(album_uri.clone()))),
+        (
+            artist_uri.clone(),
+            dest_page(Page::Artist(artist_uri.clone())),
+        ),
+        (show_uri.clone(), dest_page(Page::Show(show_uri.clone()))),
+        (track_uri.clone(), dest_play(&track_uri)),
+        (episode_uri.clone(), dest_play(&episode_uri)),
+        // The older account-named playlist, canonicalised to the plain uri.
+        (
+            format!("spotify:user:alice:playlist:{id}"),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        // Each kind as a web address.
+        (
+            format!("https://open.spotify.com/playlist/{id}"),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/album/{id}"),
+            dest_page(Page::Album(album_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/artist/{id}"),
+            dest_page(Page::Artist(artist_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/show/{id}"),
+            dest_page(Page::Show(show_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/track/{id}"),
+            dest_play(&track_uri),
+        ),
+        (
+            format!("https://open.spotify.com/episode/{id}"),
+            dest_play(&episode_uri),
+        ),
+        // The older web playlist path and the shapes it comes in.
+        (
+            format!("https://open.spotify.com/user/alice/playlist/{id}"),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/user/alice/playlist/{id}/"),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/intl-pt/user/alice/playlist/{id}"),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/user/alice/playlist/{id}?si=x"),
+            dest_page(Page::Playlist(playlist_uri.clone())),
+        ),
+        // Scheme, host and locale variants.
+        (
+            format!("http://open.spotify.com/track/{id}"),
+            dest_play(&track_uri),
+        ),
+        (
+            format!("https://www.open.spotify.com/album/{id}"),
+            dest_page(Page::Album(album_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/artist/{id}/"),
+            dest_page(Page::Artist(artist_uri.clone())),
+        ),
+        (
+            format!("https://open.spotify.com/intl-pt/track/{id}"),
+            dest_play(&track_uri),
+        ),
+        // Share suffixes are dropped.
+        (
+            format!("https://open.spotify.com/track/{id}?si=abc"),
+            dest_play(&track_uri),
+        ),
+        (
+            format!("https://open.spotify.com/track/{id}#frag"),
+            dest_play(&track_uri),
+        ),
+        (
+            format!("https://open.spotify.com/track/{id}?si=a#b"),
+            dest_play(&track_uri),
+        ),
+        // Surrounding whitespace is trimmed; the casing of scheme and host is
+        // not the id's affair.
+        (
+            format!("  https://open.spotify.com/track/{id}\n"),
+            dest_play(&track_uri),
+        ),
+        (
+            format!("HTTPS://Open.Spotify.com/track/{id}"),
+            dest_play(&track_uri),
+        ),
+    ];
+
+    for (text, expected) in cases {
+        assert_eq!(link(&text), expected, "{text:?}");
+    }
+}
+
+/// Nothing that is not a link may be treated as one, or a query would become a
+/// navigation.
+#[test]
+fn link_refuses_everything_else() {
+    let cases = [
+        "",
+        "   ",
+        "never gonna",
+        "track:abc",
+        "spotify:track:a b",
+        "spotify:local:a:b:c",
+        "https://open.spotify.com/local/x",
+        "spotify:user:alice",
+        "spotify:user:alice:collection",
+        "https://open.spotify.com/user/alice",
+        "spotify:genre:x",
+        "https://open.spotify.com/genre/x",
+        "spotify:track:",
+        "https://open.spotify.com/track/",
+        "https://open.spotify.com/track",
+        "spotify:track:a:b",
+        "spotify:playlist:abc:extra",
+        "spotify:user:alice:playlist:a:b",
+        "spotify:track:a?si=x",
+        "spotify:track:a/b",
+        "https://example.com/track/x",
+        "https://open.spotify.com.evil.com/track/x",
+        "https://evil.com/open.spotify.com/track/x",
+        "https://open.spotify.com:443/track/x",
+        "https://open.spotify.com/embed/track/x",
+        "track/x/y",
+        "intl-pt/track/x/y",
+        "intl-pt",
+        "https://open.spotify.com/",
+        "https://open.spotify.com/user/alice/playlist/",
+        "https://open.spotify.com/user/alice/playlist/a/b",
+        "ftp://open.spotify.com/track/x",
+        "open.spotify.com/track/x",
+        // Credentials, empty segments and a doubled locale marker.
+        "https://open.spotify.com@evil.com/track/x",
+        "https://evil.com@open.spotify.com/track/x",
+        "https://open.spotify.com//track/x",
+        "https://open.spotify.com/track//x",
+        "https://open.spotify.com/intl-pt/intl-de/track/x",
+        // An id is base62, so punctuation, non-ASCII and a control character
+        // are not an id.
+        "spotify:track:ab%cd",
+        "spotify:track:ab&cd",
+        "spotify:track:ab@cd",
+        "spotify:track:naïve",
+        "spotify:track:ab\u{0}cd",
+    ];
+    for text in cases {
+        assert_eq!(link(text), None, "{text:?}");
+    }
+
+    let id = "4uLU6hMCjMI75M1A2tKUQC";
+    let legacy = [
+        format!("https://open.spotify.com/user//playlist/{id}"),
+        format!("https://open.spotify.com/user/alice/album/{id}"),
+        format!("https://open.spotify.com/user/al:ice/playlist/{id}"),
+        // A colon in a path segment would splice the path into the
+        // colon-delimited uri shape.
+        format!("https://open.spotify.com/user:alice:playlist/{id}"),
+        format!("https://open.spotify.com/track:x/{id}"),
+    ];
+    for text in legacy {
+        assert_eq!(link(&text), None, "{text:?}");
+    }
+}
+
+/// A web address this app writes is one it reads back, and a local file is
+/// neither.
+#[test]
+fn every_link_the_app_writes_reads_back() {
+    for kind in ["track", "episode", "playlist", "album", "artist", "show"] {
+        let uri = format!("spotify:{kind}:4uLU6hMCjMI75M1A2tKUQC");
+        let web = crate::verbs::spotify_link(&uri).expect("a link");
+        let expected = link(&uri);
+
+        assert!(expected.is_some(), "{uri} names a destination");
+        assert_eq!(link(&web), expected, "{web}");
+    }
+
+    assert_eq!(crate::verbs::spotify_link("spotify:local:a:b:c"), None);
+    assert_eq!(link("spotify:local:a:b:c"), None);
+}
