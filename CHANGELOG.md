@@ -6,6 +6,17 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+### Added
+
+- **Open a link someone sent you.** Paste a Spotify link into the search field
+  and Takofy acts on it: a playlist, album, artist or show opens its page, and a
+  track or an episode goes to the front of what is waiting. A pasted link is
+  acted on at once, Enter does the same for one you typed, and anything that is
+  not a link is still a search. A pasted track starts playing only when this
+  window has the sound; with another device playing it queues and waits.
+- **Play next.** A track's "…" menu can put it ahead of everything that is
+  waiting, including what another device queued, without interrupting what is
+  playing.
 ## [0.2.0] — 2026-10-31
 
 ### Added
