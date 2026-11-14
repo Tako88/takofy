@@ -40,6 +40,7 @@ use crate::show_order::{ShowOrder, default_order};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
 
+mod band;
 mod home;
 mod nav;
 mod radio;
@@ -50,6 +51,7 @@ mod shelf_play;
 mod snapshot;
 mod writes;
 
+pub use band::BandSource;
 pub use home::HOME_HOLD;
 pub use restore::Source;
 use restore::{Sources, fail_list, live};
@@ -430,6 +432,7 @@ impl Library {
                 self.context_covers.retain(|uri, _| present.contains(uri));
                 let listed = |uri: &str| present.iter().any(|listed| listed == uri);
                 self.prune_playlist_pages(&listed);
+                self.forget_playlist_echoes();
                 // A playlist the read no longer lists is never asked for again.
                 self.cover_refresh.retain(&present);
                 self.playlists = Load::Ready(playlists);
@@ -501,6 +504,10 @@ impl Library {
                 }
                 self.sidebar_pending = None;
                 self.sidebar_notice = None;
+                // The server holds no place for a list it has just unlinked,
+                // whatever the local list says, and a stale row would leave the
+                // heart filled until the re-read.
+                self.forget_saved(playlist);
                 // The list can move under the index the write named, and a
                 // removal at a stale one would unlink a playlist the user never
                 // picked. A list that no longer holds the row there is re-read
@@ -552,6 +559,9 @@ impl Library {
                 // A link puts the row at the front, and the reply carries no row
                 // to draw, so the list is re-read rather than invented.
                 self.rootlist_stale = true;
+                // The link is the only confirmation an add gets, so it is what
+                // fills the heart until the re-read lists the row.
+                self.remember_saved(playlist, true);
             }
             Update::PlaylistLinkFailed { playlist } => {
                 if !matches!(
@@ -775,6 +785,11 @@ impl Library {
                     if tracks.notice == Some(Failure::Rename) {
                         tracks.notice = None;
                     }
+                    // The page's own read named the old name; the confirmed one
+                    // is what the band draws once only the head is left.
+                    if let Some(head) = &mut tracks.head {
+                        head.name = name.clone();
+                    }
                 }
                 if self.renaming.is_open() && self.renaming.uri() == playlist {
                     self.renaming.finished();
@@ -806,7 +821,7 @@ impl Library {
                 tracks,
                 cover,
                 access,
-                head: _,
+                head,
             } => {
                 // A shelf play waiting on this playlist takes these rows, whatever
                 // page is on screen. The cover upgrade below is keyed by the
@@ -855,17 +870,21 @@ impl Library {
                         .as_ref()
                         .filter(|pending| pending.playlist == *playlist);
                     if let Some(pending) = pending {
-                        let held = match &self.tracks {
-                            Load::Ready(current) => current.access.clone(),
-                            Load::Idle | Load::Loading | Load::Failed(_) => None,
+                        let (held_access, held_head, held_cover) = match &self.tracks {
+                            Load::Ready(current) => (
+                                current.access.clone(),
+                                current.head.clone(),
+                                current.cover.clone(),
+                            ),
+                            Load::Idle | Load::Loading | Load::Failed(_) => (None, None, None),
                         };
                         self.tracks = Load::Ready(TracksFor {
                             playlist: playlist.clone(),
                             tracks: pending.after.clone(),
-                            access: held.or_else(|| access.clone()),
+                            access: held_access.or_else(|| access.clone()),
                             notice: None,
-                            head: None,
-                            cover: None,
+                            head: held_head.or_else(|| head.clone()),
+                            cover: held_cover.or_else(|| cover.clone()),
                         });
                     } else {
                         self.tracks = Load::Ready(TracksFor {
@@ -873,8 +892,8 @@ impl Library {
                             tracks: tracks.clone(),
                             access: access.clone(),
                             notice: None,
-                            head: None,
-                            cover: None,
+                            head: head.clone(),
+                            cover: cover.clone(),
                         });
                     }
                     self.clear_filter_when_empty();
@@ -1318,6 +1337,9 @@ impl Library {
                 }
             }
             SidebarKind::Playlists => {
+                if self.write_in_flight() {
+                    return None;
+                }
                 let revision = self.rootlist.as_ref()?.revision.clone();
                 Command::LinkPlaylist {
                     playlist: item.uri.clone(),
@@ -1511,18 +1533,30 @@ impl Library {
             .is_some_and(|entry| entry.access.as_ref().is_some_and(|access| access.editable))
     }
 
-    /// Opens the rename field on `uri`, prefilled with its current name.
+    /// Opens the rename field on `uri`, prefilled with the name the surface
+    /// draws.
+    ///
+    /// The band draws the one name the page is headed by, and a row draws its
+    /// own name — the text an unnamed row keeps until its own write lands, which
+    /// for the band is a URI standing in for a name it never shows.
     pub fn begin_rename(&mut self, uri: &str, surface: Surface) -> bool {
         if !self.can_rename(uri) || self.renaming.writing() {
             return false;
         }
-        let Load::Ready(playlists) = &self.playlists else {
-            return false;
+        let name = match surface {
+            Surface::Band => match self.band_name(uri) {
+                Some(name) => name,
+                None => return false,
+            },
+            Surface::Row => match &self.playlists {
+                Load::Ready(playlists) => match playlists.iter().find(|entry| entry.uri == uri) {
+                    Some(entry) => entry.name.clone(),
+                    None => return false,
+                },
+                Load::Idle | Load::Loading | Load::Failed(_) => return false,
+            },
         };
-        let Some(entry) = playlists.iter().find(|entry| entry.uri == uri) else {
-            return false;
-        };
-        self.renaming.open(uri, &entry.name, surface);
+        self.renaming.open(uri, &name, surface);
         true
     }
 
@@ -1718,6 +1752,7 @@ impl Library {
             return None;
         };
         let found = reorder::block(&tracks.tracks, rows, boundary)?;
+        let (head, cover) = (tracks.head.clone(), tracks.cover.clone());
         self.pending = Some(reorder::Pending {
             playlist: playlist.to_owned(),
             before: tracks.tracks.clone(),
@@ -1729,8 +1764,8 @@ impl Library {
             tracks: found.order,
             access: Some(access.clone()),
             notice: None,
-            head: None,
-            cover: None,
+            head,
+            cover,
         });
         Some((
             Command::MoveTrack {
@@ -1761,13 +1796,14 @@ impl Library {
         };
         let found = removal::plan(&tracks.tracks, rows)?;
         let before = tracks.tracks.clone();
+        let (head, cover) = (tracks.head.clone(), tracks.cover.clone());
         self.tracks = Load::Ready(TracksFor {
             playlist: playlist.to_owned(),
             tracks: found.kept.clone(),
             access: Some(access.clone()),
             notice: None,
-            head: None,
-            cover: None,
+            head,
+            cover,
         });
         // Taking out the last row leaves nowhere to show the query, and no
         // reply for a removal carries a track list, so this is the only place
@@ -1909,11 +1945,6 @@ impl Library {
             related,
             likes,
         }
-    }
-
-    /// The selected playlist's name, once the list that names it is ready.
-    pub fn selected_name(&self) -> Option<&str> {
-        self.selected_entry().map(|entry| entry.name.as_str())
     }
 
     /// The selected playlist's entry, once the list that holds it is ready.

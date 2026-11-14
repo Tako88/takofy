@@ -672,3 +672,63 @@ fn a_tracks_failure_while_a_write_is_pending_keeps_the_write() {
         "only the write's own reply ends it"
     );
 }
+
+#[test]
+fn a_page_write_keeps_the_head_and_cover() {
+    let cover = CoverSet::single(cover_url("context"));
+    let mut library = headed_page(
+        &["t0", "t1"],
+        access(0x01, true),
+        Some(head("Pasted")),
+        Some(cover.clone()),
+    );
+    assert!(
+        move_one(&mut library, "a", 0, 2, &track("t0")).is_some(),
+        "arrange: the move"
+    );
+
+    let Load::Ready(tracks) = &library.tracks else {
+        panic!("the page is ready: {:?}", library.tracks);
+    };
+    assert_eq!(
+        tracks.head.as_ref().map(|head| head.name.as_str()),
+        Some("Pasted"),
+        "a reorder rewrites the rows, not the name the page read for itself"
+    );
+    assert_eq!(tracks.cover, Some(cover), "nor the cover the reply carried");
+}
+
+#[test]
+fn a_reply_while_a_move_is_in_flight_keeps_the_held_head_and_cover() {
+    let cover = CoverSet::single(cover_url("context"));
+    let mut library = headed_page(
+        &["t0", "t1"],
+        access(0x01, true),
+        Some(head("Pasted")),
+        Some(cover.clone()),
+    );
+    assert!(
+        move_one(&mut library, "a", 0, 2, &track("t0")).is_some(),
+        "arrange: the move"
+    );
+
+    // The read the page had before the drag, arriving while the write is in
+    // flight: it names no head and no cover, and the page keeps its own.
+    library.apply(&Update::Tracks {
+        playlist: "a".to_owned(),
+        tracks: moved(&["t0", "t1"]),
+        cover: None,
+        access: access(0x01, true),
+        head: None,
+    });
+
+    let Load::Ready(tracks) = &library.tracks else {
+        panic!("the page is ready: {:?}", library.tracks);
+    };
+    assert_eq!(
+        tracks.head.as_ref().map(|head| head.name.as_str()),
+        Some("Pasted"),
+        "a reply with no head is not what the page draws while a write lands"
+    );
+    assert_eq!(tracks.cover, Some(cover));
+}

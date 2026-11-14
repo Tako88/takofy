@@ -1,6 +1,7 @@
 mod test_support;
 
 mod band;
+mod band_page;
 mod band_rename;
 mod dispatch;
 mod filter;

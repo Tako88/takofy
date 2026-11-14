@@ -618,3 +618,339 @@ fn can_remove_is_the_librarys_state_per_kind() {
         assert!(!writing.can_remove(kind), "{kind:?} during a write");
     }
 }
+
+/// A sidebar holding one list, and a page for another list the sidebar does
+/// not name.
+fn pasted_library() -> Library {
+    let mut library = sidebar_library(&["spotify:playlist:mine"], 0x07, true, None);
+    library.select("spotify:playlist:pasted");
+    library.apply(&Update::Tracks {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        tracks: vec![track("spotify:track:t0")],
+        cover: None,
+        access: None,
+        head: Some(head("Pasted")),
+    });
+    library
+}
+
+/// The same page, with no rootlist revision ever read: the transitional and the
+/// permanent inert heart both start here.
+fn pasted_library_rootless() -> Library {
+    let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::Playlists(vec![with_access(
+        playlist("spotify:playlist:mine", "Mine"),
+        0x07,
+        true,
+        None,
+    )]));
+    library.select("spotify:playlist:pasted");
+    library.apply(&Update::Tracks {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        tracks: vec![track("spotify:track:t0")],
+        cover: None,
+        access: None,
+        head: Some(head("Pasted")),
+    });
+    library
+}
+
+/// The item the band's menu and heart act on for the pasted page.
+fn pasted_item() -> LibraryItem {
+    item(SidebarKind::Playlists, "spotify:playlist:pasted")
+}
+
+#[test]
+fn an_unlisted_page_offers_the_heart_and_no_rename_or_remove() {
+    let library = pasted_library();
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(false),
+        "arrange: the list is ready and does not hold it"
+    );
+
+    let rights = library.band_rights("spotify:playlist:pasted");
+    assert!(
+        !rights.renamable,
+        "no sidebar row carries the access a rename needs"
+    );
+    assert!(!rights.removable, "nothing is listed to unlink");
+    assert_eq!(rights.saved, Some(false), "the heart is live and empty");
+}
+
+#[test]
+fn an_unlisted_page_is_not_removable_even_with_an_editable_rootlist() {
+    let library = pasted_library();
+    assert!(
+        library.can_remove(SidebarKind::Playlists),
+        "arrange: the rootlist may be written"
+    );
+
+    assert!(
+        !library.band_rights("spotify:playlist:pasted").removable,
+        "the page's list is not in the sidebar, so there is no row to unlink"
+    );
+}
+
+#[test]
+fn the_heart_is_inert_until_the_rootlist_is_read() {
+    let library = pasted_library_rootless();
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(false),
+        "the list still knows it is missing"
+    );
+    assert_eq!(
+        library.band_saved("spotify:playlist:pasted"),
+        None,
+        "a link needs a revision to name, so the heart waits for one"
+    );
+}
+
+#[test]
+fn the_heart_stays_inert_when_the_rootlist_is_never_readable() {
+    let mut library = pasted_library_rootless();
+    // A read that lists nothing, and never an access after it.
+    library.apply(&Update::Playlists(Vec::new()));
+
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(false),
+        "the list is ready and does not hold the page"
+    );
+    assert_eq!(
+        library.band_rights("spotify:playlist:pasted").saved,
+        None,
+        "the heart stays honest rather than claiming it can link"
+    );
+    assert_eq!(
+        library.save_to_library(&pasted_item()),
+        None,
+        "and the press names no revision"
+    );
+}
+
+#[test]
+fn the_heart_waits_for_the_reply() {
+    let mut library = pasted_library();
+    assert_eq!(library.band_saved("spotify:playlist:pasted"), Some(false));
+    assert_eq!(
+        library.save_to_library(&pasted_item()),
+        Some(Command::LinkPlaylist {
+            playlist: "spotify:playlist:pasted".to_owned(),
+            revision: revision(0x07),
+        })
+    );
+
+    assert_eq!(
+        library.band_saved("spotify:playlist:pasted"),
+        None,
+        "the press fills nothing until the reply"
+    );
+    assert_eq!(
+        library.save_to_library(&pasted_item()),
+        None,
+        "and a second press sends no second link"
+    );
+}
+
+#[test]
+fn the_link_reply_fills_the_heart_before_the_list_is_re_read() {
+    let mut library = pasted_library();
+    assert!(library.save_to_library(&pasted_item()).is_some());
+    library.apply(&Update::PlaylistLinked {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x08),
+    });
+
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(true),
+        "the reply is the whole confirmation a link gets"
+    );
+    assert_eq!(
+        library.band_saved("spotify:playlist:pasted"),
+        Some(true),
+        "the heart fills without waiting for the row"
+    );
+    assert!(library.rootlist_stale, "the row still comes from a re-read");
+}
+
+#[test]
+fn a_playlists_read_after_a_link_gives_the_sidebar_entry_its_rights() {
+    let mut library = pasted_library();
+    assert!(library.save_to_library(&pasted_item()).is_some());
+    library.apply(&Update::PlaylistLinked {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x08),
+    });
+
+    library.apply(&Update::Playlists(vec![with_access(
+        playlist("spotify:playlist:pasted", "Pasted"),
+        0x09,
+        true,
+        Some(1),
+    )]));
+    library.apply(&Update::RootlistAccess(rootlist_access(0x0a, true)));
+
+    let rights = library.band_rights("spotify:playlist:pasted");
+    assert!(
+        rights.removable,
+        "the row is listed and the rootlist is editable"
+    );
+    assert!(rights.renamable, "the entry's own access is editable");
+    assert_eq!(rights.saved, Some(true), "the sidebar holds it");
+    assert_eq!(
+        library.band_source().map(|source| source.name),
+        Some("Pasted".to_owned()),
+        "the entry heads the page once the read lists it"
+    );
+}
+
+#[test]
+fn a_playlists_read_that_omits_the_list_supersedes_the_link_echo() {
+    let mut library = pasted_library();
+    assert!(library.save_to_library(&pasted_item()).is_some());
+    library.apply(&Update::PlaylistLinked {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x08),
+    });
+    assert_eq!(library.is_saved("spotify:playlist:pasted"), Some(true));
+
+    // The server does not hold the link, so the echo that said it did is not
+    // allowed to speak over the list that says otherwise.
+    library.apply(&Update::Playlists(Vec::new()));
+    library.apply(&Update::RootlistAccess(rootlist_access(0x0a, true)));
+
+    assert_eq!(library.is_saved("spotify:playlist:pasted"), Some(false));
+    assert_eq!(
+        library.band_saved("spotify:playlist:pasted"),
+        Some(false),
+        "the heart empties again"
+    );
+}
+
+#[test]
+fn a_playlists_read_leaves_an_unparseable_echo_alone() {
+    let mut library = pasted_library();
+    library
+        .saved_known
+        .push(("not an address".to_owned(), true));
+    library
+        .saved_known
+        .push(("spotify:playlist:pasted".to_owned(), true));
+
+    library.apply(&Update::Playlists(Vec::new()));
+
+    assert!(
+        library
+            .saved_known
+            .iter()
+            .any(|(known, _)| known == "not an address"),
+        "a key that names no address is not a playlist's to drop: {:?}",
+        library.saved_known
+    );
+    assert!(
+        !library
+            .saved_known
+            .iter()
+            .any(|(known, _)| known == "spotify:playlist:pasted"),
+        "the playlist's own echo is gone: {:?}",
+        library.saved_known
+    );
+}
+
+#[test]
+fn removing_a_playlist_forgets_its_saved_echo() {
+    let mut library = pasted_library();
+    assert!(library.save_to_library(&pasted_item()).is_some());
+    library.apply(&Update::PlaylistLinked {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x08),
+    });
+    // The re-read lists it, so a removal has a row to name.
+    library.apply(&Update::Playlists(vec![with_access(
+        playlist("spotify:playlist:pasted", "Pasted"),
+        0x09,
+        true,
+        Some(1),
+    )]));
+    library.apply(&Update::RootlistAccess(rootlist_access(0x0a, true)));
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(true),
+        "arrange: the link's echo stands"
+    );
+
+    assert!(
+        library.remove_from_library(&pasted_item()).is_some(),
+        "arrange: the removal"
+    );
+    library.apply(&Update::PlaylistRemoved {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x0b),
+    });
+
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(false),
+        "the heart cannot stay filled for a list the library no longer holds"
+    );
+    assert_eq!(library.band_saved("spotify:playlist:pasted"), Some(false));
+}
+
+#[test]
+fn a_removal_at_a_stale_index_still_forgets_the_echo() {
+    // The reply cannot tell which row went, so it asks for a fresh read — but
+    // the heart must stop claiming the library holds the list until then. The
+    // echo came from a link, and only the removal clears it.
+    let mut library = pasted_library();
+    assert!(library.save_to_library(&pasted_item()).is_some());
+    library.apply(&Update::PlaylistLinked {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x08),
+    });
+    // The re-read lists it. Written straight in, because a read's own update
+    // drops every playlist echo and the link's is the one under test.
+    library.playlists = Load::Ready(vec![
+        with_access(playlist("spotify:playlist:mine", "Mine"), 0x07, true, None),
+        with_access(
+            playlist("spotify:playlist:pasted", "Pasted"),
+            0x08,
+            true,
+            Some(1),
+        ),
+    ]);
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(true),
+        "arrange: the link's echo stands"
+    );
+    assert!(
+        library.remove_from_library(&pasted_item()).is_some(),
+        "arrange: the removal"
+    );
+    // The list moved under the index the write named before the reply landed.
+    library.playlists = Load::Ready(vec![with_access(
+        playlist("spotify:playlist:mine", "Mine"),
+        0x07,
+        true,
+        None,
+    )]);
+
+    library.apply(&Update::PlaylistRemoved {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        revision: revision(0x0b),
+    });
+
+    assert!(
+        library.rootlist_stale,
+        "arrange: the removal owed a fresh read"
+    );
+    assert_eq!(
+        library.is_saved("spotify:playlist:pasted"),
+        Some(false),
+        "the heart stayed filled for a list the library no longer holds"
+    );
+}

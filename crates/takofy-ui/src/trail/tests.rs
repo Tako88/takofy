@@ -209,6 +209,27 @@ fn a_selection_with_no_name_available_gives_playlist_none() {
     assert!(!crumbs.iter().any(|crumb| crumb.current));
 }
 
+/// A page the sidebar does not name is named by its own read.
+#[test]
+fn a_pasted_playlist_page_names_its_crumb_from_its_head() {
+    let mut library = Library::default();
+    library.select("spotify:playlist:pasted");
+    library.apply(&Update::Tracks {
+        playlist: "spotify:playlist:pasted".to_owned(),
+        tracks: Vec::new(),
+        cover: None,
+        access: None,
+        head: Some(takofy_model::PlaylistHead {
+            name: "Pasted Win".to_owned(),
+            description: None,
+            owner: None,
+            picture: None,
+        }),
+    });
+
+    assert_eq!(current_label(&library), Some("Pasted Win"));
+}
+
 #[test]
 fn an_album_page_names_the_loaded_album() {
     let mut library = Library::default();

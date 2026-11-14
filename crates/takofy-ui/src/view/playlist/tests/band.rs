@@ -10,7 +10,9 @@ use egui::{
     Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, Rect, TouchPhase, Vec2,
 };
 use std::time::Duration;
-use takofy_model::{CoverImage, CoverSet, CoverUrl, Owner, OwnerName, PlaylistCover, TrackEntry};
+use takofy_model::{
+    CoverImage, CoverSet, CoverUrl, Owner, OwnerName, PlaylistCover, PlaylistEntry, TrackEntry,
+};
 
 #[test]
 fn the_frame_loop_requests_only_visible_covers() {
@@ -258,7 +260,7 @@ fn the_band_keeps_an_already_held_cover_while_the_tracks_reload() {
     // the band does not flash grey either.
     art.begin_frame();
     let (held, tint) = band_cover_for(
-        &entry,
+        entry.cover_set(),
         false,
         &mut art,
         176,
@@ -280,7 +282,7 @@ fn the_band_keeps_an_already_held_cover_while_the_tracks_reload() {
     let other = playlist_with_cover("b", "Other", cover_url("unheld"));
     art.begin_frame();
     let (held, tint) = band_cover_for(
-        &other,
+        other.cover_set(),
         false,
         &mut art,
         176,
@@ -613,7 +615,7 @@ fn a_mosaic_cover_not_yet_held_is_fetched_but_not_drawn() {
         .expect("the page names its playlist");
 
     let (_, picture, _) = band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,
@@ -682,7 +684,7 @@ fn a_mosaic_quadrant_that_failed_for_good_keeps_the_single_picture() {
         .expect("the page names its playlist");
 
     let (_, picture, _) = band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,
@@ -721,7 +723,7 @@ fn a_mosaic_band_tints_from_its_first_quadrant() {
     hold_pixel(&ctx, &mut art, &cover_url("m3"), [255, 255, 255, 255], now);
 
     let (_, picture, tint) = band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,
@@ -752,7 +754,7 @@ fn a_chosen_single_picture_tints_the_band() {
     let mut kept = None;
 
     let (cover, picture, tint) = band_picture(
-        &entry,
+        &source_of(&entry),
         &tracks,
         &mut kept,
         &mut art,
@@ -822,7 +824,7 @@ fn a_ready_list_of_another_playlist_draws_no_mosaic() {
         .cloned()
         .expect("the page names its playlist");
     let (_, picture, _) = band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,
@@ -887,7 +889,7 @@ fn a_reorder_that_changes_the_first_four_covers_changes_the_mosaic_once_ready() 
         .expect("the page names its playlist");
 
     let first = match band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,
@@ -913,7 +915,7 @@ fn a_reorder_that_changes_the_first_four_covers_changes_the_mosaic_once_ready() 
     // The reload between orders keeps the quadrants that were held.
     library.select("spotify:playlist:a");
     let reloading = match band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,
@@ -946,7 +948,7 @@ fn a_reorder_that_changes_the_first_four_covers_changes_the_mosaic_once_ready() 
         head: None,
     });
     let after = match band_picture(
-        &entry,
+        &source_of(&entry),
         &library.tracks,
         &mut library.mosaic_kept,
         &mut art,

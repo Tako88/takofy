@@ -6,7 +6,9 @@ use crate::message::Update;
 use crate::theme::{fonts, style};
 use crate::view::{filter_row, page_head};
 use egui::{Context, Event, Modifiers, Pos2, RawInput, Rect, Vec2};
-use takofy_model::{CoverSet, CoverUrl, PlaylistAccess, Revision, TrackEntry};
+use takofy_model::{
+    CoverSet, CoverUrl, PlaylistAccess, PlaylistEntry, PlaylistHead, Revision, TrackEntry,
+};
 
 /// The probe window: 900 by 400, the size every bare-row test runs in.
 pub(super) const PROBE: Vec2 = Vec2::new(900.0, 400.0);
@@ -254,6 +256,39 @@ pub(super) fn access(editable: bool) -> Option<PlaylistAccess> {
 }
 
 pub(super) fn library_with(tracks: Vec<TrackEntry>) -> Library {
+    library_read(tracks, None)
+}
+
+/// The same selection, with the page's own read naming it.
+pub(super) fn library_headed(tracks: Vec<TrackEntry>, head: PlaylistHead) -> Library {
+    library_read(tracks, Some(head))
+}
+
+/// A library whose sidebar was read, holding one list, and whose open page is
+/// a list it does not name, headed by the page's own read.
+pub(super) fn library_pasted(head: PlaylistHead) -> Library {
+    let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::Playlists(vec![playlist(
+        "spotify:playlist:mine",
+        "Mine",
+    )]));
+    library.apply(&Update::RootlistAccess(PlaylistAccess {
+        revision: Revision::from_wire(b"root-1").expect("a revision"),
+        editable: true,
+    }));
+    library.select("spotify:playlist:a");
+    library.apply(&Update::Tracks {
+        playlist: "spotify:playlist:a".to_owned(),
+        tracks: vec![track("a", "t0")],
+        cover: None,
+        access: access(true),
+        head: Some(head),
+    });
+    library
+}
+
+fn library_read(tracks: Vec<TrackEntry>, head: Option<PlaylistHead>) -> Library {
     let mut library = Library::default();
     library.select("spotify:playlist:a");
     library.apply(&Update::Tracks {
@@ -261,7 +296,7 @@ pub(super) fn library_with(tracks: Vec<TrackEntry>) -> Library {
         tracks,
         cover: None,
         access: access(true),
-        head: None,
+        head,
     });
     library
 }
@@ -297,6 +332,18 @@ pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         owner: None,
         tracks: None,
         access: None,
+    }
+}
+
+/// A band source built from a sidebar entry, as the library would hand one.
+pub(super) fn source_of(entry: &PlaylistEntry) -> BandSource {
+    BandSource {
+        uri: entry.uri.clone(),
+        name: entry.name.clone(),
+        description: entry.description.clone(),
+        owner: entry.owner.clone(),
+        cover: entry.cover_set().cloned(),
+        origin: entry.cover.as_ref().map(|cover| cover.origin),
     }
 }
 
@@ -459,6 +506,24 @@ pub(super) fn play_tile_rect_for(ctx: &Context, title: &str) -> Rect {
         });
     });
     found.expect("the band and its action row lay out")
+}
+
+/// The "…" in the band's action row, from the icons it paints beside play.
+pub(super) fn band_more_point(ctx: &Context, library: &mut Library, name: &str) -> egui::Pos2 {
+    let output = tracklist_frame(ctx, Table::Full, library);
+    let play = play_tile_rect_for(ctx, name);
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Path(_) => Some(clipped.shape.visual_bounding_rect()),
+            _ => None,
+        })
+        .filter(|rect| rect.center().y < play.center().y + 20.0)
+        .filter(|rect| rect.center().x > play.right())
+        .max_by(|left, right| left.center().x.total_cmp(&right.center().x))
+        .map(|rect| rect.center())
+        .expect("the band paints its `⋯`")
 }
 
 /// Clicks `centre` `times` times, one event per pass, and returns the command

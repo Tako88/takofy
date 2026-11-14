@@ -1065,10 +1065,11 @@ fn an_add_while_the_page_is_loading_resets_it_and_the_re_ask_wins() {
     });
     assert_eq!(
         library.tracks,
-        ready(
+        ready_covered(
             "a",
             &["spotify:track:t0", "spotify:track:t1"],
-            access(0x01, true)
+            access(0x01, true),
+            Some(CoverSet::single(first.clone()))
         ),
         "arrange: the pre-add reply lands as the page first, race and all"
     );
@@ -1076,17 +1077,18 @@ fn an_add_while_the_page_is_loading_resets_it_and_the_re_ask_wins() {
     library.apply(&Update::Tracks {
         playlist: "a".to_owned(),
         tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:x"]),
-        cover: Some(CoverSet::single(first)),
+        cover: Some(CoverSet::single(first.clone())),
         access: access(0x08, true),
         head: None,
     });
 
     assert_eq!(
         library.tracks,
-        ready(
+        ready_covered(
             "a",
             &["spotify:track:t0", "spotify:track:t1", "spotify:track:x"],
-            access(0x08, true)
+            access(0x08, true),
+            Some(CoverSet::single(first.clone()))
         ),
         "the reply to the newest read is the page, whatever arrived in between"
     );
@@ -1432,5 +1434,59 @@ fn a_created_playlist_keeps_its_cover_and_origin_through_a_later_add() {
         library.tracks_request(),
         None,
         "so the new list's cover is not read again"
+    );
+}
+
+#[test]
+fn a_move_that_changes_the_first_row_clears_the_heads_derived_cover() {
+    // Nothing lists this page, so the band draws the cover the reply carried.
+    let first = cover_set("first");
+    let mut library = headed_page(
+        &["spotify:track:t0", "spotify:track:t1"],
+        access(0x01, true),
+        Some(head("Pasted")),
+        Some(first.clone()),
+    );
+    assert_eq!(
+        library.band_source().map(|source| source.cover),
+        Some(Some(first)),
+        "arrange: the reply's cover is what the head-sourced band draws"
+    );
+
+    assert!(move_one(&mut library, "a", 1, 0, &track("spotify:track:t1")).is_some());
+    library.apply(&Update::TrackMoved {
+        playlist: "a".to_owned(),
+        revision: revision(0x02),
+    });
+
+    assert_eq!(
+        library.band_source().map(|source| source.cover),
+        Some(None),
+        "the list now starts with another track, so the picture it gave is gone"
+    );
+}
+
+#[test]
+fn a_move_keeps_the_picture_the_heads_own_read_carries() {
+    let picture = cover_set("picture");
+    let mut page = head("Pasted");
+    page.picture = Some(picture.clone());
+    let mut library = headed_page(
+        &["spotify:track:t0", "spotify:track:t1"],
+        access(0x01, true),
+        Some(page),
+        Some(cover_set("context")),
+    );
+
+    assert!(move_one(&mut library, "a", 1, 0, &track("spotify:track:t1")).is_some());
+    library.apply(&Update::TrackMoved {
+        playlist: "a".to_owned(),
+        revision: revision(0x02),
+    });
+
+    assert_eq!(
+        library.band_source().map(|source| source.cover),
+        Some(Some(picture)),
+        "a picture the user chose is never a row edit's to drop"
     );
 }

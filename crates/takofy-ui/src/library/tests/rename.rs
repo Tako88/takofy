@@ -448,3 +448,123 @@ fn a_removed_playlist_closes_its_rename_field() {
     assert!(!library.renaming.is_open());
     assert!(!library.renaming.wants_return());
 }
+
+/// A sidebar holding one editable list, its name and its page's own read
+/// agreeing on `name`.
+fn headed_renaming_library(name: &str) -> Library {
+    let mut library = sidebar_library(&["a"], 0x07, true, None);
+    if let Load::Ready(playlists) = &mut library.playlists {
+        playlists[0].name = name.to_owned();
+    }
+    library.select("a");
+    library.apply(&Update::Tracks {
+        playlist: "a".to_owned(),
+        tracks: vec![track("t0")],
+        cover: None,
+        access: access(0x07, true),
+        head: Some(head(name)),
+    });
+    library
+}
+
+#[test]
+fn a_confirmed_rename_updates_the_pages_head() {
+    let mut library = headed_renaming_library("Old Name");
+    rename_pending(&mut library, "a", crate::naming::Surface::Band);
+
+    library.apply(&Update::PlaylistRenamed {
+        playlist: "a".to_owned(),
+        name: "New Name".to_owned(),
+        revision: revision(0x09),
+    });
+
+    let Load::Ready(tracks) = &library.tracks else {
+        panic!("the page is ready: {:?}", library.tracks);
+    };
+    assert_eq!(
+        tracks.head.as_ref().map(|head| head.name.as_str()),
+        Some("New Name"),
+        "the page's own read named the old name, and the band falls back to it"
+    );
+    assert_eq!(library.selected_name(), Some("New Name"));
+}
+
+#[test]
+fn a_rename_leaves_another_pages_head_alone() {
+    let mut library = headed_renaming_library("Old Name");
+    rename_pending(&mut library, "a", crate::naming::Surface::Row);
+
+    library.apply(&Update::PlaylistRenamed {
+        playlist: "b".to_owned(),
+        name: "Other".to_owned(),
+        revision: revision(0x09),
+    });
+
+    let Load::Ready(tracks) = &library.tracks else {
+        panic!("the page is ready: {:?}", library.tracks);
+    };
+    assert_eq!(
+        tracks.head.as_ref().map(|head| head.name.as_str()),
+        Some("Old Name"),
+        "another list's rename never names this page"
+    );
+}
+
+/// A sidebar holding one editable row the listing cannot name — its name is the
+/// URI it falls back to — with the page's own read naming it `name`.
+fn head_named_renaming_library(name: &str) -> Library {
+    let mut library = headed_renaming_library(name);
+    if let Load::Ready(playlists) = &mut library.playlists {
+        playlists[0].name = "a".to_owned();
+        playlists[0].named = false;
+    }
+    library
+}
+
+#[test]
+fn a_band_rename_prefills_the_name_the_pages_head_gives() {
+    let mut library = head_named_renaming_library("Pasted");
+    assert_eq!(
+        library.selected_name(),
+        Some("Pasted"),
+        "arrange: the head names the page the row cannot"
+    );
+
+    assert!(library.begin_rename("a", crate::naming::Surface::Band));
+
+    assert_eq!(
+        library.renaming.text(),
+        "Pasted",
+        "the field opened on the URI an unnamed row falls back to"
+    );
+}
+
+#[test]
+fn a_band_rename_falls_back_to_a_named_rows_name_and_opens_on_nothing_else() {
+    // A named row is the band's own title, so its field prefills the row.
+    let mut named = renaming_library();
+    assert_eq!(
+        named.selected_name(),
+        Some("a"),
+        "arrange: the row names it"
+    );
+    assert!(named.begin_rename("a", crate::naming::Surface::Band));
+    assert_eq!(named.renaming.text(), "a");
+
+    // With neither naming the page the band draws no title to edit, so there is
+    // nothing to prefill and the field stays shut.
+    let mut unnamed = renaming_library();
+    if let Load::Ready(playlists) = &mut unnamed.playlists {
+        playlists[0].named = false;
+    }
+    assert_eq!(
+        unnamed.selected_name(),
+        None,
+        "arrange: neither the row nor the page names it"
+    );
+    assert!(
+        !unnamed.begin_rename("a", crate::naming::Surface::Band),
+        "the band's field opened with no name to hold"
+    );
+    assert!(!unnamed.renaming.is_open());
+}

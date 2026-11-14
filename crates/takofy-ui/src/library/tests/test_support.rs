@@ -259,6 +259,36 @@ pub(crate) fn page_dropped_by_an_add(cover: Option<&CoverUrl>) -> Library {
     library
 }
 
+/// The page's own read of a list named `name`, with nothing else about it.
+pub(crate) fn head(name: &str) -> PlaylistHead {
+    PlaylistHead {
+        name: name.to_owned(),
+        description: None,
+        owner: None,
+        picture: None,
+    }
+}
+
+/// A library whose open page is `a`, filled by one read: its rows, what it may
+/// change, its own head and the cover it carried.
+pub(crate) fn headed_page(
+    uris: &[&str],
+    access: Option<PlaylistAccess>,
+    head: Option<PlaylistHead>,
+    cover: Option<CoverSet>,
+) -> Library {
+    let mut library = Library::default();
+    library.select("a");
+    library.apply(&Update::Tracks {
+        playlist: "a".to_owned(),
+        tracks: moved(uris),
+        cover,
+        access,
+        head,
+    });
+    library
+}
+
 /// The entry with what the listing read said about writing to it.
 pub(crate) fn with_access(
     entry: PlaylistEntry,
@@ -342,13 +372,23 @@ pub(crate) fn ready(
     uris: &[&str],
     access: Option<PlaylistAccess>,
 ) -> Load<TracksFor> {
+    ready_covered(playlist, uris, access, None)
+}
+
+/// The page a reply fills: its rows, its access and the cover it carried.
+pub(crate) fn ready_covered(
+    playlist: &str,
+    uris: &[&str],
+    access: Option<PlaylistAccess>,
+    cover: Option<CoverSet>,
+) -> Load<TracksFor> {
     Load::Ready(TracksFor {
         playlist: playlist.to_owned(),
         tracks: moved(uris),
         access,
         notice: None,
         head: None,
-        cover: None,
+        cover,
     })
 }
 

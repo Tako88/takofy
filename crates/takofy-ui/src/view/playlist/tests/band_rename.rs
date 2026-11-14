@@ -1,8 +1,8 @@
 use super::super::*;
 use super::test_support::*;
 use crate::message::{Failure, Update};
-use egui::{Context, Event, Modifiers, Pos2, Rect, Vec2};
-use takofy_model::{PlaylistAccess, Revision};
+use egui::{Context, Event, Modifiers, Rect, Vec2};
+use takofy_model::{PlaylistAccess, PlaylistEntry, Revision};
 
 /// A playlist page whose sidebar entry says whether the user may write it.
 fn band_library(name: &str, editable: bool, titles: &[&str]) -> Library {
@@ -68,24 +68,6 @@ fn click_band_title(ctx: &Context, library: &mut Library, name: &str) -> Option<
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     click(ctx, at, library, &mut transport, &mut queue)
-}
-
-/// The "…" in the band's action row, from the icons it paints beside play.
-fn band_more_point(ctx: &Context, library: &mut Library, name: &str) -> Pos2 {
-    let output = tracklist_frame(ctx, Table::Full, library);
-    let play = play_tile_rect_for(ctx, name);
-    output
-        .shapes
-        .iter()
-        .filter_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Path(_) => Some(clipped.shape.visual_bounding_rect()),
-            _ => None,
-        })
-        .filter(|rect| rect.center().y < play.center().y + 20.0)
-        .filter(|rect| rect.center().x > play.right())
-        .max_by(|left, right| left.center().x.total_cmp(&right.center().x))
-        .map(|rect| rect.center())
-        .expect("the band paints its `⋯`")
 }
 
 #[test]

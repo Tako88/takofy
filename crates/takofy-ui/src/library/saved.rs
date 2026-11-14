@@ -69,6 +69,25 @@ impl Library {
         }
     }
 
+    /// Drops what one URI's echo said, so the lists answer for it again.
+    pub(super) fn forget_saved(&mut self, uri: &str) {
+        self.saved_known.retain(|(known, _)| known != uri);
+    }
+
+    /// Drops every playlist's echo, keeping the other kinds'.
+    ///
+    /// A playlists read is the list itself answering, so an echo written before
+    /// it would speak over the answer. A key that names no address is left
+    /// alone: it is not a playlist's, and nothing else could replace it.
+    pub(super) fn forget_playlist_echoes(&mut self) {
+        self.saved_known.retain(|(uri, _)| {
+            !matches!(
+                parse(uri).map(|parsed| parsed.kind),
+                Some(UriKind::Playlist)
+            )
+        });
+    }
+
     /// Asks whether the page's own album or show is in the library.
     ///
     /// The lists cannot answer this: a saved album is listed only after the

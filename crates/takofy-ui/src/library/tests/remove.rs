@@ -750,3 +750,28 @@ fn an_album_or_a_show_removal_is_confirmed_by_its_reply() {
         assert_eq!(library.sidebar_notice, None);
     }
 }
+
+#[test]
+fn a_remove_keeps_the_head_and_cover() {
+    let cover = CoverSet::single(cover_url("context"));
+    let mut library = headed_page(
+        &["t0", "t1"],
+        access(0x01, true),
+        Some(head("Pasted")),
+        Some(cover.clone()),
+    );
+    assert!(
+        library.remove_tracks("a", &[0], &moved(&["t0"])).is_some(),
+        "arrange: the removal"
+    );
+
+    let Load::Ready(tracks) = &library.tracks else {
+        panic!("the page is ready: {:?}", library.tracks);
+    };
+    assert_eq!(
+        tracks.head.as_ref().map(|head| head.name.as_str()),
+        Some("Pasted"),
+        "a removal rewrites the rows, not the name the page read for itself"
+    );
+    assert_eq!(tracks.cover, Some(cover));
+}

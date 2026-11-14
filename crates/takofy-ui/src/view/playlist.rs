@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use egui::{Align, Color32, Id, Layout, Sense, Ui, UiBuilder, vec2};
-use takofy_model::PlaylistEntry;
+use takofy_model::CoverSet;
 
 use crate::cover::{Art, Cover, want_px};
 use crate::format::{added_label, byline, format_position, plain_description, total_duration_ms};
@@ -16,7 +16,7 @@ use crate::landing::Zone;
 use crate::layout::{
     Table, actionbar as actionbar_layout, section as section_layout, table as table_layout,
 };
-use crate::library::{BandCover, Library, Load, TracksFor, band_cover};
+use crate::library::{BandCover, BandSource, Library, Load, TracksFor, band_cover};
 use crate::menu::{Cut, LibraryItem};
 use crate::message::Command;
 use crate::mosaic::{self, Kept};
@@ -39,7 +39,7 @@ use super::skeleton;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, state_of};
-use crate::verbs::{self, LibraryRights};
+use crate::verbs;
 
 pub(in crate::view) mod root;
 
@@ -123,17 +123,17 @@ pub fn tracks_view(
     }
     area.show(ui, |ui| {
         scroll::follow_drag(ui);
-        // The band heads the playlist whenever the library can name the
-        // selection; with no name there is nothing to say above the rows. It
-        // takes the width and starts at the cursor, so the header and the rows
-        // follow it down one scroll area.
-        let entry = library.selected_entry().cloned();
-        let renamable = entry
+        // The band heads the playlist whenever something names the selection,
+        // the sidebar's row or the page's own read; with neither there is
+        // nothing to say above the rows. It takes the width and starts at the
+        // cursor, so the header and the rows follow it down one scroll area.
+        let source = library.band_source();
+        let renamable = source
             .as_ref()
-            .is_some_and(|entry| library.can_rename(&entry.uri));
-        if let Some(entry) = &entry {
+            .is_some_and(|source| library.can_rename(&source.uri));
+        if let Some(source) = &source {
             let (cover, picture, tint) = band_picture(
-                entry,
+                source,
                 &library.tracks,
                 &mut library.mosaic_kept,
                 art,
@@ -147,21 +147,21 @@ pub fn tracks_view(
                 }
                 Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
             };
-            // The owner and the description come from the listing; the count and
-            // the total wait for the tracks. The description is owned here so the
-            // band can borrow it for as long as it is drawn.
-            let meta = byline(entry.owner.as_ref(), tracks);
+            // The owner and the description come from whichever source heads the
+            // page; the count and the total wait for the tracks. The description
+            // is owned here so the band can borrow it for as long as it is drawn.
+            let meta = byline(source.owner.as_ref(), tracks);
             // The description is drawn as the wire sends it: whitespace is
             // collapsed, but markup it carries (entities, `spotify:` links)
             // draws literally.
-            let description = entry
+            let description = source
                 .description
                 .as_deref()
                 .and_then(plain_description)
                 .unwrap_or_default();
             let renaming = std::mem::take(&mut library.renaming);
             let mut renaming = renaming;
-            let title = if renaming.is_open_on(&entry.uri, Surface::Band) {
+            let title = if renaming.is_open_on(&source.uri, Surface::Band) {
                 hero::Title::Editing(&mut renaming)
             } else if renamable && !carry::carrying(ui.ctx()) {
                 hero::Title::Clickable
@@ -173,7 +173,7 @@ pub fn tracks_view(
                 // `ItemAttributes.public` exists but is per item, this client
                 // never reads it, and it says nothing about the list.
                 eyebrow: "Playlist",
-                title: &entry.name,
+                title: &source.name,
                 meta,
                 credit: None,
                 description: &description,
@@ -187,7 +187,7 @@ pub fn tracks_view(
             // title here to go back to.
             if library.renaming.wants_return()
                 && library.renaming.surface() == Surface::Band
-                && library.renaming.uri() == entry.uri
+                && library.renaming.uri() == source.uri
             {
                 if let Some(id) = reply.title_id {
                     ui.memory_mut(|memory| memory.request_focus(id));
@@ -195,7 +195,7 @@ pub fn tracks_view(
                 library.renaming.return_taken();
             }
             if reply.rename_clicked {
-                library.begin_rename(&entry.uri, Surface::Band);
+                library.begin_rename(&source.uri, Surface::Band);
             }
         }
 
@@ -211,14 +211,14 @@ pub fn tracks_view(
             Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
         };
         let mut hits = None;
-        if entry.is_some() || ready.is_some() {
+        if source.is_some() || ready.is_some() {
             // Read before the field takes the query: the heart and the menu ask
             // the library about the whole context.
-            let saved = entry
+            let saved = source
                 .as_ref()
-                .and_then(|entry| library.is_saved(&entry.uri));
+                .and_then(|source| library.band_saved(&source.uri));
             let more_live =
-                entry.is_some() && !carry::carrying(ui.ctx()) && !library.write_in_flight();
+                source.is_some() && !carry::carrying(ui.ctx()) && !library.write_in_flight();
             let kind = actionbar_layout::Kind::Playlist(actionbar_layout::Form::at(
                 ui.ctx().content_rect().width(),
                 table,
@@ -232,10 +232,10 @@ pub fn tracks_view(
             let acted = actionbar::show(
                 ui,
                 &actionbar::Bar {
-                    title: entry.as_ref().map(|entry| entry.name.as_str()),
+                    title: source.as_ref().map(|source| source.name.as_str()),
                     playable,
                     shuffle: true,
-                    more: entry.as_ref().map(|_| more_live),
+                    more: source.as_ref().map(|_| more_live),
                     saved,
                     kind,
                     text: None,
@@ -245,20 +245,15 @@ pub fn tracks_view(
             );
             hits = acted.hits;
 
-            if let Some(entry) = &entry
+            if let Some(source) = &source
                 && let Some(door) = acted.more_door
             {
                 let item = LibraryItem {
                     kind: SidebarKind::Playlists,
-                    uri: entry.uri.clone(),
-                    name: entry.name.clone(),
+                    uri: source.uri.clone(),
+                    name: source.name.clone(),
                 };
-                let rights = LibraryRights {
-                    renamable,
-                    removable: library.can_remove(SidebarKind::Playlists),
-                    // The row's heart offers the same save the row's menu does.
-                    saved,
-                };
+                let rights = library.band_rights(&source.uri);
                 context_menu::post(
                     ui.ctx(),
                     verbs::library_request(
@@ -270,13 +265,13 @@ pub fn tracks_view(
                     ),
                 );
             }
-            if let Some(entry) = &entry
+            if let Some(source) = &source
                 && acted.saved.is_some()
             {
                 let item = LibraryItem {
                     kind: SidebarKind::Playlists,
-                    uri: entry.uri.clone(),
-                    name: entry.name.clone(),
+                    uri: source.uri.clone(),
+                    name: source.name.clone(),
                 };
                 command = library.save_to_library(&item).or(command.take());
             }
@@ -584,23 +579,22 @@ pub fn tracks_view(
 
 /// The cover the band draws this frame.
 ///
-/// Once the tracks have settled this is the entry's own cover. While they load
+/// Once the tracks have settled this is the source's own cover. While they load
 /// it is `Pending`, but a texture the store already holds is kept on screen
 /// rather than flashing the placeholder: a reload that re-selected the same
-/// playlist shows the picture it already had, and only an entry with nothing
+/// playlist shows the picture it already had, and only a source with nothing
 /// held draws `Loading`.
 fn band_cover_for(
-    entry: &PlaylistEntry,
+    cover: Option<&CoverSet>,
     settled: bool,
     art: &mut Art,
     want: u32,
     params: &TintParams,
     now: Instant,
 ) -> (Cover, Option<Color32>) {
-    let tint = art.tint_held(entry.cover_set(), want, params);
-    let cover = match band_cover(entry.cover_set(), settled) {
-        BandCover::Pending => entry
-            .cover_set()
+    let tint = art.tint_held(cover, want, params);
+    let cover = match band_cover(cover, settled) {
+        BandCover::Pending => cover
             .and_then(|cover| art.look_held(Some(cover), want, now))
             .unwrap_or(Cover::Loading),
         BandCover::Source(cover) => art.look(cover, want, now),
@@ -621,7 +615,7 @@ fn band_cover_for(
 /// picture it replaced. The cover is therefore unread while the mosaic draws,
 /// and the first quadrant stands in for its tint.
 fn band_picture(
-    entry: &PlaylistEntry,
+    source: &BandSource,
     tracks: &Load<TracksFor>,
     kept: &mut Option<Kept>,
     art: &mut Art,
@@ -633,21 +627,18 @@ fn band_picture(
     let want = want_px(crate::theme::hero::ART, pixels_per_point);
     let half = want.div_ceil(2);
     let ready = match tracks {
-        Load::Ready(ready) if ready.playlist == entry.uri => Some(ready),
+        Load::Ready(ready) if ready.playlist == source.uri => Some(ready),
         Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
     };
     if let Some(ready) = ready {
-        let urls = mosaic::wanted(
-            entry.cover.as_ref().map(|cover| cover.origin),
-            &mosaic::urls(&ready.tracks),
-        );
-        if kept.as_ref().and_then(|kept| kept.urls_for(&entry.uri)) != Some(urls.as_slice()) {
-            *kept = Some(Kept::new(entry.uri.clone(), urls));
+        let urls = mosaic::wanted(source.origin, &mosaic::urls(&ready.tracks));
+        if kept.as_ref().and_then(|kept| kept.urls_for(&source.uri)) != Some(urls.as_slice()) {
+            *kept = Some(Kept::new(source.uri.clone(), urls));
         }
     }
     let wanted = kept
         .as_ref()
-        .and_then(|kept| kept.urls_for(&entry.uri))
+        .and_then(|kept| kept.urls_for(&source.uri))
         .unwrap_or_default();
     let drawn: Vec<Cover> = wanted
         .iter()
@@ -667,7 +658,8 @@ fn band_picture(
                 .and_then(|cover| art.tint_held(Some(cover), half, params)),
         ),
         None => {
-            let (cover, tint) = band_cover_for(entry, settled, art, want, params, now);
+            let (cover, tint) =
+                band_cover_for(source.cover.as_ref(), settled, art, want, params, now);
             (cover, hero::Picture::Cover, tint)
         }
     }

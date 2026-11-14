@@ -48,6 +48,18 @@ impl Library {
         }) {
             return;
         }
+        // The page's own copy goes too: it is the reply's cover, taken from the
+        // first track, so a page headed by a read that names no picture of its
+        // own would keep drawing the picture that track no longer gives.
+        if let Load::Ready(tracks) = &mut self.tracks
+            && tracks.playlist == *playlist
+            && tracks
+                .head
+                .as_ref()
+                .is_none_or(|head| head.picture.is_none())
+        {
+            tracks.cover = None;
+        }
         self.context_covers.remove(playlist);
         if let Some(entry) = entry {
             entry.cover = None;
