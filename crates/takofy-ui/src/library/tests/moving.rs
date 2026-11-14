@@ -289,6 +289,8 @@ fn a_failed_block_restores_the_order_and_says_so() {
             tracks: moved(&["t0", "t1", "t2", "t3"]),
             access: access(0x01, true),
             notice: Some(Failure::Save),
+            head: None,
+            cover: None,
         })
     );
 }
@@ -373,6 +375,7 @@ fn a_read_while_a_write_is_pending_is_not_adopted_even_with_an_equal_revision() 
         tracks: moved(&["t0", "t1"]),
         cover: None,
         access: access(0x01, true),
+        head: None,
     });
 
     assert_eq!(
@@ -393,6 +396,7 @@ fn a_read_while_a_write_is_pending_keeps_the_held_revision() {
         tracks: moved(&["t0", "t1"]),
         cover: None,
         access: access(0x02, true),
+        head: None,
     });
 
     assert_eq!(
@@ -414,6 +418,7 @@ fn a_read_onto_a_loading_page_while_a_write_is_pending_draws_the_moved_order() {
         tracks: moved(&["t0", "t1"]),
         cover: None,
         access: access(0x01, true),
+        head: None,
     });
 
     assert_eq!(
@@ -432,6 +437,7 @@ fn a_read_with_nothing_pending_is_adopted_even_with_an_equal_revision() {
         tracks: moved(&["t1", "t0"]),
         cover: None,
         access: access(0x01, true),
+        head: None,
     });
 
     assert_eq!(
@@ -454,6 +460,7 @@ fn a_read_after_the_reply_is_adopted() {
         tracks: moved(&["t0", "t1"]),
         cover: None,
         access: access(0x02, true),
+        head: None,
     });
 
     assert_eq!(
@@ -481,6 +488,8 @@ fn a_failed_write_reverts_to_the_order_before_it_and_says_save() {
             tracks: moved(&["t0", "t1"]),
             access: access(0x01, true),
             notice: Some(Failure::Save),
+            head: None,
+            cover: None,
         })
     );
 }
@@ -504,6 +513,8 @@ fn a_failed_write_for_a_page_no_longer_shown_only_ends_the_write() {
             tracks: moved(&["t1", "t0"]),
             access: access(0x01, true),
             notice: None,
+            head: None,
+            cover: None,
         }),
         "nothing is on screen to put back, and Back reloads the list"
     );
@@ -523,6 +534,7 @@ fn an_adopted_read_clears_the_notice() {
         tracks: moved(&["t0", "t1"]),
         cover: None,
         access: access(0x01, true),
+        head: None,
     });
 
     assert_eq!(

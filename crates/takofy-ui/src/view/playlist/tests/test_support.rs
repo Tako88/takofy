@@ -181,6 +181,7 @@ pub(super) fn library_selected(playlist: &str, tracks: Vec<TrackEntry>) -> Libra
         tracks,
         cover: None,
         access: None,
+        head: None,
     });
     library
 }
@@ -260,6 +261,7 @@ pub(super) fn library_with(tracks: Vec<TrackEntry>) -> Library {
         tracks,
         cover: None,
         access: access(true),
+        head: None,
     });
     library
 }

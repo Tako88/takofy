@@ -20,8 +20,8 @@ use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow,
-    Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
-    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, PlaylistHead, Removal, Report,
+    RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -98,12 +98,14 @@ impl SessionError {
     }
 }
 
-/// One page of a playlist's tracks, plus the context's own image.
+/// One page of a playlist's tracks, plus the context's own image and what the
+/// list itself says it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TrackPage {
     pub tracks: Vec<TrackEntry>,
     pub cover: Option<CoverSet>,
     pub access: Option<PlaylistAccess>,
+    pub head: Option<PlaylistHead>,
 }
 
 /// One artist's page data, plus whether the user follows it.
@@ -703,6 +705,7 @@ impl SessionHost for LiveSession {
             tracks: page.tracks,
             cover: page.cover,
             access: page.access,
+            head: page.head,
         })
     }
 

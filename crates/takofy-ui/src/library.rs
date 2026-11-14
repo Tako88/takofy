@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow,
-    PlaylistAccess, PlaylistCover, PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
+    PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead, SavedAlbum, ShowDetail, TrackEntry,
 };
 
 use crate::cover_refresh::CoverRefresh;
@@ -97,6 +97,11 @@ pub struct TracksFor {
     /// The sentence is the whole affordance: "Try again" means drag again, so
     /// there is no Retry that could write twice for one gesture.
     pub notice: Option<Failure>,
+    /// The page's own read: the name, description, owner and picture the list
+    /// itself named, when a read carried one.
+    pub head: Option<PlaylistHead>,
+    /// The context's own image, when the reply carried one.
+    pub cover: Option<CoverSet>,
 }
 
 /// What the playlist band draws for its cover.
@@ -106,20 +111,20 @@ pub enum BandCover<'a> {
     /// rather than fetching a first-track cover it may replace with the
     /// context image a moment later.
     Pending,
-    /// The cover the playlist entry names, if any.
-    Entry(Option<&'a CoverSet>),
+    /// The cover the band's source names, if any.
+    Source(Option<&'a CoverSet>),
 }
 
-/// The band's single-cover source: the playlist entry alone, once its tracks
-/// have settled.
+/// The band's single-cover source, once its tracks have settled.
 ///
-/// The band never derives its single cover from the track list: the entry already
-/// holds the picture or the first track's album cover, and a second derivation
-/// could disagree with it. The four-cover mosaic is the deliberate exception: it
-/// tiles the list's own album covers only when the entry names no chosen picture.
-pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
+/// The band never derives its single cover from the track list: the source
+/// already holds the picture or the first track's album cover, and a second
+/// derivation could disagree with it. The four-cover mosaic is the deliberate
+/// exception: it tiles the list's own album covers only when the source names
+/// no chosen picture.
+pub fn band_cover(cover: Option<&CoverSet>, settled: bool) -> BandCover<'_> {
     if settled {
-        BandCover::Entry(entry.cover_set())
+        BandCover::Source(cover)
     } else {
         BandCover::Pending
     }
@@ -801,6 +806,7 @@ impl Library {
                 tracks,
                 cover,
                 access,
+                head: _,
             } => {
                 // A shelf play waiting on this playlist takes these rows, whatever
                 // page is on screen. The cover upgrade below is keyed by the
@@ -858,6 +864,8 @@ impl Library {
                             tracks: pending.after.clone(),
                             access: held.or_else(|| access.clone()),
                             notice: None,
+                            head: None,
+                            cover: None,
                         });
                     } else {
                         self.tracks = Load::Ready(TracksFor {
@@ -865,6 +873,8 @@ impl Library {
                             tracks: tracks.clone(),
                             access: access.clone(),
                             notice: None,
+                            head: None,
+                            cover: None,
                         });
                     }
                     self.clear_filter_when_empty();
@@ -1719,6 +1729,8 @@ impl Library {
             tracks: found.order,
             access: Some(access.clone()),
             notice: None,
+            head: None,
+            cover: None,
         });
         Some((
             Command::MoveTrack {
@@ -1754,6 +1766,8 @@ impl Library {
             tracks: found.kept.clone(),
             access: Some(access.clone()),
             notice: None,
+            head: None,
+            cover: None,
         });
         // Taking out the last row leaves nowhere to show the query, and no
         // reply for a removal carries a track list, so this is the only place

@@ -9,6 +9,7 @@ fn tracks_before_any_selection_are_discarded() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(library.tracks, Load::Idle);
 }

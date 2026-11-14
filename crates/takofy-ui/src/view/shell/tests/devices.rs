@@ -556,6 +556,7 @@ fn shelf_with_rows(window: &mut Window, rows: usize) {
         tracks: (0..rows).map(|index| track(index, None)).collect(),
         cover: None,
         access: None,
+        head: None,
     });
     window.library.to_playlists();
 }
@@ -603,6 +604,7 @@ fn a_frame_that_took_a_command_keeps_the_landed_rows_for_the_next() {
         tracks: vec![track(0, None), track(1, None)],
         cover: None,
         access: None,
+        head: None,
     });
 
     let (command, output) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -654,6 +656,7 @@ fn a_navigation_in_the_frame_the_rows_land_starts_nothing() {
         tracks: vec![track(0, None)],
         cover: None,
         access: None,
+        head: None,
     });
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -668,6 +671,7 @@ fn a_navigation_in_the_frame_the_rows_land_starts_nothing() {
         tracks: vec![track(1, None)],
         cover: None,
         access: None,
+        head: None,
     });
     assert!(window.library.has_landed_play());
 

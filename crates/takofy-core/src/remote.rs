@@ -25,8 +25,8 @@ use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
-    FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt,
-    Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
+    FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead,
+    PublishedAt, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -381,11 +381,60 @@ pub(crate) struct PlaylistState {
     pub(crate) items: Vec<String>,
 }
 
-/// Reads the version, permission and owner a playlist page must know.
+/// What one playlist page reads at once: what the list says it is, and what it
+/// may change.
+pub(crate) struct PlaylistRead {
+    pub(crate) head: Option<PlaylistHead>,
+    pub(crate) state: Option<PlaylistState>,
+}
+
+/// The page's own name, description, owner and picture.
 ///
-/// A state that cannot be read answers `None` rather than failing the page: an
-/// unreadable list is one the page may not change.
-pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<PlaylistState> {
+/// `None` when the name is blank: a list that names nothing has no head, and a
+/// head never borrows a fallback name. The picture is a bonus, because a list
+/// need not carry a usable one.
+fn playlist_head(
+    name: &str,
+    description: &str,
+    picture: &[u8],
+    owner: Option<&str>,
+    user: &str,
+) -> Option<PlaylistHead> {
+    Some(PlaylistHead {
+        name: non_blank(name)?,
+        description: non_blank(description),
+        owner: playlist_edit::owner_of(owner, user),
+        picture: CoverUrl::from_file_id(picture).map(CoverSet::single),
+    })
+}
+
+/// What one read says about writing to the list.
+///
+/// A read that named no revision answers `None` rather than failing the page:
+/// an unreadable list is one the page may not change.
+fn playlist_state_of(
+    revision: &[u8],
+    can_edit: bool,
+    owned: bool,
+    items: Vec<String>,
+) -> Option<PlaylistState> {
+    let Some(revision) = Revision::from_wire(revision) else {
+        log::warn!("playlist state named no revision");
+        return None;
+    };
+    Some(PlaylistState {
+        revision,
+        can_edit,
+        owned,
+        items,
+    })
+}
+
+/// Reads one playlist page's own name and state in a single request.
+///
+/// The head and the state are built independently: a list may name itself
+/// without naming a revision, and the page still draws its band.
+pub(crate) async fn read_playlist(session: &Session, uri: &str) -> Option<PlaylistRead> {
     let Ok(id @ SpotifyUri::Playlist { .. }) = SpotifyUri::from_uri(uri) else {
         return None;
     };
@@ -397,22 +446,38 @@ pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<
             return None;
         }
     };
-    let Some(revision) = Revision::from_wire(&playlist.revision) else {
-        log::warn!("playlist state named no revision");
-        return None;
-    };
-    Some(PlaylistState {
-        revision,
-        can_edit: playlist.capabilities.can_edit_items,
-        owned: playlist_edit::owned(playlist_owner(&playlist.id).as_deref(), &session.username()),
-        items: item_uris(
+    let owner = playlist_owner(&playlist.id);
+    let user = session.username();
+    let head = playlist_head(
+        &playlist.attributes.name,
+        &playlist.attributes.description,
+        &playlist.attributes.picture,
+        owner.as_deref(),
+        &user,
+    );
+    let state = playlist_state_of(
+        &playlist.revision,
+        playlist.capabilities.can_edit_items,
+        playlist_edit::owned(owner.as_deref(), &user),
+        item_uris(
             playlist
                 .contents
                 .items
                 .iter()
                 .map(|item| item.id.to_uri().ok()),
         ),
-    })
+    );
+    Some(PlaylistRead { head, state })
+}
+
+/// Reads the version, permission and owner a playlist page must know.
+///
+/// A state that cannot be read answers `None` rather than failing the page: an
+/// unreadable list is one the page may not change.
+pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<PlaylistState> {
+    read_playlist(session, uri)
+        .await
+        .and_then(|read| read.state)
 }
 
 /// Every item's URI, in the list's own order.

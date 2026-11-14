@@ -598,12 +598,12 @@ fn band_cover_for(
     now: Instant,
 ) -> (Cover, Option<Color32>) {
     let tint = art.tint_held(entry.cover_set(), want, params);
-    let cover = match band_cover(entry, settled) {
+    let cover = match band_cover(entry.cover_set(), settled) {
         BandCover::Pending => entry
             .cover_set()
             .and_then(|cover| art.look_held(Some(cover), want, now))
             .unwrap_or(Cover::Loading),
-        BandCover::Entry(cover) => art.look(cover, want, now),
+        BandCover::Source(cover) => art.look(cover, want, now),
     };
     (cover, tint)
 }

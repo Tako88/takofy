@@ -24,17 +24,17 @@ fn a_release_reply_reaches_the_release_store() {
 fn band_cover_waits_until_the_tracks_settle() {
     let cover = cover_url("context");
     let entry = playlist_with_cover("a", "A", cover.clone());
-    assert_eq!(band_cover(&entry, false), BandCover::Pending);
+    assert_eq!(band_cover(entry.cover_set(), false), BandCover::Pending);
     assert_eq!(
-        band_cover(&entry, true),
-        BandCover::Entry(Some(&CoverSet::single(cover)))
+        band_cover(entry.cover_set(), true),
+        BandCover::Source(Some(&CoverSet::single(cover)))
     );
 }
 
 #[test]
 fn band_cover_is_missing_when_the_entry_names_none() {
     let entry = playlist("a", "A");
-    assert_eq!(band_cover(&entry, true), BandCover::Entry(None));
+    assert_eq!(band_cover(entry.cover_set(), true), BandCover::Source(None));
 }
 
 #[test]
@@ -53,8 +53,8 @@ fn a_failed_context_still_settles_the_band_on_the_entry() {
     let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
     let entry = library.selected_entry().expect("the selected entry");
     assert_eq!(
-        band_cover(entry, settled),
-        BandCover::Entry(Some(&CoverSet::single(cover)))
+        band_cover(entry.cover_set(), settled),
+        BandCover::Source(Some(&CoverSet::single(cover)))
     );
 }
 
@@ -67,6 +67,7 @@ fn band_cover_handles_an_empty_playlist() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(library.tracks, Load::Ready(tracks_for("a", Vec::new())));
     let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
@@ -87,7 +88,7 @@ fn the_band_waits_instead_of_drawing_the_dropped_cover_as_a_hole() {
 
     let entry = library.selected_entry().expect("the selected entry");
     assert_eq!(
-        band_cover(entry, settled(&library)),
+        band_cover(entry.cover_set(), settled(&library)),
         BandCover::Pending,
         "a cover being read waits, so the open band never draws a hole"
     );
@@ -105,12 +106,13 @@ fn the_band_draws_the_cover_the_re_read_brought() {
         tracks: moved(&["spotify:track:x"]),
         cover: Some(CoverSet::single(fresh.clone())),
         access: access(0x08, true),
+        head: None,
     });
 
     let entry = library.selected_entry().expect("the selected entry");
     assert_eq!(
-        band_cover(entry, settled(&library)),
-        BandCover::Entry(Some(&CoverSet::single(fresh.clone()))),
+        band_cover(entry.cover_set(), settled(&library)),
+        BandCover::Source(Some(&CoverSet::single(fresh.clone()))),
         "once the read lands the band draws the cover it brought"
     );
 }
@@ -135,12 +137,13 @@ fn an_emptied_playlist_leaves_the_band_on_the_entry_with_no_cover() {
         tracks: Vec::new(),
         cover: None,
         access: access(0x02, true),
+        head: None,
     });
 
     let entry = library.selected_entry().expect("the selected entry");
     assert_eq!(
-        band_cover(entry, settled(&library)),
-        BandCover::Entry(None),
+        band_cover(entry.cover_set(), settled(&library)),
+        BandCover::Source(None),
         "an emptied playlist has no cover, and the band says so rather than waiting"
     );
 }

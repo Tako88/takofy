@@ -10,6 +10,7 @@ fn renaming_library() -> Library {
         tracks: vec![track("t0")],
         cover: None,
         access: access(0x07, true),
+        head: None,
     });
     library
 }
@@ -63,8 +64,8 @@ fn a_rename_leaves_the_cover_the_band_and_the_row_already_showed() {
         "the band titles the playlist from a name the rename did not write"
     );
     assert_eq!(
-        band_cover(entry, settled(&library)),
-        BandCover::Entry(Some(&CoverSet::single(first.clone()))),
+        band_cover(entry.cover_set(), settled(&library)),
+        BandCover::Source(Some(&CoverSet::single(first.clone()))),
         "a rename names the playlist, so it cannot change the picture beside the name"
     );
     assert_eq!(
@@ -247,6 +248,7 @@ fn a_stale_tracks_read_for_another_playlist_leaves_the_revision_alone() {
         tracks: vec![track("t1")],
         cover: None,
         access: access(0x05, true),
+        head: None,
     });
 
     assert_eq!(

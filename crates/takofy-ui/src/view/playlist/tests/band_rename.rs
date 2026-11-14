@@ -29,6 +29,7 @@ fn band_library(name: &str, editable: bool, titles: &[&str]) -> Library {
         tracks: titles.iter().map(|title| track(title, title)).collect(),
         cover: None,
         access: access(editable),
+        head: None,
     });
     library
 }
@@ -378,6 +379,7 @@ fn a_band_fields_return_waits_for_the_page_that_opened_it() {
         tracks: vec![track("t9", "t9")],
         cover: None,
         access: access(true),
+        head: None,
     });
     library.apply(&Update::PlaylistRenamed {
         playlist: "spotify:playlist:a".to_owned(),

@@ -298,6 +298,7 @@ fn a_row_that_changed_under_the_drag_is_refused_on_release() {
             .collect(),
         cover: None,
         access: page_access(true),
+        head: None,
     });
 
     let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);

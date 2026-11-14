@@ -38,6 +38,7 @@ fn playlists_become_ready_without_touching_the_tracks() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -118,6 +119,7 @@ fn open_an_album_starts_its_load_and_keeps_the_tracks() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -152,6 +154,7 @@ fn tracks_keep_their_added_at_through_apply() {
         tracks: tracks.clone(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(library.tracks, Load::Ready(tracks_for("a", tracks)));
@@ -166,6 +169,7 @@ fn a_reply_for_the_selected_playlist_is_applied() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -184,6 +188,7 @@ fn a_reply_for_a_stale_playlist_is_discarded() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(library.tracks, Load::Loading);

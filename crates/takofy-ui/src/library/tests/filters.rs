@@ -34,6 +34,7 @@ fn playlists_keep_the_tracks_when_the_selection_survives() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     library.apply(&Update::Playlists(vec![
@@ -58,6 +59,7 @@ fn playlists_clear_the_tracks_when_the_selection_is_gone() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -129,6 +131,7 @@ fn an_empty_tracks_reply_clears_the_query_on_the_update() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -149,6 +152,7 @@ fn a_rows_reply_keeps_the_query() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -371,6 +375,7 @@ fn a_tracks_reply_for_the_same_playlist_keeps_the_filter() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -402,6 +407,7 @@ fn to_playlists_clears_the_selection_but_keeps_the_tracks() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     library.to_playlists();
@@ -425,6 +431,7 @@ fn a_reply_after_to_playlists_is_discarded() {
         tracks: vec![track("t0")],
         cover: None,
         access: None,
+        head: None,
     });
     library.to_playlists();
     let settled = Load::Ready(tracks_for("a", vec![track("t0")]));
@@ -434,6 +441,7 @@ fn a_reply_after_to_playlists_is_discarded() {
         tracks: vec![track("t1")],
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(library.tracks, settled, "the late tracks are discarded");
 

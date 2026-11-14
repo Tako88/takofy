@@ -47,6 +47,8 @@ pub(crate) fn tracks_for(playlist: &str, tracks: Vec<TrackEntry>) -> TracksFor {
         tracks,
         access: None,
         notice: None,
+        head: None,
+        cover: None,
     }
 }
 
@@ -70,6 +72,7 @@ pub(crate) fn page_with(playlist: &str, uris: &[&str], access: Option<PlaylistAc
         tracks: uris.iter().map(|uri| track(uri)).collect(),
         cover: None,
         access,
+        head: None,
     });
     library
 }
@@ -344,6 +347,8 @@ pub(crate) fn ready(
         tracks: moved(uris),
         access,
         notice: None,
+        head: None,
+        cover: None,
     })
 }
 

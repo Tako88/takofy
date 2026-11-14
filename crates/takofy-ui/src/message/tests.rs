@@ -194,6 +194,7 @@ fn cases() -> Vec<(bool, Update)> {
                 tracks: Vec::new(),
                 cover: None,
                 access: None,
+                head: None,
             },
         ),
         (

@@ -23,6 +23,7 @@ fn a_tracks_cover_upgrades_an_entry_that_already_had_a_cover() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -45,6 +46,7 @@ fn a_non_awaited_none_cover_leaves_the_entry_alone() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -70,6 +72,7 @@ fn a_tracks_cover_upgrades_the_update_playlist_not_the_selected_one() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(a_context.clone())),
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -92,6 +95,7 @@ fn a_cover_arriving_before_playlists_is_applied_after_them() {
         tracks: Vec::new(),
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -111,6 +115,7 @@ fn a_playlists_reload_keeps_a_recorded_upgrade() {
         tracks: Vec::new(),
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -130,6 +135,7 @@ fn a_removed_playlists_cover_is_pruned() {
         tracks: Vec::new(),
         cover: Some(CoverSet::single(context)),
         access: None,
+        head: None,
     });
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
@@ -171,6 +177,7 @@ fn a_context_image_leaves_the_composed_covers_alone() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -200,6 +207,7 @@ fn an_awaited_empty_reply_leaves_the_composed_covers_alone() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(entry_cover(&library, "a"), None);
@@ -223,6 +231,7 @@ fn a_cached_context_image_fills_the_row_and_the_mosaic_stays() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
 
     library.apply(&Update::Playlists(vec![covered_and_composed(
@@ -279,6 +288,7 @@ fn a_non_awaited_some_cover_is_stored_as_derived() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -303,6 +313,7 @@ fn a_non_awaited_some_cover_never_replaces_a_chosen_one() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context)),
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -326,6 +337,7 @@ fn an_awaited_some_cover_is_stored_as_derived() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
 
     assert!(
@@ -352,6 +364,7 @@ fn an_awaited_none_cover_clears_a_derived_cover_and_its_cache_entry() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context)),
         access: None,
+        head: None,
     });
     assert!(
         library.context_covers.contains_key("a"),
@@ -365,6 +378,7 @@ fn an_awaited_none_cover_clears_a_derived_cover_and_its_cache_entry() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -394,6 +408,7 @@ fn an_awaited_none_cover_never_clears_a_chosen_one() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert!(
@@ -418,6 +433,7 @@ fn a_listing_reload_does_not_overlay_a_cached_cover_onto_a_chosen_entry() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context)),
         access: None,
+        head: None,
     });
     library.apply(&Update::Playlists(vec![playlist_with_chosen_cover(
         "a",
@@ -470,6 +486,7 @@ fn a_removed_playlist_takes_its_cached_cover_with_it() {
         tracks: Vec::new(),
         cover: Some(CoverSet::single(context)),
         access: None,
+        head: None,
     });
     assert!(
         library.context_covers.contains_key("a"),
@@ -528,6 +545,7 @@ fn a_due_playlist_selected_answers_its_own_cover() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -557,6 +575,7 @@ fn a_failed_read_releases_the_ask() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(
@@ -586,6 +605,7 @@ fn an_awaited_reply_while_the_listing_loads_still_fills_the_cache() {
         tracks: vec![track("t")],
         cover: Some(CoverSet::single(context.clone())),
         access: None,
+        head: None,
     });
     assert_eq!(
         library.context_covers.get("a"),
@@ -1041,6 +1061,7 @@ fn an_add_while_the_page_is_loading_resets_it_and_the_re_ask_wins() {
         tracks: moved(&["spotify:track:t0", "spotify:track:t1"]),
         cover: Some(CoverSet::single(first.clone())),
         access: access(0x01, true),
+        head: None,
     });
     assert_eq!(
         library.tracks,
@@ -1057,6 +1078,7 @@ fn an_add_while_the_page_is_loading_resets_it_and_the_re_ask_wins() {
         tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:x"]),
         cover: Some(CoverSet::single(first)),
         access: access(0x08, true),
+        head: None,
     });
 
     assert_eq!(
@@ -1126,6 +1148,7 @@ fn a_failed_cover_re_ask_leaves_the_cover_dropped_and_does_not_ask_again() {
         tracks: moved(&["spotify:track:t1"]),
         cover: None,
         access: access(0x02, true),
+        head: None,
     });
     assert_eq!(
         entry_cover(&library, "a"),
@@ -1217,6 +1240,7 @@ fn a_pre_edit_reply_arriving_after_the_edit_is_overwritten_by_the_re_ask() {
         tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"]),
         cover: Some(CoverSet::single(stale.clone())),
         access: access(0x01, true),
+        head: None,
     });
     assert_eq!(
         entry_cover(&library, "a"),
@@ -1239,6 +1263,7 @@ fn a_pre_edit_reply_arriving_after_the_edit_is_overwritten_by_the_re_ask() {
         tracks: moved(&["spotify:track:t1", "spotify:track:t2"]),
         cover: None,
         access: access(0x02, true),
+        head: None,
     });
 
     assert_eq!(
@@ -1287,12 +1312,14 @@ fn two_quick_removals_end_with_the_last_answer() {
         tracks: moved(&["spotify:track:t1", "spotify:track:t2"]),
         cover: Some(CoverSet::single(stale)),
         access: access(0x02, true),
+        head: None,
     });
     library.apply(&Update::Tracks {
         playlist: "a".to_owned(),
         tracks: moved(&["spotify:track:t2"]),
         cover: None,
         access: access(0x03, true),
+        head: None,
     });
 
     assert_eq!(

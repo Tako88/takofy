@@ -2,7 +2,7 @@ use super::super::*;
 use super::test_support::*;
 use crate::session::TrackPage;
 use std::sync::atomic::Ordering;
-use takofy_model::{CoverSet, PlaylistAccess};
+use takofy_model::{CoverSet, PlaylistAccess, PlaylistHead};
 
 #[test]
 fn a_failed_track_load_is_announced_and_the_task_shuts_down() {
@@ -69,6 +69,7 @@ fn a_track_page_cover_reaches_the_update() {
         tracks: vec![track("t")],
         cover: Some(cover.clone()),
         access: None,
+        head: None,
     });
     assert_eq!(
         update,
@@ -77,6 +78,7 @@ fn a_track_page_cover_reaches_the_update() {
             tracks: vec![track("t")],
             cover: Some(cover),
             access: None,
+            head: None,
         }
     );
 }
@@ -87,6 +89,7 @@ fn a_track_page_without_a_cover_reaches_the_update_as_none() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(
         update,
@@ -95,6 +98,53 @@ fn a_track_page_without_a_cover_reaches_the_update_as_none() {
             tracks: vec![track("t")],
             cover: None,
             access: None,
+            head: None,
+        }
+    );
+}
+
+#[test]
+fn a_page_head_reaches_the_window() {
+    let head = PlaylistHead {
+        name: "Night Drive".to_owned(),
+        description: Some("late hours".to_owned()),
+        owner: None,
+        picture: None,
+    };
+    let update = run_track_page(TrackPage {
+        tracks: vec![track("t")],
+        cover: None,
+        access: None,
+        head: Some(head.clone()),
+    });
+    assert_eq!(
+        update,
+        Update::Tracks {
+            playlist: "spotify:playlist:a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+            access: None,
+            head: Some(head),
+        }
+    );
+}
+
+#[test]
+fn a_page_with_no_head_sends_none() {
+    let update = run_track_page(TrackPage {
+        tracks: vec![track("t")],
+        cover: None,
+        access: None,
+        head: None,
+    });
+    assert_eq!(
+        update,
+        Update::Tracks {
+            playlist: "spotify:playlist:a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+            access: None,
+            head: None,
         }
     );
 }
@@ -109,6 +159,7 @@ fn a_track_page_access_reaches_the_update() {
         tracks: vec![track("t")],
         cover: None,
         access: Some(access.clone()),
+        head: None,
     });
     assert_eq!(
         update,
@@ -117,6 +168,7 @@ fn a_track_page_access_reaches_the_update() {
             tracks: vec![track("t")],
             cover: None,
             access: Some(access),
+            head: None,
         }
     );
 }

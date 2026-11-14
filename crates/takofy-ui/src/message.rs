@@ -9,8 +9,8 @@ use takofy_model::home::{HomeAnswer, HomeAsk, StationSeed};
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
     FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
-    RemotePlayback, Removal, Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    PlaylistHead, RemotePlayback, Removal, Report, RequestId, Revision, SavedAlbum, ShowDetail,
+    TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -391,6 +391,9 @@ pub enum Update {
         cover: Option<CoverSet>,
         /// What the page may change, when the list's own state could be read.
         access: Option<PlaylistAccess>,
+        /// The page's own name, description, owner and picture, when its read
+        /// named a real name.
+        head: Option<PlaylistHead>,
     },
     /// A playlist row moved, and this is the revision the next write must name.
     TrackMoved {

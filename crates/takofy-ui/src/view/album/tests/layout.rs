@@ -54,6 +54,7 @@ fn playlist_library() -> Library {
         tracks: vec![track("spotify:track:a", "One", "Band", 222_000)],
         cover: None,
         access: None,
+        head: None,
     });
     library
 }

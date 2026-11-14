@@ -253,6 +253,8 @@ fn a_failed_removal_restores_the_rows_and_says_so() {
             tracks: moved(&["t0", "t1", "t2"]),
             access: access(0x01, true),
             notice: Some(Failure::Save),
+            head: None,
+            cover: None,
         })
     );
 }
@@ -284,6 +286,7 @@ fn a_read_while_a_removal_is_pending_keeps_the_removed_order() {
         tracks: moved(&["t0", "t1", "t2"]),
         cover: None,
         access: access(0x01, true),
+        head: None,
     });
 
     assert_eq!(

@@ -22,10 +22,10 @@ use crate::registry::{Registry, Verdict};
 use crate::remote::{
     LabelCache, ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks,
     read_album, read_artist, read_episodes, read_followed_artists, read_followed_shows,
-    read_liked_tracks, read_lyrics, read_playlist_state, read_portraits, read_related,
-    read_release_tracks, read_saved_albums, read_saved_state, read_show, write_add, write_create,
-    write_follow, write_like, write_move, write_remove, write_rename, write_rootlist_add,
-    write_rootlist_move, write_rootlist_remove, write_saved,
+    read_liked_tracks, read_lyrics, read_playlist, read_playlist_state, read_portraits,
+    read_related, read_release_tracks, read_saved_albums, read_saved_state, read_show, write_add,
+    write_create, write_follow, write_like, write_move, write_remove, write_rename,
+    write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootEntry, RootlistError, Walked, fetch_all};
 use crate::search::search_uri;
@@ -36,8 +36,8 @@ use crate::watch::{self, Gate};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
-    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    LikedTrack, Move, PlaylistAccess, PlaylistEntry, PlaylistHead, Removal, Report, RequestId,
+    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -416,10 +416,11 @@ impl Engine {
     /// state that cannot be read leaves the page with no access to offer.
     pub async fn playlist_page(&self, playlist_uri: &str) -> Result<PlaylistPage, EngineError> {
         let mut pages = self.tracks(playlist_uri);
-        let (page, state) = tokio::join!(
-            pages.next(),
-            read_playlist_state(&self.session, playlist_uri)
-        );
+        let (page, read) = tokio::join!(pages.next(), read_playlist(&self.session, playlist_uri));
+        let (head, state) = match read {
+            Some(read) => (read.head, read.state),
+            None => (None, None),
+        };
         let tracks = page?.unwrap_or_default();
         let shown = tracks
             .iter()
@@ -439,6 +440,7 @@ impl Engine {
             tracks,
             cover,
             access,
+            head,
         })
     }
 
@@ -706,12 +708,14 @@ pub struct RootlistRead {
     pub access: Option<PlaylistAccess>,
 }
 
-/// One playlist page: its rows, the context's own image, and what it may change.
+/// One playlist page: its rows, the context's own image, what it may change,
+/// and what the list itself says it is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlaylistPage {
     pub tracks: Vec<TrackEntry>,
     pub cover: Option<CoverSet>,
     pub access: Option<PlaylistAccess>,
+    pub head: Option<PlaylistHead>,
 }
 
 /// The first page one search query answers, through any page source.

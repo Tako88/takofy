@@ -857,6 +857,7 @@ fn band_page(window: &mut Window) {
         }],
         cover: None,
         access: page_access(true),
+        head: None,
     });
 }
 

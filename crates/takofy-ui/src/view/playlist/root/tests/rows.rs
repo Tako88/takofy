@@ -138,6 +138,7 @@ fn a_playlist_row_for_an_episode_draws_its_title_not_its_uri() {
         tracks: vec![episode.entry()],
         cover: None,
         access: None,
+        head: None,
     });
     let mut art = Art::default();
 

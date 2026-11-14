@@ -423,6 +423,7 @@ fn a_read_sent_while_connect_is_in_flight_runs_after_the_walk() {
                 tracks: Vec::new(),
                 cover: None,
                 access: None,
+                head: None,
             },
         ],
         "the queued read answers only after the walk"

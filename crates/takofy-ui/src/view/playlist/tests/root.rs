@@ -167,6 +167,7 @@ fn to_playlists_returns_to_the_grid() {
         tracks: vec![track("t", "t")],
         cover: None,
         access: None,
+        head: None,
     });
     library.to_playlists();
 
@@ -194,6 +195,7 @@ fn the_root_draws_the_grid_while_the_tracks_stay_ready() {
         tracks: vec![track("t0", "t0")],
         cover: None,
         access: None,
+        head: None,
     });
     library.to_playlists();
 
@@ -829,6 +831,7 @@ fn an_album_page_draws_the_album_view() {
         tracks: vec![track("t0", "t0")],
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(
         library.open(Page::Album("spotify:album:x".to_owned())),

@@ -635,6 +635,7 @@ fn reloading_the_same_playlist_keeps_the_query_and_the_narrowed_rows() {
         tracks: midnight_tracks(),
         cover: None,
         access: access(true),
+        head: None,
     });
     let output = tracklist_frame_in(&ctx, ALL, &mut library);
 
@@ -683,6 +684,7 @@ fn an_empty_list_clears_the_query() {
         tracks: Vec::new(),
         cover: None,
         access: access(true),
+        head: None,
     });
     let output = tracklist_frame_in(&ctx, ALL, &mut library);
 
@@ -733,6 +735,7 @@ fn deleting_every_visible_row_keeps_the_field_and_the_no_match_note() {
         tracks: remainder,
         cover: None,
         access: access(true),
+        head: None,
     });
     let output = tracklist_frame_in(&ctx, ALL, &mut library);
     let texts = drawn_texts(&output);
@@ -758,6 +761,7 @@ fn another_page_shows_an_unfiltered_list() {
         tracks: vec![track("u0", "t0"), track("u1", "t1")],
         cover: None,
         access: access(true),
+        head: None,
     });
     let output = tracklist_frame_in(&ctx, ALL, &mut library);
 

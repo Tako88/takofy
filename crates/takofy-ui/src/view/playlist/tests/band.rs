@@ -134,6 +134,7 @@ fn a_grid_card_switches_to_the_context_image_when_it_arrives() {
         tracks: Vec::new(),
         cover: Some(CoverSet::single(context_cover.clone())),
         access: None,
+        head: None,
     });
 
     art.begin_frame();
@@ -203,6 +204,7 @@ fn the_band_waits_for_the_context_image_and_then_shows_it() {
         tracks: vec![track("t", "t")],
         cover: Some(CoverSet::single(context_cover.clone())),
         access: None,
+        head: None,
     });
     art.begin_frame();
     run(&ctx, input(Vec::new()), |ui| {
@@ -811,6 +813,8 @@ fn a_ready_list_of_another_playlist_draws_no_mosaic() {
         tracks,
         access: None,
         notice: None,
+        head: None,
+        cover: None,
     });
 
     let entry = library
@@ -939,6 +943,7 @@ fn a_reorder_that_changes_the_first_four_covers_changes_the_mosaic_once_ready() 
         tracks,
         cover: None,
         access: None,
+        head: None,
     });
     let after = match band_picture(
         &entry,

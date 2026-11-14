@@ -10,6 +10,7 @@ fn back_to_a_ready_playlist_returns_no_command() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     library.open(album("album"));
 
@@ -78,6 +79,7 @@ fn back_from_the_root_loads_the_playlist() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     library.to_playlists();
 
@@ -102,6 +104,7 @@ fn a_reply_for_the_wanted_playlist_is_applied_on_an_album_page() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert_eq!(library.page(), Some(&album("album")));
@@ -153,6 +156,7 @@ fn a_prune_keeps_an_album_page_and_the_album_and_artist_entries() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     library.open(album("album"));
     library.open(artist("artist"));
@@ -183,6 +187,7 @@ fn a_prune_of_the_current_playlist_returns_to_the_root_without_duplicates() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
 
     library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -245,6 +250,7 @@ fn a_prune_with_no_wanted_load_clears_ready_tracks() {
         tracks: vec![track("t")],
         cover: None,
         access: None,
+        head: None,
     });
     library.to_playlists();
     assert_eq!(library.wanted, None);

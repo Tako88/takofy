@@ -8,6 +8,7 @@ use librespot::protocol::playlist4_external::{
     Item, ListAttributes, ListItems, SelectedListContent,
 };
 use protobuf::MessageField;
+use takofy_model::{Owner, OwnerName};
 
 const PLAYLIST_ID: &str = "37i9dQZF1DXcBWIGoYBM5M";
 
@@ -291,4 +292,103 @@ fn a_window_naming_no_capabilities_is_not_editable() {
 
     assert_eq!(access.revision, revision(b"rev"));
     assert!(!access.editable);
+}
+
+#[test]
+fn a_page_read_names_the_playlist() {
+    let head = playlist_head("Night Drive", "late hours", &[], None, "me").expect("a head");
+
+    assert_eq!(head.name, "Night Drive");
+    assert_eq!(head.description.as_deref(), Some("late hours"));
+    assert_eq!(head.owner, None);
+    assert_eq!(head.picture, None);
+}
+
+#[test]
+fn a_page_read_collapses_name_and_description_whitespace() {
+    let head =
+        playlist_head("  Night\n Drive ", "  late\n hours ", &[], None, "me").expect("a head");
+
+    assert_eq!(head.name, "Night Drive");
+    assert_eq!(head.description.as_deref(), Some("late hours"));
+}
+
+#[test]
+fn a_page_read_with_a_blank_name_has_no_head() {
+    assert_eq!(playlist_head("  \n", "late hours", &[], None, "me"), None);
+    assert_eq!(playlist_head("", "", &[], None, "me"), None);
+}
+
+#[test]
+fn a_page_read_with_no_description_keeps_its_name() {
+    let head = playlist_head("Night Drive", "   \n", &[], None, "me").expect("a head");
+
+    assert_eq!(head.name, "Night Drive");
+    assert_eq!(
+        head.description, None,
+        "a blank description is no line, not an empty one"
+    );
+}
+
+#[test]
+fn our_own_page_reads_as_you() {
+    let head = playlist_head("Night Drive", "", &[], Some("alice"), "alice").expect("a head");
+
+    assert_eq!(head.owner, Some(Owner::You));
+}
+
+#[test]
+fn a_numeric_or_blank_owner_names_nobody() {
+    for owner in [Some("12345"), Some(""), Some("   ")] {
+        let head = playlist_head("Night Drive", "", &[], owner, "me").expect("a head");
+
+        assert_eq!(head.owner, None, "{owner:?} names no person");
+    }
+
+    let head = playlist_head("Night Drive", "", &[], Some("bob"), "me").expect("a head");
+    assert_eq!(head.owner, OwnerName::from_wire("bob").map(Owner::Named));
+}
+
+#[test]
+fn a_state_with_no_revision_is_none_and_leaves_the_head_alone() {
+    assert_eq!(playlist_state_of(&[], false, false, Vec::new()), None);
+
+    let head = playlist_head("Night Drive", "", &[], None, "me");
+    assert_eq!(
+        head.map(|head| head.name),
+        Some("Night Drive".to_owned()),
+        "a page whose state cannot be read still names itself"
+    );
+}
+
+#[test]
+fn a_page_picture_of_twenty_bytes_is_carried() {
+    let head = playlist_head("Night Drive", "", &PICTURE, None, "me").expect("a head");
+
+    assert_eq!(
+        head.picture,
+        CoverUrl::from_file_id(&PICTURE).map(CoverSet::single)
+    );
+}
+
+#[test]
+fn an_empty_or_short_picture_is_no_picture() {
+    assert_eq!(
+        playlist_head("A", "", &[], None, "me")
+            .expect("a head")
+            .picture,
+        None
+    );
+    assert_eq!(
+        playlist_head("A", "", &PICTURE[..16], None, "me")
+            .expect("a head")
+            .picture,
+        None
+    );
+    assert_eq!(
+        playlist_head("A", "", &[0u8; 20], None, "me")
+            .expect("a head")
+            .picture,
+        None
+    );
 }

@@ -166,12 +166,14 @@ fn announce_sends_tracks_for_a_page() {
             tracks: vec![track("t")],
             cover: Some(cover.clone()),
             access: None,
+            head: None,
         }),
         |page| Update::Tracks {
             playlist: playlist.clone(),
             tracks: page.tracks,
             cover: page.cover,
             access: None,
+            head: page.head,
         },
         |failure| Update::TracksFailed {
             playlist: playlist.clone(),
@@ -185,6 +187,7 @@ fn announce_sends_tracks_for_a_page() {
             tracks: vec![track("t")],
             cover: Some(cover),
             access: None,
+            head: None,
         }
     );
 }
@@ -206,6 +209,7 @@ fn announce_sends_tracks_failed_for_an_error() {
             tracks: page.tracks,
             cover: page.cover,
             access: None,
+            head: page.head,
         },
         |failure| Update::TracksFailed {
             playlist: playlist.clone(),

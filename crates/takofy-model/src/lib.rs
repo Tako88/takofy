@@ -298,6 +298,24 @@ impl PlaylistEntry {
     }
 }
 
+/// A playlist as its own page read it.
+///
+/// Distinct from [`PlaylistEntry`], which is what the rootlist says and may be
+/// the URI fallback: a head is built only from a read that named a real name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistHead {
+    pub name: String,
+    /// The playlist's own description, collapsed to a line, when it has one.
+    pub description: Option<String>,
+    /// Who owns the playlist, when the read named a person.
+    ///
+    /// Our own lists are [`Owner::You`] and draw no name; another account's
+    /// numeric id is not a person, so it is no owner at all.
+    pub owner: Option<Owner>,
+    /// The picture the user set, when the playlist carries a usable one.
+    pub picture: Option<CoverSet>,
+}
+
 /// When a track joined the playlist it is drawn in, in epoch milliseconds.
 ///
 /// A separate type from a duration, which is also a millisecond count, and from

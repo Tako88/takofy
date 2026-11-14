@@ -14,6 +14,7 @@ fn the_next_page_write_carries_the_rename_replys_revision() {
         tracks: vec![track("t0"), track("t1")],
         cover: None,
         access: access(0x07, true),
+        head: None,
     });
     rename_pending(&mut library, "a", crate::naming::Surface::Row);
     library.apply(&Update::PlaylistRenamed {
@@ -158,6 +159,7 @@ fn rows_that_land_for_a_shelf_play_are_taken_once() {
         tracks: vec![track("t0"), track("t1")],
         cover: None,
         access: None,
+        head: None,
     };
     library.apply(&reply);
     assert!(library.has_landed_play());
@@ -182,6 +184,7 @@ fn a_shelf_play_does_not_replace_the_page_rows() {
         tracks: vec![track("t0")],
         cover: None,
         access: None,
+        head: None,
     });
 
     assert!(library.has_landed_play());
@@ -216,6 +219,7 @@ fn a_second_shelf_play_replaces_the_first_and_the_first_reply_is_ignored() {
         tracks: vec![track("ta")],
         cover: None,
         access: None,
+        head: None,
     });
     assert!(
         !library.has_landed_play(),
@@ -227,6 +231,7 @@ fn a_second_shelf_play_replaces_the_first_and_the_first_reply_is_ignored() {
         tracks: vec![track("tb")],
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(library.take_play(), Some(start("b", &["tb"])));
 }
@@ -266,6 +271,7 @@ fn the_same_rows_landing_twice_start_once() {
             tracks: vec![track("t0")],
             cover: None,
             access: None,
+            head: None,
         });
     }
 
@@ -360,6 +366,7 @@ fn a_shelf_play_does_not_outlive_the_page_it_was_pressed_on() {
             tracks: vec![track("t0")],
             cover: None,
             access: None,
+            head: None,
         });
         library.take_play()
     };
@@ -413,6 +420,7 @@ fn a_playlist_removed_while_its_play_is_pending_drops_the_play() {
         tracks: vec![track("t0")],
         cover: None,
         access: None,
+        head: None,
     });
     assert_eq!(library.take_play(), None, "a removed playlist started");
 }
@@ -443,6 +451,7 @@ fn an_empty_playlist_clears_the_shelf_play_and_starts_nothing() {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 
     assert!(library.has_landed_play(), "the empty rows did not land");

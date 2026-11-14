@@ -680,6 +680,7 @@ fn every_write_that_changes_a_list_moves_the_generation() {
             tracks: Vec::new(),
             cover: None,
             access: None,
+            head: None,
         },
         Update::TrackMoved {
             playlist: "a".to_owned(),

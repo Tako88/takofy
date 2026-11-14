@@ -93,6 +93,7 @@ fn a_selection_stays_on_the_playlist_it_was_made_on() {
         tracks: vec![track("a", "t0"), track("b", "t1")],
         cover: None,
         access: None,
+        head: None,
     });
     let tokens = Tokens::DARK;
     run(&ctx, input(Vec::new()), |ui| {
@@ -515,6 +516,7 @@ fn read_only_library_with(tracks: Vec<TrackEntry>) -> Library {
         tracks,
         cover: None,
         access: access(false),
+        head: None,
     });
     library
 }

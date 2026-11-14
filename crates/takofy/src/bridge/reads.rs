@@ -451,6 +451,7 @@ async fn load_tracks<H: SessionHost>(host: &H, notifier: &Notifier, playlist: &s
             tracks: page.tracks,
             cover: page.cover,
             access: page.access,
+            head: page.head,
         },
         |failure| Update::TracksFailed {
             playlist: playlist.to_owned(),

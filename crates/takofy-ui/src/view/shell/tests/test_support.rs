@@ -463,6 +463,7 @@ pub(super) fn ready_playlist(window: &mut Window) {
         tracks: Vec::new(),
         cover: None,
         access: None,
+        head: None,
     });
 }
 
@@ -943,6 +944,7 @@ pub(super) fn page_of_tracks(window: &mut Window, uris: &[&str]) {
             .collect(),
         cover: None,
         access: page_access(true),
+        head: None,
     });
 }
 
@@ -1424,5 +1426,6 @@ pub(super) fn playlist_page_with(
             .collect(),
         cover: None,
         access,
+        head: None,
     });
 }
