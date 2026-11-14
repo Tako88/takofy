@@ -24,6 +24,7 @@ fn an_unsaved_track_gets_save_after_add_to_queue() {
     assert_eq!(
         labels(&items),
         [
+            "Play next",
             "Add to queue",
             "Save to your library",
             "Start radio",
@@ -37,6 +38,7 @@ fn an_unsaved_track_gets_save_after_add_to_queue() {
     assert_eq!(
         verbs(&items),
         [
+            Verb::PlayNext,
             Verb::AddToQueue,
             Verb::Save,
             Verb::StartRadio,
@@ -153,6 +155,7 @@ fn the_queue_listing_has_save_but_no_add_to_queue() {
     );
     assert!(library(&items).is_some());
     assert!(items.iter().all(|item| item.verb != Verb::AddToQueue));
+    assert!(items.iter().all(|item| item.verb != Verb::PlayNext));
 }
 
 #[test]

@@ -61,6 +61,8 @@ pub enum Kind {
 /// What one row of a menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    /// Puts the picked rows at the front of what is waiting.
+    PlayNext,
     AddToQueue,
     StartRadio,
     Save,

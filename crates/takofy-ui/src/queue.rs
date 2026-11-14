@@ -139,12 +139,13 @@ pub struct Queue {
     /// Row URIs a label was asked for, so a row that never comes back named
     /// does not become a request per frame.
     label_asked: HashSet<String>,
-    /// How many rows at the head of the upcoming region the phone queued to play
-    /// next, counted from `first_upcoming`.
+    /// How many rows at the head of the upcoming region play before the context
+    /// resumes, counted from `first_upcoming`: the ones the phone queued and the
+    /// ones a play next put there.
     ///
-    /// It is a count from the current row, so the rows that stay the phone's
-    /// block are the ones still ahead of it: a move forward into the block leaves
-    /// its tail, a move past it or back out of it leaves nothing, and an edit
+    /// It is a count from the current row, so the rows that stay in the block
+    /// are the ones still ahead of it: a move forward into the block leaves its
+    /// tail, a move past it or back out of it leaves nothing, and an edit
     /// clamps it to the rows that remain.
     queued: usize,
     /// The newest queue revision the phone published.
@@ -700,6 +701,19 @@ impl Queue {
     /// first row and is left armed.
     pub fn append(&mut self, entries: Vec<TrackEntry>) -> Option<Range<usize>> {
         self.insert_at(self.tracks.len(), entries)
+    }
+
+    /// Puts `entries` at the front of what is waiting, ahead of any block the
+    /// phone queued, and says where they landed.
+    ///
+    /// They join the counted block, so the phone's next add still lands behind
+    /// every row that plays before the context resumes.
+    pub fn play_next(&mut self, entries: Vec<TrackEntry>) -> Option<Range<usize>> {
+        let landed = self.insert_at(self.first_upcoming(), entries)?;
+        if self.index.is_some() {
+            self.queued = self.queued.saturating_add(landed.len());
+        }
+        Some(landed)
     }
 
     /// Adds `entries` to the queue the phone sent, after the rows it queued

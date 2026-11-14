@@ -38,7 +38,7 @@ fn enter_chooses_it() {
         drawn.closed,
         Some(Closed {
             opener: Some(opener()),
-            chose: Some(Verb::StartRadio),
+            chose: Some(Verb::AddToQueue),
         })
     );
     assert!(!menu.is_open());
@@ -66,7 +66,7 @@ fn the_enter_that_opens_leaves_the_menu_open() {
     let drawn = press(&ctx, &mut menu, Key::Enter);
     assert_eq!(
         drawn.closed.map(|closed| closed.chose),
-        Some(Some(Verb::AddToQueue))
+        Some(Some(Verb::PlayNext))
     );
 }
 

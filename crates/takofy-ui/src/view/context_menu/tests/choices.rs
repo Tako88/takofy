@@ -60,7 +60,7 @@ fn choosing_a_row_returns_the_opener() {
     }
     assert_eq!(
         closed.map(|closed| (closed.opener, closed.chose)),
-        Some((Some(opener()), Some(Verb::AddToQueue)))
+        Some((Some(opener()), Some(Verb::PlayNext)))
     );
     assert!(focused, "the choice did not return the keyboard");
 }

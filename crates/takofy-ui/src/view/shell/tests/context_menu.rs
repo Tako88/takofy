@@ -94,10 +94,11 @@ fn a_held_enter_that_opened_the_menu_fires_nothing() {
 
     assert!(window.menu.is_open(), "a held Enter closed the menu");
     assert_eq!(window.menu.lit(), Some(0), "a held Enter moved the lit row");
+    assert_eq!(window.menu.items()[0].verb, Verb::PlayNext);
     assert_eq!(
         queue.upcoming().count(),
         0,
-        "a held Enter fired Add to queue"
+        "a held Enter fired the first row"
     );
 }
 
@@ -128,9 +129,13 @@ fn a_held_enter_after_choosing_does_not_reopen_the_menu() {
             vec![key(egui::Key::Enter, true)],
         )
         .0;
-    assert_eq!(chosen, None, "adding to the queue asks for no command");
+    assert_eq!(chosen, None, "the first row asks for no command");
     assert!(!window.menu.is_open(), "the choice left the menu open");
-    assert_eq!(queue.upcoming().count(), 1, "the choice queued nothing");
+    assert_eq!(
+        queue.upcoming().count(),
+        1,
+        "the choice queued the row once"
+    );
 
     // Held, the repeats land on the `⋯` that now holds the keyboard.
     for _ in 0..3 {
@@ -217,7 +222,7 @@ fn a_right_click_on_a_playlist_row_opens_the_menu_the_shell_draws() {
     assert_eq!(
         press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
         None,
-        "adding to the queue asks for no command"
+        "the first row asks for no command"
     );
     assert!(!window.menu.is_open());
     let queued: Vec<&str> = queue
@@ -255,6 +260,88 @@ fn a_chosen_add_to_queue_appends_and_closes() {
         .map(|(_, entry)| entry.uri.as_str())
         .collect();
     assert_eq!(queued, vec!["spotify:track:0"]);
+}
+
+#[test]
+fn a_chosen_play_next_inserts_at_the_front_and_closes() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    queue.start(
+        &[menu_track(0), menu_track(1), menu_track(2)],
+        0,
+        None,
+        &mut transport,
+    );
+    queue.add_next(vec![menu_track(5)]);
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    open_menu(
+        &mut window,
+        Verb::PlayNext,
+        vec![menu_track(9)],
+        Listing::Page,
+        vec![0],
+    );
+    settle_menu(&mut window, &mut transport, &mut queue);
+
+    assert_eq!(
+        press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+        None,
+        "playing next asks for no command"
+    );
+    assert!(
+        !window.menu.is_open(),
+        "the menu stayed open after the choice"
+    );
+    let queued: Vec<&str> = queue
+        .upcoming()
+        .map(|(_, entry)| entry.uri.as_str())
+        .collect();
+    assert_eq!(
+        queued,
+        vec![
+            "spotify:track:9",
+            "spotify:track:5",
+            "spotify:track:1",
+            "spotify:track:2"
+        ]
+    );
+    assert_eq!(
+        queue.current().map(|entry| entry.uri.as_str()),
+        Some("spotify:track:0"),
+        "the playing row is untouched"
+    );
+}
+
+#[test]
+fn a_chosen_play_next_on_a_pick_keeps_the_pick_order() {
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    queue.start(
+        &[menu_track(0), menu_track(1), menu_track(2)],
+        0,
+        None,
+        &mut transport,
+    );
+    let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    open_menu(
+        &mut window,
+        Verb::PlayNext,
+        vec![menu_track(7), menu_track(8)],
+        Listing::Page,
+        vec![0, 1],
+    );
+    settle_menu(&mut window, &mut transport, &mut queue);
+
+    let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+    let queued: Vec<&str> = queue
+        .upcoming()
+        .map(|(_, entry)| entry.uri.as_str())
+        .collect();
+    assert_eq!(
+        &queued[..2],
+        ["spotify:track:7", "spotify:track:8"],
+        "the pick is inserted in list order, not reversed"
+    );
 }
 
 #[test]
@@ -551,11 +638,11 @@ fn a_click_on_now_playings_more_opens_a_current_menu() {
 
     assert!(window.menu.is_open(), "the more button opened no menu");
     assert!(
-        window
-            .menu
-            .items()
-            .iter()
-            .all(|item| { item.verb != Verb::AddToQueue && item.verb != Verb::Remove }),
+        window.menu.items().iter().all(|item| {
+            item.verb != Verb::AddToQueue
+                && item.verb != Verb::PlayNext
+                && item.verb != Verb::Remove
+        }),
         "Now Playing offered a list command"
     );
     assert_eq!(window.menu.cut(), None, "the entry was removable");

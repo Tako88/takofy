@@ -301,6 +301,7 @@ fn library_outcome_copies_the_link_renames_and_unlinks_the_item() {
         Some(Outcome::Rename(row.clone()))
     );
     for verb in [
+        Verb::PlayNext,
         Verb::AddToQueue,
         Verb::Save,
         Verb::Unsave,

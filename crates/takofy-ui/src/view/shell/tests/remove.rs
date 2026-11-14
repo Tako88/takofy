@@ -796,7 +796,7 @@ fn a_right_click_on_a_queue_row_opens_the_queue_menu_and_removes_it() {
             .menu
             .items()
             .iter()
-            .all(|item| item.verb != Verb::AddToQueue),
+            .all(|item| item.verb != Verb::AddToQueue && item.verb != Verb::PlayNext),
         "the queue offered to add what is already there"
     );
     let last = window.menu.items().last().expect("a command");

@@ -740,6 +740,10 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             let _ = screen.queue.append(entries);
             None
         }
+        verbs::Outcome::PlayNext(entries) => {
+            let _ = screen.queue.play_next(entries);
+            None
+        }
         verbs::Outcome::Copy(text) => {
             // One URL per line, through egui's own platform output, so the
             // window crate needs no clipboard dependency.

@@ -3,7 +3,7 @@ use super::test_support::*;
 use takofy_model::home::{SeedKind, StationSeed};
 
 #[test]
-fn one_track_gets_the_sheets_seven_verbs_in_order() {
+fn one_track_gets_the_sheets_eight_verbs_in_order() {
     let items = track_items(
         &[entry("spotify:track:a")],
         None,
@@ -13,6 +13,7 @@ fn one_track_gets_the_sheets_seven_verbs_in_order() {
     assert_eq!(
         labels(&items),
         [
+            "Play next",
             "Add to queue",
             "Start radio",
             "Go to album",
@@ -25,6 +26,7 @@ fn one_track_gets_the_sheets_seven_verbs_in_order() {
     assert_eq!(
         verbs(&items),
         [
+            Verb::PlayNext,
             Verb::AddToQueue,
             Verb::StartRadio,
             Verb::GoToAlbum,
@@ -46,9 +48,10 @@ fn a_pick_puts_its_count_in_the_labels() {
     ];
     let items = track_items(&targets, None, &Listing::Page, Standing::Unknown);
     let labels = labels(&items);
-    assert_eq!(labels[0], "Add 3 tracks to queue");
-    assert_eq!(labels[2], "Go to artist", "a go-to never carries a count");
-    assert_eq!(labels[3], "Copy 3 links");
+    assert_eq!(labels[0], "Play 3 tracks next");
+    assert_eq!(labels[1], "Add 3 tracks to queue");
+    assert_eq!(labels[3], "Go to artist", "a go-to never carries a count");
+    assert_eq!(labels[4], "Copy 3 links");
 }
 
 #[test]
@@ -83,6 +86,7 @@ fn a_missing_album_or_artist_uri_omits_the_verb() {
     assert_eq!(
         labels(&items),
         [
+            "Play next",
             "Add to queue",
             "Start radio",
             "Copy link",
@@ -236,7 +240,10 @@ fn a_local_only_pick_has_no_copy_link() {
     local.album_uri = None;
     local.artist_uris = Vec::new();
     let items = track_items(&[local], None, &Listing::Page, Standing::Unknown);
-    assert_eq!(labels(&items), ["Add to queue", "New playlist…"]);
+    assert_eq!(
+        labels(&items),
+        ["Play next", "Add to queue", "New playlist…"]
+    );
 }
 
 #[test]
@@ -248,7 +255,8 @@ fn an_episode_pick_says_items() {
         &Listing::Page,
         Standing::Unknown,
     );
-    assert_eq!(labels(&items)[0], "Add 2 items to queue");
+    assert_eq!(labels(&items)[0], "Play 2 items next");
+    assert_eq!(labels(&items)[1], "Add 2 items to queue");
 }
 
 #[test]
@@ -261,6 +269,10 @@ fn outcomes_carry_what_the_menu_snapshot_held() {
     assert_eq!(
         outcome(Verb::AddToQueue, &targets),
         Some(Outcome::Queue(targets.to_vec()))
+    );
+    assert_eq!(
+        outcome(Verb::PlayNext, &targets),
+        Some(Outcome::PlayNext(targets.to_vec()))
     );
 
     let Some(Outcome::Copy(text)) = outcome(Verb::CopyLink, &targets) else {
@@ -291,6 +303,7 @@ fn an_outcome_that_cannot_apply_is_none() {
     assert_eq!(outcome(Verb::GoToAlbum, &[bare.clone()]), None);
     assert_eq!(outcome(Verb::GoToArtist, &[bare]), None);
     assert_eq!(outcome(Verb::AddToQueue, &[]), None);
+    assert_eq!(outcome(Verb::PlayNext, &[]), None);
 }
 
 #[test]
@@ -304,6 +317,7 @@ fn a_playlist_pick_labels_the_count() {
     assert_eq!(
         labels(&one),
         [
+            "Play next",
             "Add to queue",
             "Start radio",
             "Go to album",
@@ -393,6 +407,7 @@ fn a_page_listing_has_no_remove_row() {
     );
     assert!(!verbs(&items).contains(&Verb::Remove));
     assert!(verbs(&items).contains(&Verb::AddToQueue));
+    assert!(verbs(&items).contains(&Verb::PlayNext));
 }
 
 #[test]
@@ -417,7 +432,7 @@ fn the_current_listing_has_neither_add_nor_remove() {
 }
 
 #[test]
-fn the_queue_listing_has_no_add_to_queue() {
+fn the_queue_listing_has_neither_add_to_queue_nor_play_next() {
     let items = track_items(
         &[entry("spotify:track:a")],
         None,
@@ -425,7 +440,46 @@ fn the_queue_listing_has_no_add_to_queue() {
         Standing::Unknown,
     );
     assert!(!verbs(&items).contains(&Verb::AddToQueue));
+    assert!(!verbs(&items).contains(&Verb::PlayNext));
     assert_eq!(verbs(&items).last(), Some(&Verb::Remove));
+}
+
+#[test]
+fn play_next_leads_the_queue_row_on_page_and_playlist_only() {
+    let targets = [entry("spotify:track:a")];
+    for listing in [Listing::Page, playlist_listing()] {
+        let items = track_items(&targets, None, &listing, Standing::Unknown);
+        assert_eq!(verbs(&items)[0], Verb::PlayNext, "{listing:?}");
+        assert_eq!(verbs(&items)[1], Verb::AddToQueue, "{listing:?}");
+    }
+    for listing in [Listing::Queue, Listing::Current] {
+        let items = track_items(&targets, None, &listing, Standing::Unknown);
+        assert!(!verbs(&items).contains(&Verb::PlayNext), "{listing:?}");
+    }
+}
+
+#[test]
+fn a_play_next_label_counts_the_pick() {
+    let one = track_items(
+        &[entry("spotify:track:a")],
+        None,
+        &Listing::Page,
+        Standing::Unknown,
+    );
+    assert_eq!(labels(&one)[0], "Play next");
+
+    let two = tracks(&["spotify:track:a", "spotify:track:b"]);
+    let items = track_items(&two, None, &Listing::Page, Standing::Unknown);
+    assert_eq!(labels(&items)[0], "Play 2 tracks next");
+
+    let episode = entry("spotify:episode:e");
+    let items = track_items(
+        &[episode.clone(), episode],
+        None,
+        &Listing::Page,
+        Standing::Unknown,
+    );
+    assert_eq!(labels(&items)[0], "Play 2 items next");
 }
 
 #[test]
@@ -486,4 +540,11 @@ fn a_mixed_pick_says_items_and_counts_only_the_linkable_rows() {
         .find(|item| item.verb == Verb::CopyLink)
         .expect("two rows are linkable");
     assert_eq!(copy.label, "Copy 2 links");
+
+    let page = track_items(&targets, None, &Listing::Page, Standing::Unknown);
+    assert_eq!(
+        labels(&page)[0],
+        "Play 3 items next",
+        "a mixed pick counts every row"
+    );
 }

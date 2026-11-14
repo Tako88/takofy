@@ -21,6 +21,8 @@ pub enum Outcome {
     StartRadio { seed: StationSeed },
     /// These rows, in the order the menu took them.
     Queue(Vec<TrackEntry>),
+    /// These rows, in the order the menu took them, at the front of what is waiting.
+    PlayNext(Vec<TrackEntry>),
     /// One URL per line, no trailing newline.
     Copy(String),
     /// The page a go-to opens.
@@ -221,8 +223,8 @@ pub fn heart_label(liked: bool) -> &'static str {
     }
 }
 
-/// The rows' commands, in the sheet's order: queue, library, radio, album,
-/// artist, link, remove.
+/// The rows' commands, in the sheet's order: play next, queue, library, radio,
+/// album, artist, link, remove.
 ///
 /// A verb that cannot apply is absent rather than greyed, and a pick only keeps
 /// the verbs that are single-valued across it. The library row is the pick's
@@ -240,6 +242,7 @@ pub fn track_items(
     }
 
     if matches!(listing, Listing::Page | Listing::Playlist { .. }) {
+        items.push(item(Verb::PlayNext, play_next_label(targets)));
         items.push(item(Verb::AddToQueue, queue_label(targets)));
     }
 
@@ -318,6 +321,7 @@ pub fn track_items(
 /// that apply, so this is the guard against a caller that did not ask first.
 pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
     match verb {
+        Verb::PlayNext => (!targets.is_empty()).then(|| Outcome::PlayNext(targets.to_vec())),
         Verb::AddToQueue => (!targets.is_empty()).then(|| Outcome::Queue(targets.to_vec())),
         Verb::StartRadio => match targets {
             [only] if only.is_track() => Some(Outcome::StartRadio {
@@ -460,6 +464,14 @@ fn queue_label(targets: &[TrackEntry]) -> String {
         return "Add to queue".to_owned();
     }
     format!("Add {} {} to queue", targets.len(), noun(targets))
+}
+
+/// The play-next command's label, which carries the pick's count and its noun.
+fn play_next_label(targets: &[TrackEntry]) -> String {
+    if targets.len() == 1 {
+        return "Play next".to_owned();
+    }
+    format!("Play {} {} next", targets.len(), noun(targets))
 }
 
 /// The noun a count-bearing label uses: a playlist can hold episodes and local

@@ -290,11 +290,11 @@ fn rows_are_named_menu_items_and_the_card_is_a_menu() {
     assert_eq!(nodes.0.0, egui::Role::Menu);
     assert_eq!(nodes.0.1.as_deref(), Some("Harbour Wall"));
     let expected = [
+        "Play next",
         "Add to queue",
         "Start radio",
         "Go to album",
         "Go to artist",
-        "Copy link",
     ];
     assert_eq!(nodes.1.len(), expected.len());
     for ((role, label), name) in nodes.1.into_iter().zip(expected) {

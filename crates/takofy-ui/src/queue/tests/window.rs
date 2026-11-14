@@ -127,6 +127,138 @@ fn removing_rows_clamps_the_queued_block() {
 }
 
 #[test]
+fn play_next_lands_right_after_the_current_row() {
+    let mut queue = started(3, 0);
+
+    assert_eq!(queue.play_next(vec![track("x")]), Some(1..2));
+
+    assert_eq!(order(&queue), uris(&["t0", "x", "t1", "t2"]));
+    assert_eq!(queue.queued, 1);
+    assert_eq!(
+        queue.current().map(|entry| entry.uri.as_str()),
+        Some("t0"),
+        "the playing row is untouched"
+    );
+}
+
+#[test]
+fn play_next_goes_in_front_of_the_phones_block_and_moves_its_boundary() {
+    let mut queue = started(3, 0);
+    queue.add_next(vec![track("a")]);
+    queue.add_next(vec![track("b")]);
+
+    assert_eq!(queue.play_next(vec![track("x")]), Some(1..2));
+    assert_eq!(order(&queue), uris(&["t0", "x", "a", "b", "t1", "t2"]));
+    assert_eq!(queue.queued, 3);
+
+    queue.add_next(vec![track("c")]);
+    assert_eq!(
+        order(&queue),
+        uris(&["t0", "x", "a", "b", "c", "t1", "t2"]),
+        "the phone's next add lands behind its own block"
+    );
+}
+
+#[test]
+fn a_play_next_block_keeps_the_order_it_was_given() {
+    let mut queue = started(2, 0);
+
+    assert_eq!(
+        queue.play_next(vec![track("x"), track("y"), track("z")]),
+        Some(1..4)
+    );
+
+    assert_eq!(order(&queue), uris(&["t0", "x", "y", "z", "t1"]));
+    assert_eq!(queue.queued, 3);
+}
+
+#[test]
+fn play_next_runs_stack_newest_first() {
+    let mut queue = started(2, 0);
+
+    queue.play_next(vec![track("x")]);
+    queue.play_next(vec![track("y")]);
+
+    assert_eq!(order(&queue), uris(&["t0", "y", "x", "t1"]));
+    assert_eq!(queue.queued, 2);
+}
+
+#[test]
+fn play_next_after_the_last_row_appends_and_counts_it() {
+    let mut queue = started(3, 2);
+
+    assert_eq!(queue.play_next(vec![track("x")]), Some(3..4));
+
+    assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "x"]));
+    assert_eq!(queue.queued, 1);
+}
+
+#[test]
+fn play_next_of_a_track_already_waiting_adds_a_second_row() {
+    let mut queue = started(3, 0);
+    let mut transport = Transport::default();
+
+    assert_eq!(queue.play_next(vec![track("t2")]), Some(1..2));
+    assert_eq!(order(&queue), uris(&["t0", "t2", "t1", "t2"]));
+    assert_eq!(queue.queued, 1);
+
+    assert_eq!(queue.next(&mut transport), Some(play("t2")));
+    assert_eq!(queue.next(&mut transport), Some(play("t1")));
+}
+
+#[test]
+fn advancing_into_a_play_next_block_shrinks_queued() {
+    let mut queue = started(3, 0);
+    let mut transport = Transport::default();
+    queue.play_next(vec![track("x"), track("y")]);
+
+    assert_eq!(queue.next(&mut transport), Some(play("x")));
+    assert_eq!(queue.queued, 1);
+
+    assert_eq!(queue.next(&mut transport), Some(play("y")));
+    assert_eq!(queue.queued, 0);
+}
+
+#[test]
+fn removing_play_next_rows_shrinks_the_block() {
+    let mut queue = started(3, 0);
+    queue.play_next(vec![track("x"), track("y")]);
+
+    let gone = queue.entries_at(&[1]);
+    queue.remove_rows(&[1], &gone);
+    assert_eq!(queue.queued, 1);
+
+    queue.add_next(vec![track("w")]);
+    assert_eq!(
+        order(&queue),
+        uris(&["t0", "y", "w", "t1", "t2"]),
+        "the add lands at the row after the block"
+    );
+}
+
+#[test]
+fn play_next_on_an_armed_queue_lands_first_and_leaves_it_armed() {
+    let mut queue = armed(2);
+
+    assert_eq!(queue.play_next(vec![track("x")]), Some(0..1));
+
+    assert_eq!(order(&queue), uris(&["x", "t0", "t1"]));
+    assert!(queue.armed());
+    assert_eq!(queue.current(), None);
+    assert_eq!(queue.queued, 0);
+}
+
+#[test]
+fn play_next_in_an_empty_queue_lands_and_stays_armed() {
+    let mut queue = Queue::default();
+
+    assert_eq!(queue.play_next(vec![track("x")]), Some(0..1));
+
+    assert!(queue.armed());
+    assert_eq!(queue.queued, 0);
+}
+
+#[test]
 fn start_adopt_and_a_shuffle_toggle_reset_the_queued_block() {
     let mut queue = started(3, 0);
     let mut transport = Transport::default();

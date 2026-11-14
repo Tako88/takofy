@@ -218,7 +218,8 @@ fn queue_menu_posts_a_queue_request_and_keeps_the_pick() {
         request
             .items
             .iter()
-            .all(|item| item.verb != crate::menu::Verb::AddToQueue),
+            .all(|item| item.verb != crate::menu::Verb::AddToQueue
+                && item.verb != crate::menu::Verb::PlayNext),
         "the queue offered to add what is already there"
     );
     assert_eq!(
@@ -363,7 +364,9 @@ fn current_menu_posts_the_playing_entry_with_no_removal() {
     assert_eq!(request.rows.len(), request.targets.len(), "not parallel");
     assert!(
         request.items.iter().all(|item| {
-            item.verb != crate::menu::Verb::AddToQueue && item.verb != crate::menu::Verb::Remove
+            item.verb != crate::menu::Verb::AddToQueue
+                && item.verb != crate::menu::Verb::PlayNext
+                && item.verb != crate::menu::Verb::Remove
         }),
         "the current entry offered a list command"
     );
