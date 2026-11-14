@@ -8,6 +8,11 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ### Added
 
+- **Keep a playlist someone sends you.** A playlist you open from a link shows
+  its name, description, owner and cover even when it is not in your library,
+  and its heart adds it to the sidebar. The page stays put when the library
+  refreshes instead of falling back to your playlists, and once the list is
+  yours the menu offers rename and remove as it does anywhere else.
 - **Open a link someone sent you.** Paste a Spotify link into the search field
   and Takofy acts on it: a playlist, album, artist or show opens its page, and a
   track or an episode goes to the front of what is waiting. A pasted link is
