@@ -660,6 +660,45 @@ async fn a_playlist_anchors_on_its_most_recurring_first_credit() {
 }
 
 #[tokio::test]
+async fn a_playlist_never_offers_an_artist_it_already_contains() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    // Seefeel is in the playlist and is also a neighbour of its anchor, so the
+    // only thing standing between it and the row is the seed's own set.
+    let head = vec![
+        hit("One", "Vela", "spotify:artist:vela"),
+        hit("Two", "Seefeel", "spotify:artist:seefeel"),
+        hit("Three", "Vela", "spotify:artist:vela"),
+    ];
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).with_head(head);
+    let outside = outside(&fetch, true);
+    let seed = DiscoverySeed {
+        kind: DiscoveryKind::Playlist,
+        uri: "spotify:playlist:mix".to_owned(),
+        name: "Mix".to_owned(),
+        anchor: None,
+    };
+
+    let (_, outcome) = lookup(&spotify, &outside, seed).await;
+
+    assert!(matches!(outcome, DiscoveryOutcome::Neighbours { .. }));
+    let asked = spotify.asked_cards();
+    let uris = asked.first().expect("the cards were asked for");
+    assert!(
+        !uris.contains(&"spotify:artist:seefeel".to_owned()),
+        "an artist from the playlist was sent to the card read: {uris:?}"
+    );
+    // Clark is less followed than Aphex Twin, so the deep-cut order puts it first.
+    assert_eq!(
+        uris,
+        &vec![
+            "spotify:artist:clark".to_owned(),
+            "spotify:artist:aphex".to_owned()
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_playlist_with_no_recurrence_is_rejected_without_a_fetch() {
     let fetch = FakeFetch::new();
     route_happy(&fetch);

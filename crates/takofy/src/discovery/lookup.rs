@@ -68,8 +68,8 @@ where
     if !outside.is_open() {
         return (seed, DiscoveryOutcome::Off);
     }
-    let anchor = match anchor_for(spotify, &seed).await {
-        Ok(Some(anchor)) => anchor,
+    let (anchor, own) = match anchor_for(spotify, &seed).await {
+        Ok(Some(found)) => found,
         Ok(None) => return (seed, DiscoveryOutcome::Rejected),
         // Before the verify and related steps: a Spotify read that did not
         // answer is the outside being unreachable, never a seed it rejected.
@@ -101,7 +101,8 @@ where
         Err(_) => return (seed, DiscoveryOutcome::Unreachable),
     };
 
-    let resolved = match neighbours(spotify, outside, &related, &anchor.uri).await {
+    let own: HashSet<String> = own.into_iter().collect();
+    let resolved = match neighbours(spotify, outside, &related, &own).await {
         Ok(resolved) => resolved,
         Err(error) => return (seed, outcome_of(error)),
     };
@@ -127,16 +128,34 @@ struct Resolved {
     failed: usize,
 }
 
+/// The artist a seed is looked up from, and every artist the seed's own source
+/// already names.
+///
+/// The set is what keeps the band honest: an artist that is in the playlist the
+/// row was built from is not "just outside your library", however little of it
+/// you own. A playlist's head is all Home can see, so this is what the band has
+/// read of it, not the whole list.
 async fn anchor_for<S: Spotify>(
     spotify: &S,
     seed: &DiscoverySeed,
-) -> Result<Option<DiscoveryArtist>, ReadFailed> {
+) -> Result<Option<(DiscoveryArtist, Vec<String>)>, ReadFailed> {
     match seed.kind {
         DiscoveryKind::Playlist => {
             let head = spotify.playlist_head(&seed.uri).await?;
-            Ok(recurring_anchor(&head))
+            let Some(anchor) = recurring_anchor(&head) else {
+                return Ok(None);
+            };
+            let mut own: Vec<String> = head
+                .iter()
+                .flat_map(|entry| entry.artist_uris.iter().cloned())
+                .collect();
+            own.push(anchor.uri.clone());
+            Ok(Some((anchor, own)))
         }
-        DiscoveryKind::Artist | DiscoveryKind::Album => Ok(seed.anchor.clone()),
+        DiscoveryKind::Artist | DiscoveryKind::Album => Ok(seed.anchor.clone().map(|anchor| {
+            let own = vec![anchor.uri.clone()];
+            (anchor, own)
+        })),
     }
 }
 
@@ -237,7 +256,7 @@ async fn neighbours<S, F>(
     spotify: &S,
     outside: &Outside<F>,
     related: &[wire::ArtistHit],
-    anchor_uri: &str,
+    own: &HashSet<String>,
 ) -> Result<Resolved, OutsideError>
 where
     S: Spotify,
@@ -293,7 +312,7 @@ where
         let Some(uri) = entry.artist_uris.get(index) else {
             continue;
         };
-        if uri.is_empty() || uri == anchor_uri || !seen_uris.insert(uri.clone()) {
+        if uri.is_empty() || own.contains(uri) || !seen_uris.insert(uri.clone()) {
             continue;
         }
         uris.push(uri.clone());
