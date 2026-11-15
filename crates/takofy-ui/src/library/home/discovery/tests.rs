@@ -665,3 +665,23 @@ fn a_hide_keeps_the_artist_out_of_a_day_built_after_a_restart() {
         "a day built from the stored set does not offer the artist again"
     );
 }
+
+/// One build of the owned set serves every ask in a frame and the draw after it.
+///
+/// The set walks every saved album's credits, and the band asks for it on both
+/// the ask path and the draw path.
+#[test]
+fn one_owned_set_serves_the_asks_and_the_draw() {
+    let mut library = ready();
+    let _ = asks_on(&mut library, today());
+
+    super::reset_owned_builds();
+    let _ = library.home_asks(Instant::now());
+    let _ = library.discovery_band();
+
+    assert_eq!(
+        super::owned_builds(),
+        1,
+        "the frame built the owned set more than once"
+    );
+}

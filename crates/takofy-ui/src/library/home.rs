@@ -86,6 +86,9 @@ impl Library {
             self.hold_spent = false;
             return Vec::new();
         }
+        // One build of the owned set serves every ask this frame and the draw
+        // that follows it.
+        self.refresh_owned();
         let mut asks: Vec<Command> = self.home_labels_request().into_iter().collect();
         if self.home_intake().settled() || self.hold_spent {
             asks.extend(self.home_requests());

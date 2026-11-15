@@ -14,6 +14,8 @@
 use takofy_model::home::HomeAsk;
 
 use crate::home::discovery::Band;
+use std::sync::Arc;
+
 use crate::home::discovery::fresh::Owned;
 use crate::library::{Library, Load};
 use crate::message::Command;
@@ -84,7 +86,7 @@ impl Library {
                 .discovery
                 .choose(day, playlists, artists, albums, positions);
         }
-        let owned = owned_of(self);
+        let owned = self.owned();
         let fresh = self.home.discovery.fresh_counts(&owned, &self.hidden);
         self.home.discovery.settle(fresh);
         // Recorded whatever moved the rows, and only a change is written.
@@ -103,7 +105,7 @@ pub(in crate::library) fn band(library: &Library) -> Band<'_> {
     if library.home.discovery.latched().is_none() {
         return Band::Waiting;
     }
-    let owned = owned_of(library);
+    let owned = library.owned();
     let band = library.home.discovery.band(&owned, &library.hidden);
     match library.discovery_inputs() {
         Inputs::Failed => Band::Absent,
@@ -118,12 +120,81 @@ pub(in crate::library) fn band(library: &Library) -> Band<'_> {
     }
 }
 
+/// This frame's owned set, held so the asks and the draw share one build.
+///
+/// A cache is not part of the library's value: two libraries are equal whether or
+/// not either has built one, and a clone starts empty rather than carrying
+/// another frame's answer.
+#[derive(Debug, Default)]
+pub(crate) struct OwnedCache(std::cell::RefCell<Option<Arc<Owned>>>);
+
+impl Clone for OwnedCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for OwnedCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for OwnedCache {}
+
+impl OwnedCache {
+    fn take(&self) -> Option<Arc<Owned>> {
+        self.0.borrow().as_ref().map(Arc::clone)
+    }
+
+    fn hold(&self, owned: Owned) {
+        *self.0.borrow_mut() = Some(Arc::new(owned));
+    }
+}
+
+impl Library {
+    /// Builds this frame's set of artists the library already holds.
+    ///
+    /// Called once from the frame's ask, so a page that keeps drawing re-uses
+    /// the one the asks already paid for.
+    pub(crate) fn refresh_owned(&self) {
+        self.owned.hold(owned_of(self));
+    }
+
+    /// This frame's set, built on first use when no ask ran.
+    fn owned(&self) -> Arc<Owned> {
+        match self.owned.take() {
+            Some(owned) => owned,
+            None => Arc::new(owned_of(self)),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times the owned set has been built, for the test that counts
+    /// them.
+    static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_owned_builds() {
+    BUILDS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn owned_builds() -> usize {
+    BUILDS.with(std::cell::Cell::get)
+}
+
 /// The artists the library already holds.
 ///
 /// An artist followed since this page opened is left out, so its card keeps its
 /// place and the tile that would undo it stays reachable. The next open rebuilds
 /// the band without it.
 fn owned_of(library: &Library) -> Owned {
+    #[cfg(test)]
+    BUILDS.with(|count| count.set(count.get() + 1));
     let mut owned = match (&library.followed_artists, &library.saved_albums) {
         (Load::Ready(artists), Load::Ready(albums)) => Owned::new(artists, albums),
         _ => Owned::default(),

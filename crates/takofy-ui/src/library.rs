@@ -235,6 +235,12 @@ pub struct Library {
     /// writes would land in order and leave the two apart. The page's own button
     /// is guarded by [`Follow`] instead.
     follow_writes: HashMap<String, bool>,
+    /// The artists the library already holds, built once a frame and shared by
+    /// the asks and the draw.
+    ///
+    /// The band needs it on both paths, and it walks every saved album's credits,
+    /// so building it twice cost the drawing thread real time on a large library.
+    owned: home::discovery::OwnedCache,
     /// Whether a follow landed and the list that holds it wants re-reading.
     ///
     /// The rows stay on screen while that read is in flight: dropping a live
