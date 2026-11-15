@@ -35,6 +35,7 @@ fn with_lists(device: Device) -> Menu {
             kind: Kind::Plain,
             key: None,
             submenu: true,
+            live: true,
             verb: Verb::AddToPlaylist,
         },
     );

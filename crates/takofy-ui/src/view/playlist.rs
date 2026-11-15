@@ -70,7 +70,7 @@ pub fn tracks_view(
         // covered by the tracklist's band.
         MainPage::Home => {
             return super::inner(ui, |ui| {
-                super::home::home_view(ui, library, art, now, now_ms, local_hour, tokens)
+                super::home::home_view(ui, table, library, art, now, now_ms, local_hour, tokens)
             });
         }
         MainPage::Root => return super::inner(ui, |ui| idle(ui, library, art, now, tokens)),

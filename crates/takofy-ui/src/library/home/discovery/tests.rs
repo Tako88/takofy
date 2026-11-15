@@ -129,8 +129,7 @@ fn card(artist: &str) -> DiscoveryCard {
             name: artist.to_owned(),
         },
         portrait: None,
-        top_track: "spotify:track:top".to_owned(),
-        top_title: "Top".to_owned(),
+        tracks: Vec::new(),
         latest_year: None,
     }
 }

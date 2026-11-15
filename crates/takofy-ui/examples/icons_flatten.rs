@@ -65,6 +65,7 @@ const SCOPE: &[(&str, &str)] = &[
     ("i-clock", "Clock"),
     ("i-grid", "Grid"),
     ("i-list", "List"),
+    ("i-again", "Again"),
 ];
 
 fn main() {

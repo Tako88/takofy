@@ -15,7 +15,7 @@ use librespot::metadata::Artist;
 use librespot::protocol::metadata::Album as AlbumMessage;
 use librespot::protocol::metadata::Artist as ArtistMessage;
 use protobuf::Message as _;
-use takofy_model::home::{DiscoveryArtist, DiscoveryCard};
+use takofy_model::home::{CARD_TRACKS, DiscoveryArtist, DiscoveryCard};
 use takofy_model::{Release, TrackEntry};
 
 use crate::artist::{portrait_of, release_of, release_uris, top_track_positions};
@@ -70,28 +70,43 @@ pub(crate) fn newest_year(releases: &[Release]) -> Option<u16> {
         .max()
 }
 
-/// One card, from the artist a batched answer carried and its top track's title.
+/// One card, from the artist a batched answer carried and the labels for its top
+/// tracks.
 ///
 /// `years` is the newest release year per artist URI, from [`newest_year`], so a
-/// card whose artist had no dated release draws no year. The first playable top
-/// position is the card's track; a card with none is `None`, because a
-/// recommendation that cannot be played is not drawn.
+/// card whose artist had no dated release draws no year. The card carries up to
+/// [`CARD_TRACKS`] playable top positions; a position the labels did not reach is
+/// kept as [`TrackEntry::unnamed`] so a playable position is never lost. A card
+/// with no playable first position is `None`, because a recommendation that
+/// cannot be played is not drawn.
 pub(crate) fn assemble(
     uri: &str,
     artist: &Artist,
     country: &str,
     years: &HashMap<String, u16>,
-    title: &str,
+    labelled: &HashMap<String, TrackEntry>,
 ) -> Option<DiscoveryCard> {
-    let top_track = top_track_positions(artist, country).into_iter().next()?;
+    let positions = top_track_positions(artist, country);
+    if positions.is_empty() {
+        return None;
+    }
+    let tracks = positions
+        .into_iter()
+        .take(CARD_TRACKS)
+        .map(|position| {
+            labelled
+                .get(&position.uri)
+                .cloned()
+                .unwrap_or_else(|| TrackEntry::unnamed(&position.uri))
+        })
+        .collect();
     Some(DiscoveryCard {
         artist: DiscoveryArtist {
             uri: uri.to_owned(),
             name: name_of(uri, artist),
         },
         portrait: portrait_of(artist),
-        top_track: top_track.uri,
-        top_title: title.to_owned(),
+        tracks,
         latest_year: years.get(uri).copied(),
     })
 }

@@ -200,8 +200,7 @@ fn card(uri: &str, name: &str) -> DiscoveryCard {
             name: name.to_owned(),
         },
         portrait: None,
-        top_track: format!("spotify:track:{name}"),
-        top_title: "Top".to_owned(),
+        tracks: Vec::new(),
         latest_year: None,
     }
 }

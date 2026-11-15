@@ -1,7 +1,10 @@
 use std::time::Instant;
 
 use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
-use takofy_model::home::{HomeAnswer, HomeAsk, Station};
+use takofy_model::home::{
+    Day, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome,
+    DiscoverySeed, HomeAnswer, HomeAsk, Station,
+};
 use takofy_model::{
     Episode, FollowedArtist, FollowedShow, PlaylistEntry, PublishedAt, SavedAlbum, SavedAt, Show,
     ShowDetail,
@@ -10,8 +13,8 @@ use takofy_model::{
 use super::*;
 use crate::cover::Art;
 use crate::format::{
-    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_EPISODES_TITLE, HOME_SHELF_TITLE,
-    HOME_STATIONS_TITLE,
+    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE,
+    HOME_SHELF_TITLE, HOME_STATIONS_TITLE,
 };
 use crate::home::{Fit, Presence, Slot};
 use crate::library::Library;
@@ -52,6 +55,7 @@ fn run(
     let mut output = ctx.run_ui(input(events), |ui| {
         if let Some(next) = home_view(
             ui,
+            crate::layout::Table::Full,
             library,
             art,
             Instant::now(),
@@ -234,6 +238,9 @@ fn settled(playlists: Vec<PlaylistEntry>, albums: Vec<SavedAlbum>) -> Library {
     );
     library.apply(&Update::LikedTracks(Vec::new()));
     library.apply(&Update::SavedAlbums(albums));
+    // These tests are about the shelves under the discovery band; a band left
+    // waiting for a day would hold a skeleton over every one of them.
+    library.set_discovery_enabled(false);
     library
 }
 
@@ -548,6 +555,7 @@ fn run_at(size: Vec2, library: &mut Library) -> egui::FullOutput {
         |ui| {
             let _ = home_view(
                 ui,
+                crate::layout::regions_for(size.x).table,
                 library,
                 &mut art,
                 Instant::now(),
@@ -607,5 +615,135 @@ fn a_narrow_page_wraps_the_four_cards_instead_of_squeezing_them() {
     assert_eq!(
         rows, 4,
         "a page this narrow holds one card across, so the four stack: {cards:?}"
+    );
+}
+
+/// The card a discovery lookup would find.
+fn discovery_card(index: usize) -> DiscoveryCard {
+    DiscoveryCard {
+        artist: DiscoveryArtist {
+            uri: format!("spotify:artist:outside{index}"),
+            name: format!("Outside {index}"),
+        },
+        portrait: None,
+        tracks: vec![takofy_model::TrackEntry::unnamed(&format!(
+            "spotify:track:outside{index}"
+        ))],
+        latest_year: None,
+    }
+}
+
+/// A Home library whose discovery row has landed four fresh cards.
+fn discovery_ready() -> Library {
+    let mut library = settled(
+        vec![playlist("spotify:playlist:a", "Mix", 5_000)],
+        vec![album("spotify:album:a", "spotify:artist:held", 5_000)],
+    );
+    library.set_discovery_enabled(true);
+    library.apply(&Update::FollowedArtists(vec![artist(
+        "spotify:artist:seed",
+        "Seed",
+    )]));
+    library.set_local_day(Day::from_days(20_253));
+    let seed = discovery_seed(&mut library);
+    library.apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+        seed,
+        outcome: DiscoveryOutcome::Neighbours {
+            cards: (0..4).map(discovery_card).collect(),
+            genre: Some("Alternative".to_owned()),
+        },
+    })));
+    library
+}
+
+/// The discovery seed the frame asks for.
+fn discovery_seed(library: &mut Library) -> DiscoverySeed {
+    library
+        .home_asks(Instant::now())
+        .into_iter()
+        .find_map(|command| match command {
+            Command::LoadHome(HomeAsk::Discovery { seed }) => Some(seed),
+            _ => None,
+        })
+        .expect("a ready library asks for a discovery seed")
+}
+
+#[test]
+fn the_discovery_band_sits_above_the_dated_shelf() {
+    let mut library = discovery_ready();
+    let output = run_at(PROBE, &mut library);
+
+    let band = text_rect(&output, HOME_DISCOVERY_TITLE).expect("the band draws its title");
+    let shelf = text_rect(&output, HOME_SHELF_TITLE).expect("the dated shelf draws its title");
+    assert!(
+        band.top() < shelf.top(),
+        "the band is the page's first band: {band:?} and {shelf:?}"
+    );
+}
+
+#[test]
+fn an_absent_band_leaves_no_head_and_no_divider_over_a_day_one_page() {
+    let mut absent = settled(Vec::new(), Vec::new());
+    absent.apply(&Update::FollowedArtists(Vec::new()));
+    absent.set_discovery_enabled(true);
+    absent.set_local_day(Day::from_days(20_253));
+    let absent_output = run_at(PROBE, &mut absent);
+
+    assert!(
+        text_rect(&absent_output, HOME_DISCOVERY_TITLE).is_none(),
+        "an absent band draws no head"
+    );
+    let day_one = text_rect(&absent_output, crate::format::HOME_DAY_ONE_TITLE)
+        .expect("the day-one page still draws");
+
+    let mut off = settled(Vec::new(), Vec::new());
+    off.apply(&Update::FollowedArtists(Vec::new()));
+    off.set_local_day(Day::from_days(20_253));
+    off.set_discovery_enabled(false);
+    let off_output = run_at(PROBE, &mut off);
+    let off_day_one = text_rect(&off_output, crate::format::HOME_DAY_ONE_TITLE)
+        .expect("the day-one page still draws");
+
+    assert_eq!(
+        day_one.top(),
+        off_day_one.top(),
+        "an absent band takes no room, so the page below it does not move"
+    );
+}
+
+#[test]
+fn a_reroll_and_a_play_in_one_frame_both_land_with_the_play_first() {
+    let mut library = settled(
+        (0..4)
+            .map(|at| {
+                playlist(
+                    &format!("spotify:playlist:{at}"),
+                    &format!("Mix {at}"),
+                    5_000,
+                )
+            })
+            .collect(),
+        Vec::new(),
+    );
+    library.set_discovery_enabled(true);
+    library.apply(&Update::FollowedArtists(Vec::new()));
+    library.set_local_day(Day::from_days(20_253));
+    let seed = discovery_seed(&mut library);
+    assert_eq!(seed.kind, DiscoveryKind::Playlist);
+    assert_eq!(
+        library.reroll_state_discovery(seed.kind, NOW_MS),
+        crate::home::discovery::Reroll::Ready,
+        "arrange: the row has a seed left and an ask to spend"
+    );
+
+    let rows = vec![takofy_model::TrackEntry::unnamed("spotify:track:play")];
+    // The page applies the play before the re-roll, because a re-roll turns the
+    // row idle and must not eat a play made in the same frame.
+    assert!(library.want_play_rows(None, rows.clone()));
+    assert!(library.reroll_discovery(seed.kind, NOW_MS));
+    assert_eq!(
+        library.take_play().map(|start| start.tracks),
+        Some(rows),
+        "the play was not lost to the re-roll"
     );
 }

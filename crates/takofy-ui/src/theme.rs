@@ -278,6 +278,20 @@ pub mod extent {
     pub const LINK_UNDERLINE_INSET: f32 = 2.0;
 }
 
+/// The discovery band's own values.
+///
+/// A lone face is the one card that does not stretch with the rail: over a wide
+/// rule it would stop being a card and start being a banner. `PAIR_ART_SHARE` is
+/// the share of a pair card's width its picture takes — not a share of the page,
+/// so no existing scale holds it; it is a single value because a pair is the one
+/// body that turns its cards on their side.
+pub mod discovery {
+    /// A lone face's width, 12 rem.
+    pub const FACE_W: f32 = 192.0;
+    /// The share of a pair card the picture takes, the reference's `47%`.
+    pub const PAIR_ART_SHARE: f32 = 0.47;
+}
+
 /// How the free space in a row of columns is shared, in the reference's
 /// fractional units.
 ///

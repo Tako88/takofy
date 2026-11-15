@@ -18,6 +18,13 @@ fn solve_with(width: f32, height: f32, pane: PanePref) -> (Grid, Regions, Shell)
 }
 
 #[test]
+fn discovery_stacks_at_the_table_narrow_breakpoint() {
+    assert_eq!(regions_for(TABLE_NARROW_MAX).table, Table::Narrow);
+    assert!(regions_for(TABLE_NARROW_MAX).table.stacks_discovery());
+    assert!(!regions_for(TABLE_NARROW_MAX + 1.0).table.stacks_discovery());
+}
+
+#[test]
 fn each_threshold_is_inclusive_at_its_own_value_and_not_one_point_above() {
     assert_eq!(
         regions_for(NOWPLAYING_NARROW_MAX).now_playing,

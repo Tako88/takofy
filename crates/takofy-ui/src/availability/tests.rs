@@ -27,6 +27,11 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::HeroPlay
                 | Control::CardPlay
                 | Control::StationPlay
+                | Control::DiscoveryCard
+                | Control::DiscoveryMore
+                | Control::DiscoveryPlay
+                | Control::DiscoveryReroll
+                | Control::DiscoveryRowPlay
                 | Control::HeroMore
                 | Control::HeroLike
                 | Control::HeroShuffle
@@ -65,6 +70,15 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
             "{control:?}"
         );
     }
+}
+
+#[test]
+fn a_discovery_follow_tile_is_waiting_until_its_write_lands() {
+    assert_eq!(
+        availability(Control::DiscoveryFollow),
+        Availability::Waiting,
+        "the tile is drawn present and inert"
+    );
 }
 
 #[test]

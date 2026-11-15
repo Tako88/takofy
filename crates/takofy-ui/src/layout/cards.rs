@@ -85,6 +85,31 @@ pub fn grid(available: Rect, card_min: f32, gap: f32, card_extra_h: f32) -> Grid
     grid_capped(available, card_min, gap, card_extra_h, usize::MAX)
 }
 
+/// [`grid`] with an exact column count.
+///
+/// The columns stretch to fill the area, so a fixed grid is a row of `columns`
+/// cards sharing whatever width there is. A row whose column count is decided by
+/// the body rather than by the available width uses this.
+pub fn grid_fixed(available: Rect, columns: usize, gap: f32, card_extra_h: f32) -> Grid {
+    let columns = columns.max(1);
+    let avail = usable(available.width());
+    let gap = usable(gap);
+    let extra = usable(card_extra_h);
+    let card_w = ((avail - gap * (columns - 1) as f32) / columns as f32).max(0.0);
+    let card_h = card_w + extra;
+
+    Grid {
+        columns,
+        card_w,
+        card_h,
+        gap,
+        origin: pos2(
+            finite_or_zero(available.min.x),
+            finite_or_zero(available.min.y),
+        ),
+    }
+}
+
 /// [`grid`] with a ceiling on the column count.
 ///
 /// The columns still stretch to fill the area, so a capped grid is a row of
@@ -102,22 +127,8 @@ pub fn grid_capped(
     let avail = usable(available.width());
     let card_min = usable(card_min);
     let gap = usable(gap);
-    let extra = usable(card_extra_h);
-
     let columns = columns_for(avail, card_min, gap).min(max_columns.max(1));
-    let card_w = ((avail - gap * (columns - 1) as f32) / columns as f32).max(0.0);
-    let card_h = card_w + extra;
-
-    Grid {
-        columns,
-        card_w,
-        card_h,
-        gap,
-        origin: pos2(
-            finite_or_zero(available.min.x),
-            finite_or_zero(available.min.y),
-        ),
-    }
+    grid_fixed(available, columns, gap, card_extra_h)
 }
 
 /// The auto-fill column count for non-negative `avail`, `card_min` and `gap`.

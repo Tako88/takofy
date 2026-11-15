@@ -14,8 +14,7 @@ fn card(index: usize) -> DiscoveryCard {
     DiscoveryCard {
         artist: artist(index),
         portrait: None,
-        top_track: format!("spotify:track:{index}"),
-        top_title: format!("Track {index}"),
+        tracks: Vec::new(),
         latest_year: None,
     }
 }

@@ -17,12 +17,24 @@ use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 
 use self::pool::PER_KIND;
 
+pub mod body;
 pub mod fresh;
 pub mod hidden;
 pub mod pool;
 
 /// How long one row waits before it may re-roll again.
 pub const REROLL_COOLDOWN_MS: u64 = 10_000;
+
+/// Whether a row's re-roll can act now, and when it can next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reroll {
+    /// The row may move on.
+    Ready,
+    /// The cooldown is the only thing holding it, for this many milliseconds.
+    Wait(u64),
+    /// The row has no seed left, or the open has no ask to spend.
+    Never,
+}
 
 /// How many asks one open allows, enough for every row to advance through its
 /// whole pool.
@@ -277,24 +289,46 @@ impl State {
         }
     }
 
+    /// Whether one row can re-roll now, and when it can next.
+    ///
+    /// The cooldown's remaining time is reported so a view can wake at its end
+    /// rather than staying dim until the pointer moves.
+    pub fn reroll_state(&self, kind: DiscoveryKind, now_ms: u64) -> Reroll {
+        if self.asks_left == 0 {
+            return Reroll::Never;
+        }
+        let row = &self.rows[kind.index()];
+        if row.at + 1 >= row.pool.len() {
+            return Reroll::Never;
+        }
+        match row.last_reroll_ms {
+            Some(last) => {
+                let elapsed = now_ms.saturating_sub(last);
+                if elapsed < REROLL_COOLDOWN_MS {
+                    Reroll::Wait(REROLL_COOLDOWN_MS - elapsed)
+                } else {
+                    Reroll::Ready
+                }
+            }
+            None => Reroll::Ready,
+        }
+    }
+
+    /// Whether one row can re-roll now.
+    pub fn can_reroll(&self, kind: DiscoveryKind, now_ms: u64) -> bool {
+        matches!(self.reroll_state(kind, now_ms), Reroll::Ready)
+    }
+
     /// Moves one row on to its next seed, at most once per cooldown and never
     /// past the pool's end.
     ///
     /// A re-roll the open cannot ask for is refused: moving the row to `Idle`
     /// with no ask behind it would draw a row that is loading forever.
     pub fn reroll(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
-        if self.asks_left == 0 {
+        if !self.can_reroll(kind, now_ms) {
             return false;
         }
         let row = &mut self.rows[kind.index()];
-        if let Some(last) = row.last_reroll_ms
-            && now_ms.saturating_sub(last) < REROLL_COOLDOWN_MS
-        {
-            return false;
-        }
-        if row.at + 1 >= row.pool.len() {
-            return false;
-        }
         row.at += 1;
         row.read = Read::Idle;
         row.last_reroll_ms = Some(now_ms);

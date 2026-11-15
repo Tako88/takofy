@@ -23,7 +23,7 @@ use librespot::protocol::metadata::{
 };
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
-use takofy_model::home::DiscoveryCard;
+use takofy_model::home::{CARD_TRACKS, DiscoveryCard};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
     FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead,
@@ -1273,11 +1273,11 @@ const DISCOVERY_ALBUM_CHUNK: usize = 60;
 
 /// The cards for `uris`, from three batched reads and no per-artist one.
 ///
-/// One batched `ARTIST_V4` carries every artist's name, portrait group and one
-/// playable top track; one batched `ALBUM_V4` per [`DISCOVERY_ALBUM_CHUNK`]
-/// release URIs carries the dates the artist payload's own album stubs leave
-/// out; one batched `TRACK_V4` names the top tracks. `country` picks each
-/// artist's top list, and its own entry wins over the empty one.
+/// One batched `ARTIST_V4` carries every artist's name, portrait group and top
+/// tracks; one batched `ALBUM_V4` per [`DISCOVERY_ALBUM_CHUNK`] release URIs
+/// carries the dates the artist payload's own album stubs leave out; one batched
+/// `TRACK_V4` names the top tracks, at most [`CARD_TRACKS`] per artist. `country`
+/// picks each artist's top list, and its own entry wins over the empty one.
 ///
 /// The cards keep the caller's order, and an artist the wire did not answer is
 /// dropped rather than drawn empty. An `Err` is the artist request itself
@@ -1340,39 +1340,27 @@ pub(crate) async fn read_discovery_cards(
         }
     }
 
-    // The first playable top position of each artist: the card's track and the
-    // title it draws are both that one.
-    let tops: HashMap<&str, String> = artists
-        .iter()
-        .filter_map(|(uri, artist)| {
-            let top = top_track_positions(artist, country).into_iter().next()?;
-            Some((uri.as_str(), top.uri))
-        })
-        .collect();
-    let positions: Vec<PageTrack> = tops
+    // The first few playable top positions of each artist: the card's play names
+    // the first, and a split card draws the rest as rows.
+    let positions: Vec<PageTrack> = artists
         .values()
-        .map(|uri| PageTrack {
-            uri: uri.clone(),
-            added_at: None,
+        .flat_map(|artist| {
+            top_track_positions(artist, country)
+                .into_iter()
+                .take(CARD_TRACKS)
         })
         .collect();
-    let titles: HashMap<String, String> = label_tracks(session, positions, labels)
+    let labelled: HashMap<String, TrackEntry> = label_tracks(session, positions, labels)
         .await
         .into_iter()
-        .filter(|entry| entry.named)
-        .map(|entry| (entry.uri.clone(), entry.title.clone()))
+        .map(|entry| (entry.uri.clone(), entry))
         .collect();
 
     let cards: Vec<DiscoveryCard> = wanted
         .iter()
         .filter_map(|uri| {
             let artist = artists.get(uri)?;
-            let title = tops
-                .get(uri.as_str())
-                .and_then(|top| titles.get(top))
-                .map(String::as_str)
-                .unwrap_or_default();
-            discovery::assemble(uri, artist, country, &years, title)
+            discovery::assemble(uri, artist, country, &years, &labelled)
         })
         .collect();
     if cards.len() < wanted.len() {

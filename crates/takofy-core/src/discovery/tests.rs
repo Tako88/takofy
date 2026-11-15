@@ -180,10 +180,59 @@ fn a_card_without_a_playable_top_track_is_dropped() {
             &artist(artist_message()),
             "US",
             &years,
-            "Song"
+            &HashMap::new()
         ),
         None,
         "a recommendation that cannot be played is not drawn"
+    );
+}
+
+#[test]
+fn a_card_carries_at_most_three_tracks_in_the_wires_order() {
+    let mut message = artist_message();
+    message
+        .top_track
+        .push(top_tracks("US", &[10, 11, 12, 13, 14]));
+    let artist = artist(message);
+    let labelled = HashMap::from([
+        (track_uri(10), entry(&track_uri(10), "One", true)),
+        (track_uri(11), entry(&track_uri(11), "Two", true)),
+        (track_uri(12), entry(&track_uri(12), "Three", true)),
+        (track_uri(13), entry(&track_uri(13), "Four", true)),
+    ]);
+
+    let card = assemble(&artist_uri(1), &artist, "US", &HashMap::new(), &labelled)
+        .expect("a playable card");
+
+    assert_eq!(
+        card.tracks
+            .iter()
+            .map(|track| track.uri.clone())
+            .collect::<Vec<_>>(),
+        vec![track_uri(10), track_uri(11), track_uri(12)],
+        "the card keeps the wire's first three positions and no more"
+    );
+    assert_eq!(card.tracks[0].title, "One");
+}
+
+#[test]
+fn a_position_with_no_label_keeps_an_unnamed_entry_in_place() {
+    let mut message = artist_message();
+    message.top_track.push(top_tracks("US", &[10, 11, 12]));
+    let artist = artist(message);
+    let labelled = HashMap::from([
+        (track_uri(10), entry(&track_uri(10), "One", true)),
+        (track_uri(12), entry(&track_uri(12), "Three", true)),
+    ]);
+
+    let card = assemble(&artist_uri(1), &artist, "US", &HashMap::new(), &labelled)
+        .expect("a playable card");
+
+    assert_eq!(card.tracks.len(), 3, "a playable position is never lost");
+    assert_eq!(card.tracks[1].uri, track_uri(11));
+    assert!(
+        !card.tracks[1].named,
+        "the missing label is the URI fallback"
     );
 }
 
@@ -194,10 +243,16 @@ fn the_country_entry_beats_the_empty_country_one() {
     message.top_track.push(top_tracks("", &[12]));
     let artist = artist(message);
 
-    let card =
-        assemble(&artist_uri(1), &artist, "US", &HashMap::new(), "Song").expect("a playable card");
+    let card = assemble(
+        &artist_uri(1),
+        &artist,
+        "US",
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("a playable card");
 
-    assert_eq!(card.top_track, track_uri(10));
+    assert_eq!(card.tracks[0].uri, track_uri(10));
 }
 
 #[test]
@@ -206,10 +261,16 @@ fn the_empty_country_entry_stands_in_when_the_country_has_none() {
     message.top_track.push(top_tracks("", &[12]));
     let artist = artist(message);
 
-    let card =
-        assemble(&artist_uri(1), &artist, "GB", &HashMap::new(), "Song").expect("a playable card");
+    let card = assemble(
+        &artist_uri(1),
+        &artist,
+        "GB",
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("a playable card");
 
-    assert_eq!(card.top_track, track_uri(12));
+    assert_eq!(card.tracks[0].uri, track_uri(12));
 }
 
 #[test]
@@ -219,8 +280,12 @@ fn a_card_carries_the_name_portrait_track_title_and_year() {
     message.top_track.push(top_tracks("US", &[10, 11]));
     let artist = artist(message);
     let years = HashMap::from([(artist_uri(1), 2001)]);
+    let labelled = HashMap::from([
+        (track_uri(10), entry(&track_uri(10), "Song", true)),
+        (track_uri(11), entry(&track_uri(11), "Other", true)),
+    ]);
 
-    let card = assemble(&artist_uri(1), &artist, "US", &years, "Song").expect("a playable card");
+    let card = assemble(&artist_uri(1), &artist, "US", &years, &labelled).expect("a playable card");
 
     assert_eq!(
         card.artist,
@@ -230,8 +295,13 @@ fn a_card_carries_the_name_portrait_track_title_and_year() {
         }
     );
     assert!(card.portrait.is_some(), "the group is the card's picture");
-    assert_eq!(card.top_track, track_uri(10), "the first playable position");
-    assert_eq!(card.top_title, "Song");
+    assert_eq!(
+        card.tracks[0].uri,
+        track_uri(10),
+        "the first playable position"
+    );
+    assert_eq!(card.tracks[0].title, "Song");
+    assert_eq!(card.tracks[1].uri, track_uri(11));
     assert_eq!(card.latest_year, Some(2001));
 }
 
@@ -239,8 +309,14 @@ fn a_card_carries_the_name_portrait_track_title_and_year() {
 fn an_artist_with_no_portrait_group_has_no_portrait() {
     let artist = artist_with_top("US", &[10]);
 
-    let card =
-        assemble(&artist_uri(1), &artist, "US", &HashMap::new(), "Song").expect("a playable card");
+    let card = assemble(
+        &artist_uri(1),
+        &artist,
+        "US",
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("a playable card");
 
     assert_eq!(card.portrait, None);
 }
@@ -252,8 +328,14 @@ fn a_blank_name_falls_back_to_the_uri() {
     message.top_track.push(top_tracks("US", &[10]));
     let artist = artist(message);
 
-    let card =
-        assemble(&artist_uri(1), &artist, "US", &HashMap::new(), "Song").expect("a playable card");
+    let card = assemble(
+        &artist_uri(1),
+        &artist,
+        "US",
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("a playable card");
 
     assert_eq!(card.artist.name, artist_uri(1));
 }
@@ -346,8 +428,14 @@ fn own_releases_keep_the_artists_order_and_skip_what_nobody_answered() {
 fn an_artist_with_no_releases_has_no_latest_year() {
     let artist = artist_with_top("US", &[10]);
 
-    let card =
-        assemble(&artist_uri(1), &artist, "US", &HashMap::new(), "Song").expect("a playable card");
+    let card = assemble(
+        &artist_uri(1),
+        &artist,
+        "US",
+        &HashMap::new(),
+        &HashMap::new(),
+    )
+    .expect("a playable card");
 
     assert_eq!(card.latest_year, None);
 }

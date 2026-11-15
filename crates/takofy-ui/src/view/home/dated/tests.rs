@@ -44,6 +44,9 @@ fn run(
     art: &mut Art,
 ) -> (Option<Command>, egui::FullOutput) {
     let tokens = Tokens::DARK;
+    // This file draws the dated shelf; a discovery band waiting for a day would
+    // sit over it and move every card this test clicks.
+    library.set_discovery_enabled(false);
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     let mut command = None;

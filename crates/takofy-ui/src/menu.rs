@@ -5,9 +5,11 @@
 //! I/O, so the rules the sheet states are pinned by tests alone.
 //!
 //! The rules it encodes: a pointer opens with nothing lit and a keyboard opens
-//! with the first row lit; only one of the two tiers is ever lit; a verb that
-//! cannot apply is absent rather than greyed; the destructive row is always
-//! last; and closing hands the keyboard back to the button that opened it.
+//! with the first live row lit; only one of the two tiers is ever lit, and only a
+//! live row at that; a verb that cannot apply is absent rather than greyed, while
+//! a row whose write has not landed is drawn present and inert; the destructive
+//! row is always last; and closing hands the keyboard back to the button that
+//! opened it.
 
 use egui::{Id, Pos2, Rect};
 use takofy_model::{Revision, TrackEntry};
@@ -51,7 +53,9 @@ pub enum Tier {
 /// Whether a command is stated plainly or is the destructive one.
 ///
 /// A destructive row is full ink behind a hairline and always last; there is no
-/// third kind, because a verb that cannot apply is absent rather than greyed.
+/// third kind, because a verb that cannot apply is absent rather than greyed,
+/// and a row that is present but not yet wired carries [`Item::live`] false
+/// rather than a third kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Plain,
@@ -83,6 +87,8 @@ pub enum Verb {
     Follow,
     /// Unfollows the one artist a menu was opened on.
     Unfollow,
+    /// Hides the one artist a discovery card named from every discovery row.
+    HideFromDiscovery,
 }
 
 /// The list a menu's rows came from, which decides its verbs and their labels.
@@ -134,13 +140,15 @@ pub struct Cut {
 /// One command row: what it says and what it does.
 ///
 /// `key` is a key hint and `submenu` says the row opens a list of its own rather
-/// than firing a command.
+/// than firing a command. `live` is false for a row drawn present but not yet
+/// wired: it is announced disabled, never lit, and never fires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub label: String,
     pub kind: Kind,
     pub key: Option<&'static str>,
     pub submenu: bool,
+    pub live: bool,
     pub verb: Verb,
 }
 
@@ -303,7 +311,7 @@ impl Menu {
         // The pointer lit nothing until it reaches a row; the keyboard says
         // where Enter will land.
         self.lit = match request.door.device {
-            Device::Keyboard => Some(0),
+            Device::Keyboard => items.iter().position(|item| item.live),
             Device::Pointer => None,
         };
         self.items = items;
@@ -326,7 +334,11 @@ impl Menu {
         if !self.open || self.playlists.is_empty() {
             return false;
         }
-        if !self.items.get(row).is_some_and(|item| item.submenu) {
+        if !self
+            .items
+            .get(row)
+            .is_some_and(|item| item.submenu && item.live)
+        {
             return false;
         }
         if self.submenu != Some(row) {
@@ -449,17 +461,41 @@ impl Menu {
         self.chosen.and_then(|index| self.playlists.get(index))
     }
 
-    /// Moves the lit row one step, clamping at the ends rather than wrapping.
+    /// Moves the lit row one step through the live rows, staying put at the
+    /// ends rather than wrapping.
+    ///
+    /// A row that cannot act is skipped: a discovery card's inert Follow is not
+    /// where Enter should land.
     pub fn step(&mut self, step: Step) {
         if !self.open || self.items.is_empty() {
             return;
         }
         self.device = Device::Keyboard;
-        let last = self.items.len() - 1;
+        let live: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.live)
+            .map(|(row, _)| row)
+            .collect();
+        let Some(first) = live.first().copied() else {
+            self.lit = None;
+            return;
+        };
+        let last = live.last().copied().unwrap_or(first);
+        let at = self
+            .lit
+            .and_then(|row| live.iter().position(|live| *live == row));
         self.lit = Some(match step {
-            Step::Down => self.lit.map_or(0, |row| (row + 1).min(last)),
-            Step::Up => self.lit.map_or(last, |row| row.saturating_sub(1)),
-            Step::First => 0,
+            Step::Down => match at {
+                Some(index) => live[(index + 1).min(live.len() - 1)],
+                None => first,
+            },
+            Step::Up => match at {
+                Some(index) => live[index.saturating_sub(1)],
+                None => last,
+            },
+            Step::First => first,
             Step::Last => last,
         });
     }
@@ -477,8 +513,10 @@ impl Menu {
     }
 
     /// The tier one row is drawn in, given where the pointer is this frame.
+    ///
+    /// A row that cannot act is never lit, by either device.
     pub fn tier(&self, row: usize, hovered: Option<usize>) -> Tier {
-        if !self.open {
+        if !self.open || !self.items.get(row).is_some_and(|item| item.live) {
             return Tier::None;
         }
         match self.device {
@@ -490,10 +528,11 @@ impl Menu {
 
     /// Chooses `row` with the pointer, and closes.
     ///
-    /// A row that opens a submenu is not a command, so it closes nothing.
+    /// A row that opens a submenu is not a command, so it closes nothing, and a
+    /// row that cannot act refuses the choice and leaves the menu open.
     pub fn choose(&mut self, row: usize) -> Option<Closed> {
         let item = self.items.get(row)?;
-        if item.submenu {
+        if !item.live || item.submenu {
             return None;
         }
         self.close_with(Some(item.verb))

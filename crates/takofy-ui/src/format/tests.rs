@@ -999,3 +999,17 @@ fn a_discovery_row_with_no_genre_drops_the_separator() {
         "a missing genre leaves no dangling separator: {source}"
     );
 }
+
+#[test]
+fn a_ledger_counts_artists_and_tracks_when_the_body_is_a_split() {
+    assert_eq!(discovery_ledger(1, None), "1 artist");
+    assert_eq!(discovery_ledger(4, None), "4 artists");
+    assert_eq!(discovery_ledger(1, Some(3)), "1 artist · 3 tracks");
+    assert_eq!(discovery_ledger(1, Some(2)), "1 artist · 2 tracks");
+}
+
+#[test]
+fn a_card_names_its_latest_year_only_when_one_is_dated() {
+    assert_eq!(discovery_sub(Some(2024)), "Latest 2024");
+    assert_eq!(discovery_sub(None), "");
+}

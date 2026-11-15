@@ -25,6 +25,7 @@ use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::home::Home;
 use crate::home::discovery::Band;
+use crate::home::discovery::Reroll;
 use crate::home::discovery::hidden::Hidden;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
@@ -2016,6 +2017,11 @@ impl Library {
     /// an open with no ask left to spend stays where it is.
     pub fn reroll_discovery(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
         self.home.discovery.reroll(kind, now_ms)
+    }
+
+    /// Whether `kind`'s row can re-roll now, and when it can next.
+    pub fn reroll_state_discovery(&self, kind: DiscoveryKind, now_ms: u64) -> Reroll {
+        self.home.discovery.reroll_state(kind, now_ms)
     }
 
     /// What Discovery's section draws this frame.

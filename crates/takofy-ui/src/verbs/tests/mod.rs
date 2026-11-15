@@ -2,6 +2,7 @@ mod test_support;
 
 mod add_to_playlist;
 mod copy_link;
+mod discovery;
 mod library_menu;
 mod new_playlist;
 mod pick;

@@ -29,6 +29,7 @@ fn destructive_item(label: &str) -> Item {
         kind: Kind::Destructive,
         key: Some("Del"),
         submenu: false,
+        live: true,
         verb: Verb::Remove,
     }
 }

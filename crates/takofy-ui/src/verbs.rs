@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use takofy_model::TrackEntry;
-use takofy_model::home::{SeedKind, StationSeed};
+use takofy_model::home::{DiscoveryCard, SeedKind, StationSeed};
 use takofy_model::uri::{UriKind, parse};
 
 use crate::likes::Standing;
@@ -109,6 +109,7 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
             kind: Kind::Destructive,
             key: Some("Del"),
             submenu: false,
+            live: true,
             verb: Verb::RemoveFromLibrary,
         });
     }
@@ -176,6 +177,55 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
             followed: verb == Verb::Follow,
         }),
         _ => None,
+    }
+}
+
+/// The request a discovery card posts for its own menu.
+///
+/// A card is a stranger: the three verbs are keep them, put one of their tracks
+/// somewhere, or stop them appearing. Follow and Hide are drawn present and
+/// inert until their writes land; Add to playlist is live and acts on the card's
+/// first track, which is the one its play names.
+pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -> Request {
+    let name = card.artist.name.clone();
+    let mut items = vec![Item {
+        label: format!("Follow {name}"),
+        kind: Kind::Plain,
+        key: None,
+        submenu: false,
+        live: false,
+        verb: Verb::Follow,
+    }];
+    if card.tracks.first().is_some_and(TrackEntry::is_track) {
+        items.push(Item {
+            label: "Add to playlist".to_owned(),
+            kind: Kind::Plain,
+            key: None,
+            submenu: true,
+            live: true,
+            verb: Verb::AddToPlaylist,
+        });
+    }
+    items.push(Item {
+        label: format!("Hide {name} from discovery"),
+        kind: Kind::Destructive,
+        key: None,
+        submenu: false,
+        live: false,
+        verb: Verb::HideFromDiscovery,
+    });
+    Request {
+        door,
+        items,
+        playlists: Vec::new(),
+        targets: card.tracks.first().cloned().into_iter().collect(),
+        rows: Vec::new(),
+        listing: Listing::Band(LibraryItem {
+            kind: SidebarKind::Artists,
+            uri: card.artist.uri.clone(),
+            name,
+        }),
+        page,
     }
 }
 
@@ -291,6 +341,7 @@ pub fn track_items(
             kind: Kind::Plain,
             key: None,
             submenu: true,
+            live: true,
             verb: Verb::AddToPlaylist,
         });
     }
@@ -308,6 +359,7 @@ pub fn track_items(
             kind: Kind::Destructive,
             key: Some("Del"),
             submenu: false,
+            live: true,
             verb: Verb::Remove,
         });
     }
@@ -357,7 +409,8 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
         | Verb::Rename
         | Verb::SaveToLibrary
         | Verb::Follow
-        | Verb::Unfollow => None,
+        | Verb::Unfollow
+        | Verb::HideFromDiscovery => None,
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
     }
@@ -417,6 +470,7 @@ fn item(verb: Verb, label: String) -> Item {
         kind: Kind::Plain,
         key: None,
         submenu: false,
+        live: true,
         verb,
     }
 }

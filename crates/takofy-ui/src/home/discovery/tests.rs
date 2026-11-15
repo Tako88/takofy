@@ -73,8 +73,7 @@ fn card(index: usize) -> DiscoveryCard {
             name: format!("Card {index}"),
         },
         portrait: None,
-        top_track: format!("spotify:track:{index}"),
-        top_title: format!("Track {index}"),
+        tracks: Vec::new(),
         latest_year: None,
     }
 }
@@ -635,4 +634,56 @@ fn the_four_answers_are_distinct() {
     assert_ne!(Band::Waiting, Band::Absent);
     assert_ne!(Band::Absent, Band::Unreachable);
     assert_ne!(Band::Off, Band::Unreachable);
+}
+
+#[test]
+fn reroll_state_reports_the_remaining_cooldown_and_agrees_with_reroll() {
+    let mut state = playlists_only(today(), 3);
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW),
+        Reroll::Ready
+    );
+    assert!(state.can_reroll(DiscoveryKind::Playlist, NOW));
+
+    assert!(state.reroll(DiscoveryKind::Playlist, NOW));
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW),
+        Reroll::Wait(REROLL_COOLDOWN_MS)
+    );
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW + 4),
+        Reroll::Wait(REROLL_COOLDOWN_MS - 4)
+    );
+    assert!(!state.can_reroll(DiscoveryKind::Playlist, NOW + 4));
+    assert!(!state.reroll(DiscoveryKind::Playlist, NOW + 4));
+
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS),
+        Reroll::Ready
+    );
+    assert!(state.reroll(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS));
+}
+
+#[test]
+fn reroll_state_is_never_with_no_ask_left() {
+    let mut state = playlists_only(today(), 3);
+    state.asks_left = 0;
+
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW),
+        Reroll::Never
+    );
+    assert!(!state.can_reroll(DiscoveryKind::Playlist, NOW));
+    assert!(!state.reroll(DiscoveryKind::Playlist, NOW));
+}
+
+#[test]
+fn reroll_state_is_never_at_the_pools_end() {
+    let mut state = playlists_only(today(), 1);
+
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW),
+        Reroll::Never
+    );
+    assert!(!state.reroll(DiscoveryKind::Playlist, NOW));
 }

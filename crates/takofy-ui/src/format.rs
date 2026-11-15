@@ -262,6 +262,32 @@ pub const HOME_DAY_ONE_BODY: &str =
 /// The day-one page's door into the catalogue.
 pub const HOME_DAY_ONE_DOOR: &str = "Search the catalogue";
 
+/// The discovery band's title, in the reference's own words.
+pub const HOME_DISCOVERY_TITLE: &str = "Just outside your library";
+
+/// The aside beside the discovery band's title: where the names come from.
+pub const HOME_DISCOVERY_ASIDE: &str = "Deezer · nothing here is yours";
+
+/// The discovery row's ledger: what the body draws, said as a count.
+///
+/// A split also names how many tracks it draws, because the mini-rows are what
+/// the row has to offer; every other body counts only its artists.
+pub fn discovery_ledger(artists: usize, tracks: Option<usize>) -> String {
+    let artists = count_noun(artists, "artist");
+    match tracks {
+        Some(tracks) => format!("{artists} · {}", count_noun(tracks, "track")),
+        None => artists,
+    }
+}
+
+/// A card's line under its name: the newest release year, when one is dated.
+pub fn discovery_sub(latest_year: Option<u16>) -> String {
+    match latest_year {
+        Some(year) => format!("Latest {year}"),
+        None => String::new(),
+    }
+}
+
 /// The stations shelf's title, which names the seeds rather than a count.
 pub const HOME_STATIONS_TITLE: &str = "Stations built from your library";
 

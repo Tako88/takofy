@@ -67,12 +67,19 @@ pub struct DiscoveryCard {
     pub artist: DiscoveryArtist,
     /// `None` when the wire offered no picture.
     pub portrait: Option<CoverSet>,
-    /// The top track's URI, which is what playing the card hands to the queue.
-    pub top_track: String,
-    pub top_title: String,
+    /// The artist's top tracks, in the wire's order, up to [`CARD_TRACKS`]. The
+    /// first is what playing the card hands to the queue; the rest are the rows
+    /// a split card draws.
+    pub tracks: Vec<TrackEntry>,
     /// The year of the artist's newest release, when the wire dated it.
     pub latest_year: Option<u16>,
 }
+
+/// How many of an artist's top tracks one card carries.
+///
+/// Three is what a split card draws as mini-rows and the most a card's play can
+/// name; the wire's own top list is longer, so it is cut here.
+pub const CARD_TRACKS: usize = 3;
 
 /// What a discovery row came back with.
 #[derive(Debug, Clone, PartialEq, Eq)]
