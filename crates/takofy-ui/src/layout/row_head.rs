@@ -56,23 +56,24 @@ pub fn height(lines: f32, control: f32) -> f32 {
 /// cluster.
 pub fn place(head: Rect, about: About, cluster: Cluster, gap: f32) -> RowHeadRects {
     let block_top = head.center().y - about.height / 2.0;
+    // The whole cluster rides the seed's line, count and controls alike: a row
+    // head is one line of accounting, and a control centred between the seed and
+    // its provenance sits below the words it belongs to.
+    let line = block_top + about.seed / 2.0;
 
     let mut right = head.right();
     let play = cluster.play.map(|size| {
-        let rect = Rect::from_min_size(pos2(right - size.x, head.center().y - size.y / 2.0), size);
+        let rect = Rect::from_min_size(pos2(right - size.x, line - size.y / 2.0), size);
         right = rect.left() - gap;
         rect
     });
     let reroll = cluster.reroll.map(|size| {
-        let rect = Rect::from_min_size(pos2(right - size.x, head.center().y - size.y / 2.0), size);
+        let rect = Rect::from_min_size(pos2(right - size.x, line - size.y / 2.0), size);
         right = rect.left() - gap;
         rect
     });
     let ledger = cluster.ledger.map(|size| {
-        let rect = Rect::from_min_size(
-            pos2(right - size.x, block_top + about.seed / 2.0 - size.y / 2.0),
-            size,
-        );
+        let rect = Rect::from_min_size(pos2(right - size.x, line - size.y / 2.0), size);
         right = rect.left() - gap;
         rect
     });

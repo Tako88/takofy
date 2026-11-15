@@ -16,7 +16,7 @@ fn about(width: f32) -> About {
 }
 
 #[test]
-fn one_trailing_button_takes_the_heads_right_edge_and_centres_the_words() {
+fn one_trailing_button_takes_the_heads_right_edge_on_the_seed_line() {
     let head = head(420.0);
     let placed = place(
         head,
@@ -29,8 +29,12 @@ fn one_trailing_button_takes_the_heads_right_edge_and_centres_the_words() {
     );
 
     let play = placed.play.expect("the head has a play");
+    let seed_centre = placed.about.top() + about(head.width()).seed / 2.0;
     assert!((play.right() - head.right()).abs() < 0.01);
-    assert!((play.center().y - head.center().y).abs() < 0.01);
+    assert!(
+        (play.center().y - seed_centre).abs() < 0.01,
+        "the play rides the seed's line, not the middle of the block"
+    );
     assert!((placed.about.center().y - head.center().y).abs() < 0.01);
     assert!(placed.about.right() <= play.left() - S2 + 0.01);
 }
@@ -52,6 +56,11 @@ fn a_ledger_and_two_buttons_are_flush_right_with_the_play_last() {
     let ledger = placed.ledger.expect("the head has a ledger");
     let reroll = placed.reroll.expect("the head has a re-roll");
     let play = placed.play.expect("the head has a play");
+    assert!(
+        (ledger.center().y - reroll.center().y).abs() < 0.01
+            && (reroll.center().y - play.center().y).abs() < 0.01,
+        "the count and both controls share one line"
+    );
     assert!((play.right() - head.right()).abs() < 0.01);
     assert!(reroll.right() <= play.left() - S2 + 0.01);
     assert!(ledger.right() <= reroll.left() - S2 + 0.01);
