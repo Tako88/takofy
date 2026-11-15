@@ -423,7 +423,7 @@ fn head_positions(output: &egui::FullOutput, heads: &[&str]) -> Vec<usize> {
 }
 
 #[test]
-fn a_ready_release_shelf_sits_between_the_counted_and_episodes_shelves() {
+fn a_ready_release_shelf_sits_above_every_other_shelf() {
     let mut library = all_ready();
     land_release(&mut library);
 
@@ -433,7 +433,12 @@ fn a_ready_release_shelf_sits_between_the_counted_and_episodes_shelves() {
 
     let positions = head_positions(
         &output,
-        &[HOME_COUNTED_TITLE, HOME_RELEASES_TITLE, HOME_EPISODES_TITLE],
+        &[
+            HOME_RELEASES_TITLE,
+            HOME_SHELF_TITLE,
+            HOME_COUNTED_TITLE,
+            HOME_EPISODES_TITLE,
+        ],
     );
     assert!(
         positions.windows(2).all(|pair| pair[0] < pair[1]),

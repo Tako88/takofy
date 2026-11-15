@@ -143,6 +143,19 @@ pub(super) fn home_view(
                 if discovery::show(ui, &discovery, now_ms, tokens, table, &mut draw, &mut out) {
                     drawn = true;
                 }
+                // What the artists you follow released, directly under the band
+                // that finds them. It is not a slot, so it draws here rather than
+                // in the loop below.
+                if matches!(
+                    shelves.releases.presence(),
+                    Presence::Waiting | Presence::Ready
+                ) {
+                    if drawn {
+                        section::divide(ui, tokens);
+                    }
+                    releases::show(ui, &shelves.releases, tokens, &mut draw);
+                    drawn = true;
+                }
                 if dated_draws(&shelves.dated, shelves.others()) {
                     if drawn {
                         section::divide(ui, tokens);
@@ -156,21 +169,6 @@ pub(super) fn home_view(
                 for slot in below() {
                     if gated {
                         continue;
-                    }
-                    // The release shelf is not a slot, so it draws where the
-                    // page puts it: between the counted shelf and the episodes
-                    // shelf.
-                    if slot == Slot::Episodes
-                        && matches!(
-                            shelves.releases.presence(),
-                            Presence::Waiting | Presence::Ready
-                        )
-                    {
-                        if drawn {
-                            section::divide(ui, tokens);
-                        }
-                        releases::show(ui, &shelves.releases, tokens, &mut draw);
-                        drawn = true;
                     }
                     match shelves.presence(slot) {
                         // A shelf with nothing to draw occupies no room.
