@@ -15,7 +15,7 @@ use takofy_model::home::{
 };
 use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 
-use self::pool::PER_KIND;
+use self::pool::{EDGE, PER_KIND};
 
 pub mod body;
 pub mod fresh;
@@ -58,9 +58,12 @@ impl Reroll {
     }
 }
 
-/// How many asks one open allows, enough for every row to advance through its
-/// whole pool: one per row, one per seed walked, and one in hand.
-pub const ASKS_PER_OPEN: usize = PER_KIND * 3 + 3;
+/// How many asks one open allows, enough for every row to walk its whole pool:
+/// one per candidate walked, in all three rows, and one in hand.
+///
+/// An ask is spent by the walk, not by a draw, so a row of unresolvable seeds
+/// spends asks without spending its day.
+pub const ASKS_PER_OPEN: usize = EDGE * 2 * 3 + 3;
 
 /// What one row's read is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +88,10 @@ pub enum Read {
 pub struct Row {
     pool: Vec<DiscoverySeed>,
     at: usize,
+    /// Seeds this row has drawn today, which a rejected one does not count
+    /// against. Not persisted, so a restart is generous to a row that was spent
+    /// by its draws rather than by its pool.
+    drawn: u8,
     reseeds_left: u8,
     read: Read,
     /// When the seed the row is on answered, which is when its wait starts.
@@ -96,6 +103,7 @@ impl Default for Row {
         Self {
             pool: Vec::new(),
             at: 0,
+            drawn: 0,
             reseeds_left: 1,
             read: Read::Idle,
             landed_ms: None,
@@ -104,18 +112,24 @@ impl Default for Row {
 }
 
 impl Row {
-    /// Moves to the next seed, going nowhere when the pool is spent.
+    /// Moves to the next seed, going nowhere when the row is spent.
     ///
-    /// A spent row's position is the pool's end, which is what the hidden file
-    /// saves and what a restart reads back as spent.
+    /// Spent means either the pool has been walked to its end or the day's draws
+    /// are used up. A spent row's position is the pool's end, which is what the
+    /// hidden file saves and what a restart reads back as spent.
     fn advance(&mut self) {
         self.at += 1;
-        self.read = if self.at < self.pool.len() {
+        self.read = if self.at < self.pool.len() && !self.spent() {
             Read::Idle
         } else {
-            self.at = self.pool.len();
+            self.at = self.at.min(self.pool.len());
             Read::Gone
         };
+    }
+
+    /// Whether the row has drawn all it may today.
+    fn spent(&self) -> bool {
+        self.drawn >= PER_KIND as u8
     }
 }
 
@@ -283,6 +297,7 @@ impl State {
             DiscoveryOutcome::Rejected => row.advance(),
             DiscoveryOutcome::Neighbours { cards, genre } => {
                 row.pool[row.at].anchor = answer.seed.anchor.clone();
+                row.drawn = row.drawn.saturating_add(1);
                 row.read = Read::Landed {
                     cards: cards.clone(),
                     genre: genre.clone(),
@@ -352,7 +367,7 @@ impl State {
             return Reroll::Never;
         }
         let row = &self.rows[kind.index()];
-        if row.at + 1 >= row.pool.len() {
+        if row.at + 1 >= row.pool.len() || row.spent() {
             return Reroll::Never;
         }
         match row.landed_ms {

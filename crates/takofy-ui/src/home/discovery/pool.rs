@@ -4,9 +4,13 @@
 //! its newest [`EDGE`], which are always there, and a window of [`EDGE`] that the
 //! day moves one step through everything behind them: the ends alone meant a
 //! library's middle could never seed a row, and ninety-eight saved albums offered
-//! the same twenty-four every day. The day also decides the order the kept ones
-//! are tried in. The same day and the same lists always give the same pool, so a
-//! page left open does not reshuffle under the user.
+//! the same twenty-four every day. The day also decides the order they are walked
+//! in. The same day and the same lists always give the same pool, so a page left
+//! open does not reshuffle under the user.
+//!
+//! The pool is every candidate, not the seeds a row may draw: a seed that cannot
+//! be resolved still has to be walked past, and charging that to the row's day was
+//! spending a turn on an attempt that never happened.
 
 use std::collections::HashSet;
 
@@ -19,12 +23,12 @@ use crate::shuffle;
 /// day's window through the rest of the list is.
 pub const EDGE: usize = 12;
 
-/// How many candidates a kind keeps from the drawn edge set.
+/// How many seeds one row may draw in a day, however many it walks past to get
+/// them.
 ///
-/// A row's pool is what the `↻` walks, so its size is how many times a day one
-/// row can be re-seeded before it runs out. Twelve spends the whole edge set of a
-/// small library and half of a large one's, which is what a person actually does
-/// with a band they are digging through: eight ran out in a sitting.
+/// Twelve spends the whole edge set of a small library and half of a large one's,
+/// which is what a person actually does with a band they are digging through:
+/// eight ran out in a sitting.
 pub const PER_KIND: usize = 12;
 
 /// The day's pool, one list per row in the page's kind order.
@@ -112,13 +116,12 @@ fn album_seeds(albums: &[SavedAlbum]) -> Vec<DiscoverySeed> {
     seeds
 }
 
-/// One kind's kept candidates: its candidate set in the day's drawn order.
+/// One kind's pool: its whole candidate set in the day's drawn order.
 fn drawn(seeds: Vec<DiscoverySeed>, kind: DiscoveryKind, day: Day) -> Vec<DiscoverySeed> {
     let candidates = candidates(seeds, day);
     shuffle::order(candidates.len(), mix(day, kind.index()))
         .into_iter()
         .filter_map(|at| candidates.get(at).cloned())
-        .take(PER_KIND)
         .collect()
 }
 

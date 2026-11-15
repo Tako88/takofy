@@ -732,3 +732,53 @@ fn the_wait_draws_from_empty_at_the_answer_to_whole_as_it_ends() {
     );
     assert_eq!(Reroll::Never.waited(), None, "a spent row promises nothing");
 }
+
+#[test]
+fn a_rejected_seed_costs_a_walk_but_not_a_draw() {
+    // Thirty playlists give a pool twice the edge, which is more walks than a
+    // row's draws: that is what leaves room for the rejections.
+    let mut state = playlists_only(today(), 30);
+    for _ in 0..3 {
+        let seed = state.next_ask().expect("the row asks");
+        state.land(&answer(seed, DiscoveryOutcome::Rejected));
+    }
+    assert_eq!(state.rows[0].drawn, 0, "a rejection draws nothing");
+    assert_eq!(state.positions()[0], 3, "but it does walk the row on");
+    assert!(!state.rows[0].spent());
+
+    let seed = state.next_ask().expect("the row asks after the rejections");
+    state.land(&answer(seed, neighbours(&[0])));
+    assert_eq!(state.rows[0].drawn, 1, "the landing is the draw");
+}
+
+#[test]
+fn the_days_draws_end_a_row_before_its_pool_does() {
+    let mut state = playlists_only(today(), 30);
+    land_playlist(&mut state, NOW);
+
+    let mut now = NOW;
+    for expected in 2..=PER_KIND {
+        now += REROLL_COOLDOWN_MS;
+        assert!(
+            state.reroll(DiscoveryKind::Playlist, now),
+            "a press inside the day's draws"
+        );
+        land_playlist(&mut state, now);
+        assert_eq!(
+            state.rows[0].drawn as usize, expected,
+            "a press lands one draw"
+        );
+    }
+
+    assert!(
+        state.positions()[0] < 2 * EDGE,
+        "the pool still held seeds when the day ran out: {:?}",
+        state.positions()[0]
+    );
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, now + 100 * REROLL_COOLDOWN_MS),
+        Reroll::Never,
+        "a spent row offers no further draw"
+    );
+    assert!(state.next_ask().is_none(), "and asks for nothing more");
+}

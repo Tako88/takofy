@@ -84,13 +84,13 @@ fn the_same_library_on_the_same_day_draws_the_same_pool() {
 }
 
 #[test]
-fn a_rich_library_gives_twelve_candidates() {
+fn a_rich_library_gives_two_edges_of_candidates() {
     let pool = day_pool(&playlists(30), &artists(30), &albums(30), today());
 
     assert_eq!(
         pool.iter().map(Vec::len).collect::<Vec<_>>(),
-        [PER_KIND, PER_KIND, PER_KIND],
-        "four candidates per kind, for three kinds"
+        [2 * EDGE, 2 * EDGE, 2 * EDGE],
+        "the newest edge plus the day's window, for three kinds"
     );
     for (kind, seeds) in pool.iter().enumerate() {
         assert!(
@@ -183,7 +183,7 @@ fn each_kind_is_mixed_on_its_own() {
 fn the_whole_list_competes_up_to_twice_the_edge() {
     let pool = day_pool(&playlists(2 * EDGE), &[], &[], today());
 
-    assert_eq!(pool[0].len(), PER_KIND, "a full pool is still its size");
+    assert_eq!(pool[0].len(), 2 * EDGE, "a full list is the whole pool");
     assert_eq!(pool[1], Vec::new(), "a kind with nothing usable is empty");
     assert_eq!(pool[2], Vec::new(), "a kind with nothing usable is empty");
 }
@@ -405,7 +405,7 @@ fn every_kind_keeps_its_own_order() {
     for seeds in &pool {
         assert_eq!(
             seeds.len(),
-            PER_KIND,
+            2 * EDGE,
             "each kind is drawn independently of the others' lengths"
         );
     }
