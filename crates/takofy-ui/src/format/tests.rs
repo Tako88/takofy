@@ -991,6 +991,52 @@ fn a_discovery_row_adds_the_genre_it_votes_for() {
 }
 
 #[test]
+fn the_discovery_switch_names_the_setting_it_turns() {
+    assert_eq!(discovery_switch_label(true), "Turn discovery off");
+    assert_eq!(
+        discovery_switch_label(false),
+        "Discovery is off · turn it back on"
+    );
+}
+
+#[test]
+fn a_blank_discovery_genre_is_no_genre() {
+    for kind in [
+        DiscoveryKind::Playlist,
+        DiscoveryKind::Artist,
+        DiscoveryKind::Album,
+    ] {
+        assert_eq!(
+            discovery_source(kind, Some("")),
+            discovery_source(kind, None),
+            "an empty genre left a separator"
+        );
+        assert_eq!(
+            discovery_source(kind, Some("  ")),
+            discovery_source(kind, None),
+            "a blank genre left a separator"
+        );
+    }
+}
+
+#[test]
+fn a_discovery_source_never_ends_in_a_dangling_separator() {
+    for kind in [
+        DiscoveryKind::Playlist,
+        DiscoveryKind::Artist,
+        DiscoveryKind::Album,
+    ] {
+        for genre in [None, Some(""), Some("  ")] {
+            let source = discovery_source(kind, genre);
+            assert!(
+                !source.ends_with(" · "),
+                "{kind:?} with {genre:?} ends in a separator: {source}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_discovery_row_with_no_genre_drops_the_separator() {
     let source = discovery_source(DiscoveryKind::Artist, None);
 

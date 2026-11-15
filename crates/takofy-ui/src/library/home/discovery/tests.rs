@@ -188,6 +188,30 @@ fn a_row_the_setting_turned_off_is_never_asked() {
 }
 
 #[test]
+fn an_off_lookup_lands_idle_and_turning_the_setting_on_asks_it_again() {
+    let day = today();
+    let mut library = ready();
+    let asked = asks_on(&mut library, day);
+    let seed = asked.first().cloned().expect("arrange: a row is asked");
+    library.set_discovery_enabled(false);
+
+    library.apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+        seed: seed.clone(),
+        outcome: DiscoveryOutcome::Off,
+    })));
+    assert!(
+        asks(&mut library).is_empty(),
+        "an off lookup is not asked again while the setting is off"
+    );
+
+    library.set_discovery_enabled(true);
+    assert!(
+        asks(&mut library).contains(&seed),
+        "the row the gate turned away is asked again once it opens"
+    );
+}
+
+#[test]
 fn nothing_is_asked_before_the_day_is_named() {
     let mut library = ready();
 

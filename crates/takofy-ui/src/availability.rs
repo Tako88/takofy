@@ -95,11 +95,13 @@ pub enum Control {
     DiscoveryRowPlay,
     /// A discovery card's Follow tile. Acts through `Library::ask_follow`.
     DiscoveryFollow,
+    /// The row that turns the discovery band off and back on.
+    DiscoverySwitch,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 60] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -157,6 +159,7 @@ impl Control {
         Self::DiscoveryReroll,
         Self::DiscoveryRowPlay,
         Self::DiscoveryFollow,
+        Self::DiscoverySwitch,
         Self::HomeSearch,
         Self::Authorize,
     ];
@@ -240,6 +243,7 @@ pub fn availability(control: Control) -> Availability {
         Control::DiscoveryReroll => Availability::Ready, // #90
         Control::DiscoveryRowPlay => Availability::Ready, // #90
         Control::DiscoveryFollow => Availability::Ready, // #90
+        Control::DiscoverySwitch => Availability::Ready, // #90
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome

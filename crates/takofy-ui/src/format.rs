@@ -268,6 +268,21 @@ pub const HOME_DISCOVERY_TITLE: &str = "Just outside your library";
 /// The aside beside the discovery band's title: where the names come from.
 pub const HOME_DISCOVERY_ASIDE: &str = "Deezer · nothing here is yours";
 
+/// The switch row at the band's foot, when the band is drawing.
+pub const HOME_DISCOVERY_SWITCH_ON: &str = "Turn discovery off";
+
+/// The same row when the band is off: the setting is its only remaining copy.
+pub const HOME_DISCOVERY_SWITCH_OFF: &str = "Discovery is off · turn it back on";
+
+/// The word the discovery switch turns on its setting.
+pub fn discovery_switch_label(enabled: bool) -> &'static str {
+    if enabled {
+        HOME_DISCOVERY_SWITCH_ON
+    } else {
+        HOME_DISCOVERY_SWITCH_OFF
+    }
+}
+
 /// The discovery row's ledger: what the body draws, said as a count.
 ///
 /// A split also names how many tracks it draws, because the mini-rows are what
@@ -312,7 +327,7 @@ pub fn discovery_source(kind: DiscoveryKind, genre: Option<&str>) -> String {
         DiscoveryKind::Artist => "From an artist you follow",
         DiscoveryKind::Album => "From an album you saved",
     };
-    match genre {
+    match genre.map(str::trim).filter(|genre| !genre.is_empty()) {
         Some(genre) => format!("{source} · {genre}"),
         None => source.to_owned(),
     }

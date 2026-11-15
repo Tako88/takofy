@@ -13,8 +13,8 @@ use takofy_model::{
 use super::*;
 use crate::cover::Art;
 use crate::format::{
-    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE,
-    HOME_SHELF_TITLE, HOME_STATIONS_TITLE,
+    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON,
+    HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE, HOME_SHELF_TITLE, HOME_STATIONS_TITLE,
 };
 use crate::home::{Fit, Presence, Slot};
 use crate::library::Library;
@@ -23,7 +23,7 @@ use crate::theme::{Tokens, fonts, style};
 use crate::view::test_support::click_events;
 
 /// A window wide enough that every card shelf draws in one row.
-const PROBE: Vec2 = Vec2::new(900.0, 900.0);
+const PROBE: Vec2 = Vec2::new(900.0, 1200.0);
 const NOW_MS: u64 = 1_700_000_000_000;
 const LOCAL_HOUR: u8 = 9;
 const DAY_MS: u64 = 86_400_000;
@@ -242,6 +242,53 @@ fn settled(playlists: Vec<PlaylistEntry>, albums: Vec<SavedAlbum>) -> Library {
     // waiting for a day would hold a skeleton over every one of them.
     library.set_discovery_enabled(false);
     library
+}
+
+/// How long the page asked the host to wait before the next frame.
+fn repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
+    output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay)
+}
+
+#[test]
+fn pressing_the_discovery_switch_turns_the_setting_and_asks_for_a_frame() {
+    let ctx = context();
+    let mut library = settled(Vec::new(), Vec::new());
+    let mut art = Art::default();
+    assert!(!library.discovery_enabled(), "arrange: the page starts off");
+
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let at = text_rect(&output, HOME_DISCOVERY_SWITCH_OFF)
+        .expect("the off row draws over the page")
+        .center();
+    let mut pressed = None;
+    for event in click_events(at) {
+        let (command, output) = run(&ctx, vec![event], &mut library, &mut art);
+        assert_eq!(command, None, "the switch is the page's own setting");
+        pressed = Some(output);
+    }
+    let pressed = pressed.expect("the press drew a frame");
+    assert!(library.discovery_enabled(), "the press turned discovery on");
+    assert_eq!(
+        repaint_delay(&pressed),
+        std::time::Duration::ZERO,
+        "the press asks for the frame that redraws the band"
+    );
+
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let at = text_rect(&output, HOME_DISCOVERY_SWITCH_ON)
+        .expect("the band at work draws its switch")
+        .center();
+    for event in click_events(at) {
+        let (command, _) = run(&ctx, vec![event], &mut library, &mut art);
+        assert_eq!(command, None);
+    }
+    assert!(
+        !library.discovery_enabled(),
+        "the same row turned discovery back off"
+    );
 }
 
 /// A library whose four built shelves all have something to draw.
@@ -687,28 +734,84 @@ fn an_absent_band_leaves_no_head_and_no_divider_over_a_day_one_page() {
     absent.apply(&Update::FollowedArtists(Vec::new()));
     absent.set_discovery_enabled(true);
     absent.set_local_day(Day::from_days(20_253));
+    assert_eq!(
+        absent.discovery_band(),
+        crate::home::discovery::Band::Absent
+    );
     let absent_output = run_at(PROBE, &mut absent);
 
     assert!(
         text_rect(&absent_output, HOME_DISCOVERY_TITLE).is_none(),
         "an absent band draws no head"
     );
-    let day_one = text_rect(&absent_output, crate::format::HOME_DAY_ONE_TITLE)
-        .expect("the day-one page still draws");
+    assert!(
+        text_rect(&absent_output, crate::format::HOME_DAY_ONE_TITLE).is_some(),
+        "the day-one page still draws"
+    );
 
     let mut off = settled(Vec::new(), Vec::new());
     off.apply(&Update::FollowedArtists(Vec::new()));
     off.set_local_day(Day::from_days(20_253));
     off.set_discovery_enabled(false);
     let off_output = run_at(PROBE, &mut off);
+    let off_row = text_rect(&off_output, HOME_DISCOVERY_SWITCH_OFF)
+        .expect("off draws its own row above the page");
     let off_day_one = text_rect(&off_output, crate::format::HOME_DAY_ONE_TITLE)
-        .expect("the day-one page still draws");
+        .expect("the day-one page still draws under the off row");
 
-    assert_eq!(
-        day_one.top(),
-        off_day_one.top(),
-        "an absent band takes no room, so the page below it does not move"
+    assert!(
+        off_row.top() < off_day_one.top(),
+        "the off row sits above the day-one page: {off_row:?} and {off_day_one:?}"
     );
+}
+
+#[test]
+fn a_day_one_page_with_discovery_on_draws_no_band_and_no_rule_above_it() {
+    let mut library = settled(Vec::new(), Vec::new());
+    library.apply(&Update::FollowedArtists(Vec::new()));
+    library.set_discovery_enabled(true);
+    library.set_local_day(Day::from_days(20_253));
+    assert_eq!(
+        library.discovery_band(),
+        crate::home::discovery::Band::Absent
+    );
+    let output = run_at(PROBE, &mut library);
+
+    assert!(
+        text_rect(&output, HOME_DISCOVERY_TITLE).is_none(),
+        "an absent band draws no head"
+    );
+    let greeting = text_rect(&output, crate::home::greeting(LOCAL_HOUR))
+        .expect("the greeting is always drawn");
+    let day_one = text_rect(&output, crate::format::HOME_DAY_ONE_TITLE)
+        .expect("the day-one page draws its heading");
+    assert!(
+        text_rect(&output, crate::format::HOME_DAY_ONE_BODY).is_some(),
+        "the day-one page keeps its one sentence"
+    );
+    let rules = rule_count(&output, greeting.bottom(), day_one.top());
+    assert_eq!(
+        rules, 1,
+        "only the page head's own rule sits above the day-one page"
+    );
+}
+
+/// Hairlines in the page's border colour between two heights.
+fn rule_count(output: &egui::FullOutput, top: f32, bottom: f32) -> usize {
+    let tokens = Tokens::DARK;
+    output
+        .shapes
+        .iter()
+        .filter(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape) => {
+                shape.fill == tokens.palette.border
+                    && (shape.rect.height() - crate::theme::stroke::HAIRLINE).abs() < 0.01
+                    && shape.rect.top() >= top
+                    && shape.rect.bottom() <= bottom
+            }
+            _ => false,
+        })
+        .count()
 }
 
 #[test]

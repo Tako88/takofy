@@ -9,7 +9,9 @@ use takofy_model::home::{DiscoveryArtist, DiscoveryCard, DiscoveryKind, Discover
 use super::*;
 use crate::availability::Control;
 use crate::cover::Art;
-use crate::format::{HOME_DISCOVERY_TITLE, discovery_source};
+use crate::format::{
+    HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON, HOME_DISCOVERY_TITLE, discovery_source,
+};
 use crate::home::discovery::{Band, RowRead, RowView};
 use crate::layout::Table;
 use crate::library::Library;
@@ -227,9 +229,60 @@ fn the_band_draws_its_title_and_every_seed_it_holds() {
 }
 
 #[test]
-fn off_absent_and_unreachable_draw_nothing() {
+fn an_off_band_draws_its_switch_row_and_nothing_else() {
     let ctx = context();
-    for band in [Band::Off, Band::Absent, Band::Unreachable] {
+    let output = run(
+        &ctx,
+        &Band::Off,
+        &Library::default(),
+        Table::Full,
+        Vec::new(),
+    );
+
+    assert!(output.drew, "the off row is the band's only remaining copy");
+    assert_eq!(
+        painted(&output.output),
+        vec![HOME_DISCOVERY_SWITCH_OFF.to_owned()],
+        "off is the row that switched it, inverted"
+    );
+
+    let at = name_rect(&output.output, HOME_DISCOVERY_SWITCH_OFF).center();
+    let frame = click(&ctx, &Band::Off, &Library::default(), at);
+    assert_eq!(frame.out.switch, Some(true), "the row asks to turn back on");
+}
+
+#[test]
+fn a_band_at_work_draws_the_switch_at_its_foot() {
+    let ctx = context();
+    let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
+    let cards = vec![card(0, 1)];
+    let refs: Vec<&DiscoveryCard> = cards.iter().collect();
+    for band in [
+        Band::Rows(vec![row(&seed, refs.clone(), RowRead::Ready)]),
+        Band::Rows(vec![row(&seed, Vec::new(), RowRead::Loading)]),
+        Band::Waiting,
+    ] {
+        let dry = run(&ctx, &band, &Library::default(), Table::Full, Vec::new());
+        assert!(dry.drew, "{band:?}");
+        assert_eq!(
+            painted(&dry.output)
+                .iter()
+                .filter(|word| *word == HOME_DISCOVERY_SWITCH_ON)
+                .count(),
+            1,
+            "{band:?} draws one switch"
+        );
+
+        let at = name_rect(&dry.output, HOME_DISCOVERY_SWITCH_ON).center();
+        let frame = click(&ctx, &band, &Library::default(), at);
+        assert_eq!(frame.out.switch, Some(false), "{band:?}");
+    }
+}
+
+#[test]
+fn absent_and_unreachable_draw_nothing() {
+    let ctx = context();
+    for band in [Band::Absent, Band::Unreachable] {
         let frame = run(&ctx, &band, &Library::default(), Table::Full, Vec::new());
         assert!(!frame.drew, "{band:?}");
         assert!(painted(&frame.output).is_empty(), "{band:?}");

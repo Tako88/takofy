@@ -1,10 +1,12 @@
-//! Discovery's band: a seed, the artists the outside graph puts next to it, and
-//! the arithmetic of what the filter kept.
+//! Discovery's band: a seed, the artists the outside graph puts next to it, the
+//! arithmetic of what the filter kept, and the switch that turns it off.
 //!
 //! The band is drawn outside the dated shelf's slot machinery: it has its own
 //! state, its own asks and its own forget path, and it is absent rather than
 //! "off" when it has nothing to say. Its section head is shared with the
-//! stations band, and each row's head is the same head again.
+//! stations band, and each row's head is the same head again. Off is not a
+//! silence: the band collapses to the switch row that turned it off, so the
+//! setting has somewhere visible to be undone.
 
 use std::time::Duration;
 
@@ -30,12 +32,14 @@ use super::super::{media, row_head, section};
 use super::Pressed;
 
 mod card;
+mod switch;
 
 /// Draws the discovery band and records the presses it took.
 ///
-/// Returns whether it drew anything. `Off`, `Absent` and `Unreachable` draw
-/// nothing and take no room: their copy belongs to the off and silence states, and
-/// a band with no row is a band the page does not have.
+/// Returns whether it drew anything. `Off` draws the switch row alone, because
+/// that row is the setting's visible instance; a band at work draws the same row
+/// at its foot. `Absent` and `Unreachable` draw nothing and take no room: a
+/// failure is not a setting, so it gets no copy and no switch.
 pub(super) fn show(
     ui: &mut Ui,
     band: &Band<'_>,
@@ -47,10 +51,16 @@ pub(super) fn show(
 ) -> bool {
     let narrow = table.stacks_discovery();
     match band {
-        Band::Off | Band::Absent | Band::Unreachable => false,
+        Band::Off => {
+            out.switch = switch::show(ui, false, tokens);
+            true
+        }
+        Band::Absent | Band::Unreachable => false,
         Band::Waiting => {
             section::head(ui, HOME_DISCOVERY_TITLE, HOME_DISCOVERY_ASIDE, tokens);
             skeleton_row(ui, 4, narrow, tokens);
+            ui.add_space(space::S3);
+            out.switch = switch::show(ui, true, tokens);
             true
         }
         Band::Rows(rows) => {
@@ -66,7 +76,11 @@ pub(super) fn show(
                 row_show(ui, row, now_ms, tokens, narrow, draw, out);
                 drew = true;
             }
-            drew
+            if drew {
+                ui.add_space(space::S3);
+            }
+            out.switch = switch::show(ui, true, tokens);
+            true
         }
     }
 }

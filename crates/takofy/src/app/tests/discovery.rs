@@ -6,7 +6,7 @@ use eframe::App;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
-use takofy_model::home::{DiscoverySeed, HomeAsk};
+use takofy_model::home::{DiscoveryAnswer, DiscoveryOutcome, DiscoverySeed, HomeAnswer, HomeAsk};
 use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 use takofy_ui::home::discovery::hidden::Hidden;
 use takofy_ui::message::Update;
@@ -221,6 +221,46 @@ fn a_window_with_the_setting_off_asks_for_no_lookup() {
     assert!(
         !app.gate.load(Ordering::Relaxed),
         "the gate follows the setting, so a lookup already on its way stops"
+    );
+}
+
+#[test]
+fn the_gate_follows_a_switch_press_in_both_directions() {
+    let (mut app, mut received) = ready_window();
+
+    logic_frame(&mut app);
+    let seed = lookups(&mut received)
+        .first()
+        .cloned()
+        .expect("arrange: a ready window asks for a seed");
+
+    app.library.set_discovery_enabled(false);
+    logic_frame(&mut app);
+    assert!(
+        !app.gate.load(Ordering::Relaxed),
+        "the gate closes with the setting"
+    );
+    assert!(
+        lookups(&mut received).is_empty(),
+        "an off setting asks for nothing"
+    );
+
+    // The lookup already out meets the closed gate and comes back off.
+    app.library
+        .apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+            seed: seed.clone(),
+            outcome: DiscoveryOutcome::Off,
+        })));
+
+    app.library.set_discovery_enabled(true);
+    logic_frame(&mut app);
+    assert!(
+        app.gate.load(Ordering::Relaxed),
+        "the gate opens with the setting"
+    );
+    assert!(
+        lookups(&mut received).contains(&seed),
+        "turning it back on re-asks the seed the gate turned away"
     );
 }
 
