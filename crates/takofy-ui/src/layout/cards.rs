@@ -90,8 +90,8 @@ pub fn grid(available: Rect, card_min: f32, gap: f32, card_extra_h: f32) -> Grid
 /// The columns still stretch to fill the area, so a capped grid is a row of
 /// `max_columns` cards sharing whatever width there is rather than a row that
 /// stops short of its own right edge. Home's card shelves are capped: a shelf is
-/// a handful of things, and a page 2500 points wide would otherwise draw fifteen
-/// covers nobody asked for.
+/// a handful of things, and an uncapped grid draws as many columns as the width
+/// allows rather than as many as the shelf has to say.
 pub fn grid_capped(
     available: Rect,
     card_min: f32,

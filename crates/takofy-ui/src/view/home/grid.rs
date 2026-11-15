@@ -1,10 +1,9 @@
 //! Home's card row: four across, sharing the width between them.
 //!
-//! The reference draws a shelf of cards as one row of four at the page's own
-//! width. The library's grid fills as many columns as its minimum allows, which
-//! on a 2500-point window is fifteen covers for a shelf that has four things to
-//! say, so Home caps its shelves at four and lets them stretch edge to edge. A
-//! page too narrow for four keeps the minimum width and draws fewer.
+//! A shelf is a handful of things, so Home caps its row at four columns rather
+//! than letting the grid's auto-fill draw as many as the width allows. The four
+//! share the width between them, edge to edge. A page too narrow for four at the
+//! minimum card width draws fewer, and those stretch the same way.
 
 use egui::{Rect, Ui, vec2};
 
