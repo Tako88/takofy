@@ -47,7 +47,7 @@ pub enum Read {
 }
 
 /// One row's pool and how far through it the row has got.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pool: Vec<DiscoverySeed>,
     at: usize,
@@ -81,7 +81,7 @@ impl Row {
 }
 
 /// Discovery's rows between opens.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
     day: Option<Day>,
     latched: Option<Day>,
@@ -115,6 +115,16 @@ impl State {
             self.day = None;
             self.rows = std::array::from_fn(|_| Row::default());
         }
+    }
+
+    /// The day this page opened on, once the binary has named it.
+    pub fn latched(&self) -> Option<Day> {
+        self.latched
+    }
+
+    /// Whether `day`'s pools have been built.
+    pub fn chosen(&self, day: Day) -> bool {
+        self.day == Some(day)
     }
 
     /// Starts a page visit: the rows may be asked again, and the extras the last
@@ -202,6 +212,22 @@ impl State {
                 };
             }
         }
+    }
+
+    /// How many of each landed row's cards the library does not already hold
+    /// and the user has not hidden, in kind order.
+    ///
+    /// A row that has not landed counts nothing, so a caller may settle with
+    /// this wherever it likes in the frame.
+    pub fn fresh_counts(&self, owned: &fresh::Owned, hidden: &hidden::Hidden) -> [usize; 3] {
+        std::array::from_fn(|index| {
+            let row = &self.rows[index];
+            let Read::Landed { cards, .. } = &row.read else {
+                return 0;
+            };
+            let anchor = row.pool.get(row.at).and_then(|seed| seed.anchor.as_ref());
+            fresh::fresh(cards, anchor, owned, hidden).len()
+        })
     }
 
     /// Spends the one re-seed a landed row has when nothing it found is fresh.

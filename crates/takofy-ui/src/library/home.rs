@@ -8,6 +8,7 @@
 mod because;
 mod counted;
 mod dated;
+pub(super) mod discovery;
 mod episodes;
 mod stations;
 
@@ -140,6 +141,9 @@ impl Library {
             // asked for last: no shelf waits on one to say what it holds.
             .or_else(|| self.stations_lengths_ask())
             .or_else(|| self.counted_portrait_ask())
+            // Discovery is looked up outside, which is the one read no shelf
+            // waits on: it goes last so a slow lookup delays nothing above it.
+            .or_else(|| self.discovery_ask())
     }
 
     /// Every built ask this open still owes.

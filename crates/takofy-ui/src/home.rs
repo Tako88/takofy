@@ -161,6 +161,8 @@ pub struct Home {
     pub counted: counted::State,
     /// The newest episodes of the followed shows.
     pub episodes: episodes::State,
+    /// Discovery's three rows: their pools, and what each has answered.
+    pub discovery: discovery::State,
     /// The reads one open still allows.
     pub budget: Budget,
 }
@@ -175,12 +177,14 @@ impl Home {
         self.because.open(self.seed);
         self.counted.open(self.seed);
         self.episodes.open(self.seed);
+        self.discovery.open();
     }
 
     /// Folds one answer into the shelf that asked for it.
     pub fn land(&mut self, answer: &HomeAnswer) {
         // Discovery keeps its own state, which no shelf below holds.
         if let HomeAnswer::Discovery(_) = answer {
+            self.discovery.land(answer);
             return;
         }
         if let HomeAnswer::Labelled { asked, named } = answer {
@@ -278,6 +282,10 @@ impl Home {
         for slot in Slot::ORDER {
             self.forget_slot(slot);
         }
+        // The rows go with the rest, and their open starts again: a retry reads
+        // the lists the pools are drawn from.
+        self.discovery = discovery::State::default();
+        self.discovery.open();
     }
 
     /// The failure that stopped the last label read, if one did.

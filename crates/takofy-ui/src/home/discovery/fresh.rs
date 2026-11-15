@@ -40,6 +40,19 @@ impl Owned {
     }
 }
 
+/// Whether `card` may be drawn: an artist the library does not already hold,
+/// the user has not hidden, and that is not the row's own seed.
+pub fn keeps(
+    card: &DiscoveryCard,
+    anchor: Option<&DiscoveryArtist>,
+    owned: &Owned,
+    hidden: &Hidden,
+) -> bool {
+    !owned.contains(&card.artist.uri)
+        && anchor.is_none_or(|anchor| anchor.uri != card.artist.uri)
+        && !hidden.contains(&card.artist.uri)
+}
+
 /// The cards a row may draw, in the order the lookup found them.
 pub fn fresh<'a>(
     cards: &'a [DiscoveryCard],
@@ -49,11 +62,7 @@ pub fn fresh<'a>(
 ) -> Vec<&'a DiscoveryCard> {
     cards
         .iter()
-        .filter(|card| {
-            !owned.contains(&card.artist.uri)
-                && anchor.is_none_or(|anchor| anchor.uri != card.artist.uri)
-                && !hidden.contains(&card.artist.uri)
-        })
+        .filter(|card| keeps(card, anchor, owned, hidden))
         .collect()
 }
 
