@@ -18,7 +18,8 @@ use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
 use takofy_core::{ReadFailed, Resolution, TransferPlan};
 use takofy_model::home::{
-    DiscoveryArtist, DiscoveryCard, DiscoveryOutcome, DiscoverySeed, Station, StationSeed,
+    ArtistReleases, Day, DiscoveryArtist, DiscoveryCard, DiscoveryOutcome, DiscoverySeed, Station,
+    StationSeed,
 };
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow,
@@ -93,6 +94,7 @@ impl SessionError {
             Self::Engine(EngineError::Playlist(_)) => "playlist",
             Self::Engine(EngineError::Followed(_)) => "followed",
             Self::Engine(EngineError::Connect(_)) => "connect",
+            Self::Engine(EngineError::Releases) => "releases",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
                 PlaybackError::NoAudioDevice => "no audio device",
@@ -287,6 +289,16 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         &self,
         shows: &[String],
     ) -> impl Future<Output = Result<Vec<ShowDetail>, SessionError>> + Send;
+
+    /// The newest releases of every artist in `artists`, from `since` onwards.
+    ///
+    /// An artist that does not answer is missing from the answer rather than
+    /// answered empty.
+    fn new_releases(
+        &self,
+        artists: &[String],
+        since: Day,
+    ) -> impl Future<Output = Result<Vec<ArtistReleases>, SessionError>> + Send;
 
     /// One station read from its seed, its rows labelled.
     fn station(
@@ -803,6 +815,20 @@ impl SessionHost for LiveSession {
     async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, SessionError> {
         match &self.engine {
             Some(engine) => engine.episodes(shows).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn new_releases(
+        &self,
+        artists: &[String],
+        since: Day,
+    ) -> Result<Vec<ArtistReleases>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .new_releases(artists, since)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

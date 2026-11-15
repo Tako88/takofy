@@ -10,7 +10,7 @@ use takofy_core::connect::WITHDRAW_TIMEOUT;
 use takofy_core::instruction::{Instruction, Kind};
 use takofy_core::login::{SourceError, TokenSet};
 use takofy_core::receive::Inbound;
-use takofy_model::home::{DiscoveryKind, DiscoverySeed, HomeAsk, SeedKind, StationSeed};
+use takofy_model::home::{Day, DiscoveryKind, DiscoverySeed, HomeAsk, SeedKind, StationSeed};
 use takofy_model::{CoverUrl, Move, Removal, RequestId};
 use tokio::sync::Semaphore;
 
@@ -87,6 +87,13 @@ fn classes_are_pinned() {
             Class::Read,
         ),
         (Command::LoadHome(HomeAsk::Station { seed }), Class::Read),
+        (
+            Command::LoadHome(HomeAsk::Releases {
+                artists: vec![ARTIST.to_owned()],
+                since: Day::from_days(20_000),
+            }),
+            Class::Read,
+        ),
         (
             Command::LoadHome(HomeAsk::Discovery {
                 seed: DiscoverySeed {

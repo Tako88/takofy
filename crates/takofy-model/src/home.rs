@@ -123,6 +123,42 @@ impl Day {
     }
 }
 
+/// A release's date, in the parts the wire gave.
+///
+/// The month and the day are optional because the wire dates a release by as
+/// little as its year, and a part it left out is not one the page can draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReleaseDate {
+    pub year: u16,
+    pub month: Option<u8>,
+    pub day: Option<u8>,
+}
+
+/// One release of a followed artist, as the release shelf draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRelease {
+    /// The artist's own name, as the wire gave it.
+    pub artist: String,
+    /// The release's URI, which is what its card plays and opens.
+    pub uri: String,
+    pub name: String,
+    pub date: ReleaseDate,
+    /// The release's date as a day number, in the same count [`Day`] uses, so the
+    /// shelf compares whole days without calendar arithmetic of its own.
+    pub day: Day,
+    pub cover: Option<CoverSet>,
+}
+
+/// One followed artist's releases, in the order the read answered them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistReleases {
+    /// The artist's URI, which is what the ask named.
+    pub artist: String,
+    /// Empty when the artist has nothing new, which is an answer rather than a
+    /// missing one.
+    pub releases: Vec<NewRelease>,
+}
+
 /// The one item a station was seeded from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StationSeed {
@@ -180,6 +216,8 @@ pub enum HomeAsk {
     Portraits { artists: Vec<String> },
     /// The neighbours one discovery row draws, looked up outside.
     Discovery { seed: DiscoverySeed },
+    /// The newest releases of these followed artists, from `since` onwards.
+    Releases { artists: Vec<String>, since: Day },
 }
 
 /// The answer to a [`HomeAsk`], matched back to it by what the ask named.
@@ -210,4 +248,11 @@ pub enum HomeAnswer {
     },
     /// The neighbours a discovery row found, answered for its seed.
     Discovery(DiscoveryAnswer),
+    /// One entry per artist the read answered, including an artist with nothing
+    /// new. An artist the read could not get is missing rather than answered
+    /// empty, so the shelf neither holds it nor waits on it again this open.
+    Releases {
+        asked: Vec<String>,
+        found: Vec<ArtistReleases>,
+    },
 }

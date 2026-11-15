@@ -851,6 +851,9 @@ fn built_slot(ask: &HomeAsk, liked: &str) -> Slot {
         HomeAsk::Labels { tracks } => panic!("a labels ask outside the shelves: {tracks:?}"),
         HomeAsk::Portraits { artists } => panic!("a decoration asked first: {artists:?}"),
         HomeAsk::Discovery { seed } => panic!("a discovery ask is not a built shelf: {seed:?}"),
+        HomeAsk::Releases { artists, .. } => {
+            panic!("the release shelf is not a slot: {artists:?}")
+        }
     }
 }
 

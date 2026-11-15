@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::home::{DiscoveryKind, SeedKind};
+use takofy_model::home::{DiscoveryKind, ReleaseDate, SeedKind};
 use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
@@ -341,6 +341,37 @@ pub const HOME_COUNTED_TITLE: &str = "The artists you have the most of";
 
 /// The episodes shelf's title.
 pub const HOME_EPISODES_TITLE: &str = "New from the shows you follow";
+
+/// The release shelf's title.
+pub const HOME_RELEASES_TITLE: &str = "New from the artists you follow";
+
+/// The month names a release's date prints, in the wire's own numbering.
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A release card's line under the title: who made it, then the day it came out.
+///
+/// Only a whole date prints its day. A month without one says nothing the year
+/// does not, so a partial date prints the year alone.
+pub fn release_sub(artist: &str, date: &ReleaseDate) -> String {
+    let artist = artist.trim();
+    let when = match (date.month, date.day) {
+        (Some(month), Some(day)) => match usize::from(month)
+            .checked_sub(1)
+            .and_then(|index| MONTHS.get(index))
+        {
+            Some(name) => format!("{day} {name}"),
+            None => date.year.to_string(),
+        },
+        _ => date.year.to_string(),
+    };
+    if artist.is_empty() {
+        when
+    } else {
+        format!("{artist} · {when}")
+    }
+}
 
 /// The dated shelf's foot: the door into the whole library.
 pub const HOME_DOOR_SAVED: &str = "Show all saved";

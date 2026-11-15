@@ -173,6 +173,37 @@ fn release_count_label_counts_releases() {
     assert_eq!(release_count_label(1), "1 release");
     assert_eq!(release_count_label(0), "0 releases");
     assert_eq!(release_count_label(3), "3 releases");
+    assert_eq!(
+        release_count_label(22),
+        "22 releases",
+        "the release shelf's aside is the same count its discography writes"
+    );
+}
+
+/// A release date in the parts the shelf draws it from.
+fn release_date(year: u16, month: Option<u8>, day: Option<u8>) -> ReleaseDate {
+    ReleaseDate { year, month, day }
+}
+
+#[test]
+fn a_release_sub_names_the_artist_then_the_day() {
+    assert_eq!(
+        release_sub("Vela Moreno", &release_date(2025, Some(10), Some(14))),
+        "Vela Moreno · 14 Oct"
+    );
+}
+
+#[test]
+fn a_year_only_release_sub_is_the_year() {
+    assert_eq!(
+        release_sub("Fen & Farrow", &release_date(1996, None, None)),
+        "Fen & Farrow · 1996"
+    );
+    assert_eq!(
+        release_sub("Fen & Farrow", &release_date(1996, Some(3), None)),
+        "Fen & Farrow · 1996",
+        "a month without a day says nothing the year does not"
+    );
 }
 
 #[test]

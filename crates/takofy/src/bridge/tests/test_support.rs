@@ -3,8 +3,8 @@
 use super::super::wake::Waker;
 use super::super::*;
 use super::announce::{
-    AlbumScript, EpisodesScript, FollowedArtistsScript, FollowedScript, SavedAlbumsScript,
-    ShowScript, followed_artist,
+    AlbumScript, EpisodesScript, FollowedArtistsScript, FollowedScript, ReleasesScript,
+    SavedAlbumsScript, ShowScript, followed_artist,
 };
 use super::create::{CreateScript, EntryScript, LinkScript};
 use super::devices::{
@@ -26,7 +26,9 @@ use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::rootlist::{RootEntry, Walked};
 use takofy_core::{Resolution, TransferPlan};
-use takofy_model::home::{DiscoveryOutcome, DiscoverySeed, Station, StationSeed};
+use takofy_model::home::{
+    ArtistReleases, Day, DiscoveryOutcome, DiscoverySeed, Station, StationSeed,
+};
 use takofy_model::{
     Account, AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow,
     Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal,
@@ -548,6 +550,10 @@ pub(super) struct FakeState {
     pub(super) album_script: Mutex<AlbumScript>,
     pub(super) show_script: Mutex<ShowScript>,
     pub(super) episodes_script: Mutex<EpisodesScript>,
+    pub(super) releases_script: Mutex<ReleasesScript>,
+    /// Every release-shelf read the loop made, with the artists and the day it
+    /// asked from.
+    pub(super) release_shelf_asked: Mutex<Vec<(Vec<String>, Day)>>,
     pub(super) followed_script: Mutex<FollowedScript>,
     pub(super) followed_artists_script: Mutex<FollowedArtistsScript>,
     pub(super) related_script: Mutex<RelatedScript>,
@@ -1070,6 +1076,29 @@ impl SessionHost for FakeHost {
                 EpisodesScript::Ready(details) => Ok(details),
                 EpisodesScript::Fail => Err(SessionError::NotConnected),
                 EpisodesScript::Pending => std::future::pending().await,
+            }
+        }
+    }
+
+    fn new_releases(
+        &self,
+        artists: &[String],
+        since: Day,
+    ) -> impl Future<Output = Result<Vec<ArtistReleases>, SessionError>> + Send {
+        self.shared
+            .release_shelf_asked
+            .lock()
+            .expect("lock")
+            .push((artists.to_vec(), since));
+        let connected = self.shared.connected.load(Ordering::SeqCst);
+        let script = self.shared.releases_script.lock().expect("lock").clone();
+        async move {
+            if !connected {
+                return Err(SessionError::NotConnected);
+            }
+            match script {
+                ReleasesScript::Ready(found) => Ok(found),
+                ReleasesScript::Fail => Err(SessionError::NotConnected),
             }
         }
     }

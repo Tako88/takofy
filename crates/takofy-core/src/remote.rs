@@ -23,7 +23,7 @@ use librespot::protocol::metadata::{
 };
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
-use takofy_model::home::{CARD_TRACKS, DiscoveryCard};
+use takofy_model::home::{ArtistReleases, CARD_TRACKS, Day, DiscoveryCard};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
     FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead,
@@ -45,6 +45,7 @@ use crate::discovery::{self, ReadFailed};
 use crate::followed::{self, FollowedError, ShowCard};
 use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
+use crate::new_releases;
 use crate::playlist_edit;
 use crate::portrait::{portrait_from, portraits_of};
 use crate::rootlist::{
@@ -1256,15 +1257,17 @@ pub(crate) async fn read_portraits(
     Some(portraits)
 }
 
-/// How many card artists one discovery read asks about.
+/// How many artists one batched artist read asks about.
 ///
 /// Twelve is the batch the provider answered in one request (measured: twelve
 /// artists in 103 ms, against 290 ms for the same twelve read one at a time), so
-/// the artist stage is one request however many cards a row resolves. A URI
-/// beyond the twelfth is dropped rather than asked for on its own.
+/// a discovery row's artist stage is one request however many cards it resolves,
+/// and a URI beyond the twelfth is dropped rather than asked for on its own. The
+/// release shelf asks in batches of this size instead: its sixty artists are
+/// five requests, fanned out three at a time.
 const DISCOVERY_CARDS_MAX: usize = 12;
 
-/// How many album URIs one discovery read asks for per request.
+/// How many album URIs one batched album read asks for per request.
 ///
 /// Sixty is the batch measured (sixty albums with their dates in one request,
 /// 78 ms). Twelve artists named 218 albums, so a row's six cost two chunks:
@@ -1372,6 +1375,94 @@ pub(crate) async fn read_discovery_cards(
         );
     }
     Ok(cards)
+}
+
+/// The newest releases of `artists`, from `since` onwards.
+///
+/// One batched `ARTIST_V4` carries each artist's current albums and singles; one
+/// batched `ALBUM_V4` per [`DISCOVERY_ALBUM_CHUNK`] release URIs carries the dates
+/// the artist payload's own stubs leave out. An artist the batch did not answer is
+/// left out rather than answered empty, so the shelf neither holds it nor waits on
+/// it again this open.
+pub(crate) async fn read_new_releases(
+    session: &Session,
+    artists: &[String],
+    since: Day,
+) -> Result<Vec<ArtistReleases>, ReadFailed> {
+    let distinct = distinct_uris(artists);
+    if distinct.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (answered, tally) = fetch_chunked_sized(
+        session,
+        &distinct,
+        DISCOVERY_CARDS_MAX,
+        ExtensionKind::ARTIST_V4,
+        discovery::artist_from,
+    )
+    .await;
+    if let Some(summary) = tally.summary() {
+        log::warn!("{summary}");
+    }
+    if answered.is_empty() {
+        log::warn!(
+            "the release read asked for {} artists and none answered",
+            distinct.len()
+        );
+        return Err(ReadFailed);
+    }
+
+    // Each answered artist's own releases, kept so the assembly below reads no
+    // payload twice, and the URIs they name, deduped, asked for in one pass.
+    let mut own: Vec<(&String, String, Vec<String>)> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut order: Vec<String> = Vec::new();
+    for uri in &distinct {
+        let Some(artist) = answered.get(uri) else {
+            continue;
+        };
+        let uris = new_releases::new_release_uris(artist);
+        for release in &uris {
+            if seen.insert(release.clone()) {
+                order.push(release.clone());
+            }
+        }
+        own.push((uri, discovery::name_of(uri, artist), uris));
+    }
+
+    let (albums, album_tally) = fetch_chunked_sized(
+        session,
+        &order,
+        DISCOVERY_ALBUM_CHUNK,
+        ExtensionKind::ALBUM_V4,
+        new_releases::dated_album_from,
+    )
+    .await;
+    if let Some(summary) = album_tally.summary() {
+        log::warn!("{summary}");
+    }
+
+    let found: Vec<ArtistReleases> = own
+        .into_iter()
+        .map(|(uri, name, uris)| ArtistReleases {
+            artist: uri.clone(),
+            releases: uris
+                .iter()
+                .filter_map(|release| {
+                    let album = albums.get(release)?;
+                    new_releases::new_release_of(&name, album, since)
+                })
+                .collect(),
+        })
+        .collect();
+    if found.len() < distinct.len() {
+        log::warn!(
+            "{} of {} artists answered the release read",
+            found.len(),
+            distinct.len()
+        );
+    }
+    Ok(found)
 }
 
 /// The seed artist's own top-track titles, in the wire's own order.

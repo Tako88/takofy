@@ -23,18 +23,18 @@ use crate::registry::{Registry, Verdict};
 use crate::remote::{
     LabelCache, ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks,
     read_album, read_artist, read_discovery_cards, read_episodes, read_followed_artists,
-    read_followed_shows, read_liked_tracks, read_lyrics, read_playlist, read_playlist_head,
-    read_playlist_state, read_portraits, read_related, read_release_tracks, read_saved_albums,
-    read_saved_state, read_search_labelled, read_show, read_top_titles, write_add, write_create,
-    write_follow, write_like, write_move, write_remove, write_rename, write_rootlist_add,
-    write_rootlist_move, write_rootlist_remove, write_saved,
+    read_followed_shows, read_liked_tracks, read_lyrics, read_new_releases, read_playlist,
+    read_playlist_head, read_playlist_state, read_portraits, read_related, read_release_tracks,
+    read_saved_albums, read_saved_state, read_search_labelled, read_show, read_top_titles,
+    write_add, write_create, write_follow, write_like, write_move, write_remove, write_rename,
+    write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootEntry, RootlistError, Walked, fetch_all};
 use crate::show::ShowError;
 use crate::station::{StationError, read_neighbours, read_radio, read_radio_more, read_station};
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
-use takofy_model::home::{DiscoveryCard, Station, StationSeed};
+use takofy_model::home::{ArtistReleases, Day, DiscoveryCard, Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
     LikedTrack, Move, PlaylistAccess, PlaylistEntry, PlaylistHead, Removal, Report, RequestId,
@@ -66,6 +66,10 @@ pub enum EngineError {
     Playlist(#[from] PlaylistError),
     #[error(transparent)]
     Connect(#[from] ConnectError),
+    /// The release read did not answer, which is no shelf rather than an empty
+    /// one.
+    #[error("the release read did not answer")]
+    Releases,
 }
 
 /// Answers one incoming order while something else holds the engine.
@@ -638,6 +642,21 @@ impl Engine {
     /// shows and their episodes stay in the order they were read.
     pub async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, EngineError> {
         Ok(read_episodes(&self.session, shows).await?)
+    }
+
+    /// The newest releases of `artists`, from `since` onwards, as the release
+    /// shelf draws them.
+    ///
+    /// An artist the batch did not answer is left out rather than answered empty,
+    /// and only a read where the artist request itself failed is an error.
+    pub async fn new_releases(
+        &self,
+        artists: &[String],
+        since: Day,
+    ) -> Result<Vec<ArtistReleases>, EngineError> {
+        read_new_releases(&self.session, artists, since)
+            .await
+            .map_err(|_| EngineError::Releases)
     }
 
     /// One station read from its seed, its rows labelled.

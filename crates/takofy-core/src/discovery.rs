@@ -113,7 +113,7 @@ pub(crate) fn assemble(
 
 /// The artist's name, or the URI when the wire sent none: a blank name is the
 /// wire saying nothing rather than a name.
-fn name_of(uri: &str, artist: &Artist) -> String {
+pub(crate) fn name_of(uri: &str, artist: &Artist) -> String {
     if artist.name.trim().is_empty() {
         uri.to_owned()
     } else {

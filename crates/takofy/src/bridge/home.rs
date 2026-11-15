@@ -52,6 +52,22 @@ pub(super) async fn load_home<H: SessionHost>(host: &H, notifier: &Notifier, ask
                 false
             }
         },
+        HomeAsk::Releases { artists, since } => match host.new_releases(&artists, since).await {
+            Ok(found) => {
+                answered(
+                    notifier,
+                    HomeAnswer::Releases {
+                        asked: artists,
+                        found,
+                    },
+                );
+                true
+            }
+            Err(error) => {
+                failed(notifier, asked, library_failure(&error));
+                false
+            }
+        },
         HomeAsk::Station { seed } => match host.station(&seed).await {
             Ok(station) => {
                 answered(notifier, HomeAnswer::Station(station));

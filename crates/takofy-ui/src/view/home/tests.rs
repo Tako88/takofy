@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
 use takofy_model::home::{
-    Day, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome,
-    DiscoverySeed, HomeAnswer, HomeAsk, Station,
+    ArtistReleases, Day, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind,
+    DiscoveryOutcome, DiscoverySeed, HomeAnswer, HomeAsk, NewRelease, ReleaseDate, Station,
 };
 use takofy_model::{
     Episode, FollowedArtist, FollowedShow, PlaylistEntry, PublishedAt, SavedAlbum, SavedAt, Show,
@@ -14,7 +14,8 @@ use super::*;
 use crate::cover::Art;
 use crate::format::{
     HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON,
-    HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE, HOME_SHELF_TITLE, HOME_STATIONS_TITLE,
+    HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE, HOME_QUIET, HOME_RELEASES_TITLE, HOME_SHELF_TITLE,
+    HOME_STATIONS_TITLE,
 };
 use crate::home::{Fit, Presence, Slot};
 use crate::library::Library;
@@ -292,7 +293,7 @@ fn pressing_the_discovery_switch_turns_the_setting_and_asks_for_a_frame() {
     );
 }
 
-/// A library whose four built shelves all have something to draw.
+/// A library whose built shelves all have something to draw.
 fn all_ready() -> Library {
     let mut library = settled(
         vec![playlist("spotify:playlist:a", "Mix", 5_000)],
@@ -372,6 +373,115 @@ fn the_page_draws_its_heads_in_the_slots_own_order() {
     assert!(
         positions.windows(2).all(|pair| pair[0] < pair[1]),
         "the heads left the page's order: {positions:?}"
+    );
+}
+
+/// The day the release shelf's window is latched on, and the day its one
+/// release is dated.
+const SHELF_DAY: i32 = 20_253;
+
+/// One release the shelf can draw, for the artist `all_ready` follows.
+fn new_release() -> NewRelease {
+    NewRelease {
+        artist: "Seed".to_owned(),
+        uri: "spotify:album:new".to_owned(),
+        name: "New One".to_owned(),
+        date: ReleaseDate {
+            year: 2025,
+            month: Some(10),
+            day: Some(14),
+        },
+        day: Day::from_days(SHELF_DAY),
+        cover: None,
+    }
+}
+
+/// Lands one release for the followed artist, once `library` has a day.
+fn land_release(library: &mut Library) {
+    library.set_local_day(Day::from_days(SHELF_DAY));
+    library.apply(&Update::Home(HomeAnswer::Releases {
+        asked: vec!["spotify:artist:seed".to_owned()],
+        found: vec![ArtistReleases {
+            artist: "spotify:artist:seed".to_owned(),
+            releases: vec![new_release()],
+        }],
+    }));
+}
+
+/// Where each of `heads` was painted, in paint order.
+fn head_positions(output: &egui::FullOutput, heads: &[&str]) -> Vec<usize> {
+    let drawn = painted(output);
+    heads
+        .iter()
+        .map(|head| {
+            drawn
+                .iter()
+                .position(|(text, _)| text == head)
+                .unwrap_or_else(|| panic!("{head:?} was not drawn"))
+        })
+        .collect()
+}
+
+#[test]
+fn a_ready_release_shelf_sits_between_the_counted_and_episodes_shelves() {
+    let mut library = all_ready();
+    land_release(&mut library);
+
+    let ctx = context();
+    let mut art = Art::default();
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+    let positions = head_positions(
+        &output,
+        &[HOME_COUNTED_TITLE, HOME_RELEASES_TITLE, HOME_EPISODES_TITLE],
+    );
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "the release shelf left its place on the page: {positions:?}"
+    );
+    let drawn = painted(&output);
+    assert!(
+        drawn
+            .iter()
+            .any(|(text, _)| *text == crate::format::release_count_label(1).to_uppercase()),
+        "the shelf drew no card: the aside counts what it drew"
+    );
+}
+
+/// A library whose dated shelf is quiet: one saved thing, with no date.
+fn quiet_with(artists: Vec<FollowedArtist>) -> Library {
+    let mut library = settled(vec![playlist("spotify:playlist:a", "Mix", 0)], Vec::new());
+    library.apply(&Update::FollowedArtists(artists));
+    library
+}
+
+#[test]
+fn a_ready_release_shelf_takes_the_quiet_lines_place() {
+    let ctx = context();
+    let mut art = Art::default();
+
+    // With nothing followed the shelf is absent, so the dated shelf says its
+    // quiet line itself.
+    let mut quiet = quiet_with(Vec::new());
+    quiet.set_local_day(Day::from_days(SHELF_DAY));
+    let (_, output) = run(&ctx, Vec::new(), &mut quiet, &mut art);
+    let texts: Vec<&str> = painted(&output).iter().map(|(text, _)| *text).collect();
+    assert!(
+        texts.contains(&HOME_QUIET),
+        "arrange: a quiet dated shelf says so: {texts:?}"
+    );
+
+    let mut ready = quiet_with(vec![artist("spotify:artist:seed", "Seed")]);
+    land_release(&mut ready);
+    let (_, output) = run(&ctx, Vec::new(), &mut ready, &mut art);
+    let texts: Vec<&str> = painted(&output).iter().map(|(text, _)| *text).collect();
+    assert!(
+        !texts.contains(&HOME_QUIET),
+        "the quiet line was drawn under a shelf with content: {texts:?}"
+    );
+    assert!(
+        texts.contains(&HOME_RELEASES_TITLE),
+        "the shelf did not draw"
     );
 }
 

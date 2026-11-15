@@ -1,4 +1,4 @@
-//! Home: the greeting, and the five shelves under it.
+//! Home: the greeting, and the shelves under it.
 //!
 //! The page draws what the library decided and asks for nothing of its own: a
 //! press is returned as the command or the want that follows from it. The
@@ -35,6 +35,7 @@ mod episodes;
 mod foot;
 mod frame;
 mod grid;
+mod releases;
 mod stations;
 
 /// The shelves below the dated one, in the page's order.
@@ -153,6 +154,21 @@ pub(super) fn home_view(
                 for slot in below() {
                     if gated {
                         continue;
+                    }
+                    // The release shelf is not a slot, so it draws where the
+                    // page puts it: between the counted shelf and the episodes
+                    // shelf.
+                    if slot == Slot::Episodes
+                        && matches!(
+                            shelves.releases.presence(),
+                            Presence::Waiting | Presence::Ready
+                        )
+                    {
+                        if drawn {
+                            section::divide(ui, tokens);
+                        }
+                        releases::show(ui, &shelves.releases, tokens, &mut draw);
+                        drawn = true;
                     }
                     match shelves.presence(slot) {
                         // A shelf with nothing to draw occupies no room.

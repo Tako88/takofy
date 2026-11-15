@@ -300,6 +300,7 @@ impl eframe::App for TakofyApp {
         // ask for, and a gate stored afterwards would act on the last frame's
         // value.
         self.library.set_local_day(local_day());
+        self.library.set_utc_offset(local_offset());
         self.gate
             .store(self.library.discovery_enabled(), Ordering::Relaxed);
         self.hidden.observe(self.library.hidden());
@@ -503,6 +504,14 @@ fn local_day_at<Tz: TimeZone>(at: &DateTime<Tz>) -> Day {
 /// The local day, read once per frame.
 fn local_day() -> Day {
     local_day_at(&Local::now())
+}
+
+/// The offset the local day is measured with, in seconds east of UTC.
+///
+/// The release shelf needs it to turn a follow date into the same day count
+/// [`local_day`] names.
+fn local_offset() -> i32 {
+    Local::now().offset().local_minus_utc()
 }
 
 /// The discovery setting the preferences file held.

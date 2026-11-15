@@ -197,6 +197,8 @@ pub struct Library {
     discovery_enabled: Enabled,
     /// The artists the user never wants offered, and where a day's rows stand.
     hidden: Hidden,
+    /// The offset the local day is measured with, in seconds east of UTC.
+    utc_offset: i32,
     /// The Home page's seed, and the labels the liked cards need.
     pub home: Home,
     /// When this Home visit started waiting for the dated feeds.
@@ -1997,10 +1999,20 @@ impl Library {
         self.discovery_enabled = Enabled(enabled);
     }
 
-    /// Names the day the page is open on, which the rows keep until the next
-    /// open.
+    /// Names the day the page is open on, which the rows and the release shelf
+    /// keep until the next day.
     pub fn set_local_day(&mut self, day: Day) {
         self.home.discovery.latch(day);
+        self.home.releases.latch(day);
+    }
+
+    /// Names the offset the local day is measured with, in seconds east of UTC.
+    ///
+    /// Only the follow dates need it: a release's day comes from the answer, and
+    /// an instant has to be turned into a local day the same way the binary
+    /// names one.
+    pub fn set_utc_offset(&mut self, secs: i32) {
+        self.utc_offset = secs;
     }
 
     /// Restores the hidden artists and where a day's rows stand.

@@ -30,6 +30,7 @@ mod discovery;
 mod label_cache;
 mod latest;
 mod loss;
+mod new_releases;
 mod playstate;
 mod portrait;
 mod presence;
