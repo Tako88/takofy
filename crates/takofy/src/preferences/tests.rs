@@ -148,6 +148,46 @@ fn an_unset_appdata_is_no_directory() {
 }
 
 #[test]
+fn config_dir_under_appdata_names_the_directory() {
+    let root = if cfg!(windows) {
+        "C:\\appdata"
+    } else {
+        "/appdata"
+    };
+    assert_eq!(
+        config_dir(true, vars(&[("APPDATA", root)])),
+        Some(PathBuf::from(root).join(DIR))
+    );
+    assert_eq!(
+        config_dir(true, vars(&[("APPDATA", ""), ("HOME", "/home/tako")])),
+        None,
+        "an empty appdata names no directory, whatever home says"
+    );
+}
+
+#[test]
+fn config_dir_under_the_config_root_names_the_directory() {
+    let root = if cfg!(windows) { "C:\\xdg" } else { "/xdg" };
+    assert_eq!(
+        config_dir(
+            false,
+            vars(&[("XDG_CONFIG_HOME", root), ("HOME", "/home/tako")])
+        ),
+        Some(PathBuf::from(root).join(DIR))
+    );
+    assert_eq!(
+        config_dir(false, vars(&[("HOME", "/home/tako")])),
+        Some(PathBuf::from("/home/tako").join(".config").join(DIR)),
+        "with no config root the home directory names it"
+    );
+    assert_eq!(
+        config_dir(false, vars(&[("XDG_CONFIG_HOME", "xdg"), ("HOME", "")])),
+        None,
+        "a relative config root falls back to a home that is not there"
+    );
+}
+
+#[test]
 fn a_missing_file_is_absent() {
     let dir = Temp::new("a_missing_file_is_absent");
     assert_eq!(load(&dir.file()), Loaded::Absent);

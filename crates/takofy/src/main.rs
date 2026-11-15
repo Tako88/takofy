@@ -12,6 +12,9 @@ mod devices;
 #[allow(dead_code)]
 mod discovery;
 mod headless;
+// The hidden file is opened by its own tests until the window reads it.
+#[allow(dead_code)]
+mod hidden_file;
 mod keychain;
 mod latest_writer;
 mod playhead;
