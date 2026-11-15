@@ -180,7 +180,7 @@ fn each_kind_is_mixed_on_its_own() {
 }
 
 #[test]
-fn the_whole_list_is_the_edge_set_up_to_twice_the_edge() {
+fn the_whole_list_competes_up_to_twice_the_edge() {
     let pool = day_pool(&playlists(2 * EDGE), &[], &[], today());
 
     assert_eq!(pool[0].len(), PER_KIND, "a full pool is still its size");
@@ -189,22 +189,47 @@ fn the_whole_list_is_the_edge_set_up_to_twice_the_edge() {
 }
 
 #[test]
-fn a_list_longer_than_twice_the_edge_draws_from_its_ends_only() {
-    let long = 2 * EDGE + 1;
-    let pool = day_pool(&playlists(long), &[], &[], today());
+fn a_long_list_reaches_its_middle_but_never_its_newest_half_far_behind() {
+    let long = 4 * EDGE;
+    let drawn = |day: Day| -> Vec<usize> {
+        day_pool(&playlists(long), &[], &[], day)[0]
+            .iter()
+            .map(|seed| seed.name.parse().expect("a name is its index"))
+            .collect()
+    };
 
-    assert_eq!(
-        pool[0].len(),
-        PER_KIND,
-        "only the ends compete, so the middle never appears"
+    let middle = (19_000..19_010).flat_map(|days| drawn(Day::from_days(days)));
+    assert!(
+        middle.clone().any(|index| index >= 2 * EDGE),
+        "the middle of the library competes, not just its ends"
     );
-    for seed in &pool[0] {
-        let index: usize = seed.name.parse().expect("a name is its index");
-        assert!(
-            index < EDGE || index >= long - EDGE,
-            "seed {index} is in the middle the edge set never reaches"
-        );
+
+    // The newest twelve are always in the candidate set, so over ten days every
+    // one of them is offered at least once.
+    let mut newest: Vec<usize> = (0..EDGE).collect();
+    for index in (19_000..19_040).flat_map(|days| drawn(Day::from_days(days))) {
+        newest.retain(|back| *back != index);
     }
+    assert!(newest.is_empty(), "the newest items left out: {newest:?}");
+}
+
+#[test]
+fn the_oldest_items_compete_with_the_middle_rather_than_being_guaranteed() {
+    // The list is ordered newest first, so the oldest is its last row. It is in
+    // the day's draw, not in a reserved slot, which is what the ends-only set
+    // gave it before.
+    let long = 4 * EDGE;
+    let oldest = long - 1;
+    let offered = (19_000..19_040).any(|days| {
+        day_pool(&playlists(long), &[], &[], Day::from_days(days))[0]
+            .iter()
+            .any(|seed| {
+                seed.name
+                    .parse::<usize>()
+                    .is_ok_and(|index| index == oldest)
+            })
+    });
+    assert!(offered, "the oldest item is still reachable");
 }
 
 #[test]
