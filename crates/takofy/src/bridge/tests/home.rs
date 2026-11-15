@@ -6,7 +6,10 @@ use super::announce::{EpisodesScript, SHOW, followed_artist, show_detail};
 use super::reads::{PortraitScript, portrait};
 use super::test_support::*;
 use takofy_model::TrackEntry;
-use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, StationSeed};
+use takofy_model::home::{
+    DiscoveryAnswer, DiscoveryKind, DiscoveryOutcome, DiscoverySeed, HomeAnswer, HomeAsk, SeedKind,
+    StationSeed,
+};
 
 #[test]
 fn a_label_saved_read_answers_with_the_asked_and_named_tracks() {
@@ -488,5 +491,37 @@ fn station_failure_is_failure_load() {
             ask,
             failure: Failure::Load,
         }
+    );
+}
+
+#[test]
+fn a_discovery_ask_is_answered_unreachable_and_never_failed() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+
+    let seed = DiscoverySeed {
+        kind: DiscoveryKind::Artist,
+        uri: ARTIST.to_owned(),
+        name: "A".to_owned(),
+        anchor: None,
+    };
+    let ask = HomeAsk::Discovery { seed: seed.clone() };
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end.commands.send(Command::LoadHome(ask)).expect("home");
+        let update = ui_end.updates.recv().expect("discovery");
+        expect_no_update(&ui_end);
+        update
+    });
+
+    assert_eq!(
+        update,
+        Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+            seed,
+            outcome: DiscoveryOutcome::Unreachable,
+        })),
+        "the guard answers one unreachable outcome and nothing else"
     );
 }

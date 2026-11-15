@@ -178,6 +178,10 @@ impl Home {
 
     /// Folds one answer into the shelf that asked for it.
     pub fn land(&mut self, answer: &HomeAnswer) {
+        // Discovery keeps its own state, which no shelf below holds.
+        if let HomeAnswer::Discovery(_) = answer {
+            return;
+        }
         if let HomeAnswer::Labelled { asked, named } = answer {
             // A read any shelf sent still says how long each track it named runs,
             // which is all a station row wants from it.

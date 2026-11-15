@@ -850,6 +850,7 @@ fn built_slot(ask: &HomeAsk, liked: &str) -> Slot {
         HomeAsk::Labels { tracks } if tracks.len() == 1 && tracks[0] == liked => Slot::Counted,
         HomeAsk::Labels { tracks } => panic!("a labels ask outside the shelves: {tracks:?}"),
         HomeAsk::Portraits { artists } => panic!("a decoration asked first: {artists:?}"),
+        HomeAsk::Discovery { seed } => panic!("a discovery ask is not a built shelf: {seed:?}"),
     }
 }
 
