@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{Engine, RootlistRead, page_cover, resolve_within, search_page};
+use super::{Engine, RootlistRead, page_cover, resolve_within};
 use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
-use crate::remote::titled_label;
+use crate::remote::{search_page, titled_label};
 use crate::rootlist::Walked;
 use takofy_model::{CoverSet, CoverUrl, PlaylistAccess, Report, Revision, Status, TrackEntry};
 
@@ -320,4 +320,20 @@ async fn restoring_nothing_leaves_a_fresh_engine_empty() {
 
     assert!(!engine.presence.playable());
     assert!(!engine.latest.has_report());
+}
+
+#[tokio::test]
+async fn the_discovery_handle_can_be_cloned_into_a_row_task() {
+    fn movable<T: Clone + Send + Sync + 'static>() {}
+
+    movable::<super::DiscoveryReads>();
+
+    let engine = Engine::new(session());
+    let reads = engine.discovery_reads();
+    let elsewhere = tokio::spawn(async move { reads.top_titles("not-an-artist").await });
+
+    assert!(
+        elsewhere.await.expect("a joined task").is_empty(),
+        "a handle outlives the engine without a URI it can read"
+    );
 }

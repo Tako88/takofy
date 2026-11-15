@@ -23,6 +23,7 @@ use librespot::protocol::metadata::{
 };
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
+use takofy_model::home::DiscoveryCard;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
     FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead,
@@ -37,9 +38,10 @@ use crate::artist::{
 use crate::collected::{self, ArtistCard};
 use crate::collection::{self, Item};
 use crate::context::{
-    ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
+    ContextError, Page, PageSource, PageTrack, Resolved, Walker, page_from_proto, parse_page_json,
 };
 use crate::cover::{covers_in_group, covers_in_images};
+use crate::discovery;
 use crate::followed::{self, FollowedError, ShowCard};
 use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
@@ -49,6 +51,7 @@ use crate::rootlist::{
     RootEntry, RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist,
     rootlist_path,
 };
+use crate::search::search_uri;
 use crate::show::{
     ShowError, detail as show_detail, details as show_details, episode_uris, expand_episodes,
 };
@@ -1252,6 +1255,219 @@ pub(crate) async fn read_portraits(
     Some(portraits)
 }
 
+/// How many card artists one discovery read asks about.
+///
+/// Twelve is the batch the provider answered in one request (measured: twelve
+/// artists in 103 ms, against 290 ms for the same twelve read one at a time), so
+/// the artist stage is one request however many cards a row resolves. A URI
+/// beyond the twelfth is dropped rather than asked for on its own.
+const DISCOVERY_CARDS_MAX: usize = 12;
+
+/// How many album URIs one discovery read asks for per request.
+///
+/// Sixty is the batch measured (sixty albums with their dates in one request,
+/// 78 ms). Twelve artists named 218 albums, so a row's six cost two chunks:
+/// with the artist batch and one `TRACK_V4` naming the top tracks, a row's cards
+/// cost four requests.
+const DISCOVERY_ALBUM_CHUNK: usize = 60;
+
+/// The cards for `uris`, from three batched reads and no per-artist one.
+///
+/// One batched `ARTIST_V4` carries every artist's name, portrait group and one
+/// playable top track; one batched `ALBUM_V4` per [`DISCOVERY_ALBUM_CHUNK`]
+/// release URIs carries the dates the artist payload's own album stubs leave
+/// out; one batched `TRACK_V4` names the top tracks. `country` picks each
+/// artist's top list, and its own entry wins over the empty one.
+///
+/// The cards keep the caller's order, and an artist the wire did not answer is
+/// dropped rather than drawn empty.
+pub(crate) async fn read_discovery_cards(
+    session: &Session,
+    labels: &LabelCache,
+    uris: &[String],
+    country: &str,
+) -> Vec<DiscoveryCard> {
+    let distinct = distinct_uris(uris);
+    let wanted = &distinct[..distinct.len().min(DISCOVERY_CARDS_MAX)];
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+
+    let Some((artists, tally)) = request_parsed(
+        session,
+        wanted,
+        ExtensionKind::ARTIST_V4,
+        discovery::artist_from,
+    )
+    .await
+    else {
+        log::warn!(
+            "the card read asked for {} artists and the request failed",
+            wanted.len()
+        );
+        return Vec::new();
+    };
+    if let Some(summary) = tally.summary() {
+        log::warn!("{summary}");
+    }
+
+    let mut seen = HashSet::new();
+    let order: Vec<String> = artists
+        .values()
+        .flat_map(release_uris)
+        .filter(|uri| seen.insert(uri.clone()))
+        .collect();
+    let (albums, album_tally) = fetch_chunked_sized(
+        session,
+        &order,
+        DISCOVERY_ALBUM_CHUNK,
+        ExtensionKind::ALBUM_V4,
+        discovery::album_from,
+    )
+    .await;
+    if let Some(summary) = album_tally.summary() {
+        log::warn!("{summary}");
+    }
+
+    // One year per artist rather than one per album: the card draws the year of
+    // the artist's newest release and nothing else the album answer carried.
+    let mut years: HashMap<String, u16> = HashMap::new();
+    for (uri, artist) in &artists {
+        let own = discovery::own_releases(artist, &albums);
+        if let Some(year) = discovery::newest_year(&own) {
+            years.insert(uri.clone(), year);
+        }
+    }
+
+    // The first playable top position of each artist: the card's track and the
+    // title it draws are both that one.
+    let tops: HashMap<&str, String> = artists
+        .iter()
+        .filter_map(|(uri, artist)| {
+            let top = top_track_positions(artist, country).into_iter().next()?;
+            Some((uri.as_str(), top.uri))
+        })
+        .collect();
+    let positions: Vec<PageTrack> = tops
+        .values()
+        .map(|uri| PageTrack {
+            uri: uri.clone(),
+            added_at: None,
+        })
+        .collect();
+    let titles: HashMap<String, String> = label_tracks(session, positions, labels)
+        .await
+        .into_iter()
+        .filter(|entry| entry.named)
+        .map(|entry| (entry.uri.clone(), entry.title.clone()))
+        .collect();
+
+    let cards: Vec<DiscoveryCard> = wanted
+        .iter()
+        .filter_map(|uri| {
+            let artist = artists.get(uri)?;
+            let title = tops
+                .get(uri.as_str())
+                .and_then(|top| titles.get(top))
+                .map(String::as_str)
+                .unwrap_or_default();
+            discovery::assemble(uri, artist, country, &years, title)
+        })
+        .collect();
+    if cards.len() < wanted.len() {
+        log::warn!(
+            "{} of {} artists made a drawable card",
+            cards.len(),
+            wanted.len()
+        );
+    }
+    cards
+}
+
+/// The seed artist's own top-track titles, in the wire's own order.
+///
+/// Two requests at most: the artist itself — the one per-artist read discovery
+/// allows, because a seed is verified against at least two of its titles — then
+/// one batched `TRACK_V4` over at most ten top positions. A position that could
+/// not be named is dropped rather than carried as its URI.
+pub(crate) async fn read_top_titles(
+    session: &Session,
+    labels: &LabelCache,
+    artist_uri: &str,
+) -> Vec<String> {
+    let Ok(id) = SpotifyUri::from_uri(artist_uri) else {
+        return Vec::new();
+    };
+    if !matches!(id, SpotifyUri::Artist { .. }) {
+        return Vec::new();
+    }
+    let Ok(artist) = Artist::get(session, &id).await else {
+        log::warn!("a seed artist could not be read for its top tracks");
+        return Vec::new();
+    };
+    let country = session.country();
+    let positions = top_track_positions(&artist, &country);
+    if positions.is_empty() {
+        return Vec::new();
+    }
+    let labelled: HashMap<String, TrackEntry> = label_tracks(session, positions, labels)
+        .await
+        .into_iter()
+        .map(|entry| (entry.uri.clone(), entry))
+        .collect();
+    discovery::top_titles_of(&artist, &country, &labelled)
+}
+
+/// The first page of a playlist's tracks, labelled in the playlist's order.
+///
+/// Two requests at most: the context resolve, then one batched label read. A
+/// page that cannot be read is empty rather than an error: the caller refuses the seed on
+/// an empty page, so a failure is not a different answer.
+pub(crate) async fn read_playlist_head(
+    session: &Session,
+    labels: &LabelCache,
+    playlist_uri: &str,
+) -> Vec<TrackEntry> {
+    let mut walker = Walker::new(RemoteContext { session }, playlist_uri);
+    match walker.next_page().await {
+        Ok(Some(page)) => label_tracks(session, page.tracks, labels).await,
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            log::warn!("a playlist's first page could not be read: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// The first page one search query answers, through any page source.
+///
+/// Generic so the URI the walker resolves can be asserted without a session. A
+/// blank query resolves nothing, and a search answers at most one page.
+pub(crate) async fn search_page<S: PageSource>(
+    source: S,
+    query: &str,
+) -> Result<Option<Page>, ContextError> {
+    let Some(uri) = search_uri(query) else {
+        return Ok(None);
+    };
+    Walker::new(source, uri).next_page().await
+}
+
+/// The tracks one search query answers, labelled, in the wire's own order.
+///
+/// Two requests at most: the context resolve, then one batched label read. A
+/// blank query asks for nothing and answers nothing without a request.
+pub(crate) async fn read_search_labelled(
+    session: &Session,
+    labels: &LabelCache,
+    query: &str,
+) -> Result<Vec<TrackEntry>, ContextError> {
+    let Some(page) = search_page(RemoteContext { session }, query).await? else {
+        return Ok(Vec::new());
+    };
+    Ok(label_tracks(session, page.tracks, labels).await)
+}
+
 /// The related artists an artist page shows as cards, in the payload's order.
 ///
 /// An empty list asks for no metadata at all. The cards are read
@@ -1603,7 +1819,23 @@ async fn fetch_chunked<T>(
     kind: ExtensionKind,
     parse: fn(&[u8], &str) -> Option<T>,
 ) -> (HashMap<String, T>, StatusTally) {
-    fetch_chunked_with(distinct, |chunk| async move {
+    fetch_chunked_sized(session, distinct, LABEL_CHUNK, kind, parse).await
+}
+
+/// [`fetch_chunked`] over requests of `size` URIs rather than the label pass's
+/// own.
+///
+/// A caller whose answers cost more than a label does — an album's full
+/// metadata rather than a track's name — needs its own chunk size, and the
+/// splitting and retry of a short answer is the same work either way.
+async fn fetch_chunked_sized<T>(
+    session: &Session,
+    distinct: &[String],
+    size: usize,
+    kind: ExtensionKind,
+    parse: fn(&[u8], &str) -> Option<T>,
+) -> (HashMap<String, T>, StatusTally) {
+    fetch_chunked_with(distinct, size, |chunk| async move {
         request_parsed(session, &chunk, kind, parse).await
     })
     .await
@@ -1612,14 +1844,15 @@ async fn fetch_chunked<T>(
 /// How many chunks one pass keeps in flight.
 const CHUNK_FANOUT: usize = 3;
 
-/// Fetches values for distinct URIs, one request per chunk, `CHUNK_FANOUT`
-/// chunks at a time.
+/// Fetches values for distinct URIs, one request per `size` URIs,
+/// `CHUNK_FANOUT` chunks at a time.
 ///
 /// A chunk the server answered only part of is split in half and asked again,
 /// one at a time: the truncation is the rare answer, so the retries do not need
 /// the fan-out's extra requests.
 async fn fetch_chunked_with<T, F, Fut>(
     distinct: &[String],
+    size: usize,
     request: F,
 ) -> (HashMap<String, T>, StatusTally)
 where
@@ -1629,10 +1862,7 @@ where
     let mut found: HashMap<String, T> = HashMap::new();
     let mut tally = StatusTally::default();
     let mut retries: Vec<Vec<String>> = Vec::new();
-    let chunks: Vec<Vec<String>> = distinct
-        .chunks(LABEL_CHUNK)
-        .map(<[String]>::to_vec)
-        .collect();
+    let chunks: Vec<Vec<String>> = distinct.chunks(size).map(<[String]>::to_vec).collect();
     let answers = futures_util::stream::iter(chunks)
         .map(|chunk: Vec<String>| {
             let asked = chunk.clone();
