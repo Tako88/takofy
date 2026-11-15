@@ -22,7 +22,7 @@ use takofy_model::{
 use takofy_ui::library::Snapshot;
 
 /// The format version this build writes and reads.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The first field of the first line, which is what the file is.
 const MAGIC: &str = "takofy-library";
@@ -549,6 +549,7 @@ fn artist_record(line: &str) -> Result<FollowedArtist, Reason> {
     let named = fields.flag()?;
     let portrait = fields.cover()?;
     let releases = fields.optional::<u32>()?;
+    let followed_at = fields.optional_saved()?;
     fields.end()?;
     Ok(FollowedArtist {
         uri,
@@ -556,6 +557,7 @@ fn artist_record(line: &str) -> Result<FollowedArtist, Reason> {
         named,
         portrait,
         releases,
+        followed_at,
     })
 }
 
@@ -813,6 +815,8 @@ fn artist(out: &mut String, row: &FollowedArtist) {
     }
     out.push('\t');
     optional_number(out, row.releases);
+    out.push('\t');
+    optional_saved(out, row.followed_at);
     out.push('\n');
 }
 

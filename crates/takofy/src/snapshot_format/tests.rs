@@ -87,6 +87,7 @@ fn full() -> Snapshot {
             named: true,
             portrait: Some(cover(&[(Some((160, 160)), 7), (Some((640, 640)), 8)])),
             releases: Some(4),
+            followed_at: Some(saved(1_610_000_000_000)),
         }]),
         albums: Some(vec![SavedAlbum {
             uri: "spotify:album:1".to_owned(),
@@ -115,7 +116,10 @@ fn full() -> Snapshot {
 
 /// A file whose sections are listed as `(name, declared count, records)`.
 fn file(sections: &[(&str, usize, &[&str])]) -> String {
-    let mut text = format!("takofy-library\t1\naccount\t{}\n", account_hex(account()));
+    let mut text = format!(
+        "takofy-library\t{VERSION}\naccount\t{}\n",
+        account_hex(account())
+    );
     for (name, count, rows) in sections {
         let _ = writeln!(text, "section\t{name}\t{count}");
         for row in *rows {
@@ -145,6 +149,36 @@ fn liked_file(record: &str) -> String {
 
 fn album_file(record: &str) -> String {
     file(&[("albums", 1, &[record])])
+}
+
+fn artist_file(record: &str) -> String {
+    file(&[("artists", 1, &[record])])
+}
+
+#[test]
+fn a_followed_artist_keeps_its_follow_date() {
+    let artist = FollowedArtist {
+        uri: "spotify:artist:1".to_owned(),
+        name: "One".to_owned(),
+        named: true,
+        portrait: None,
+        releases: None,
+        followed_at: Some(saved(1_600_000_000_000)),
+    };
+    let snapshot = Snapshot {
+        artists: Some(vec![artist]),
+        ..Snapshot::new(account())
+    };
+    let text = render(&snapshot);
+    assert!(text.contains("\nspotify:artist:1\tOne\t1\t-\t-\t1600000000000\n"));
+    assert_eq!(parse(&text).expect("a read copy"), snapshot);
+}
+
+#[test]
+fn an_artist_record_without_a_follow_date_reads_none() {
+    let snapshot = parse(&artist_file("spotify:artist:1\tOne\t1\t-\t-\t-")).expect("a read copy");
+    let artist = &snapshot.artists.expect("an artists section")[0];
+    assert_eq!(artist.followed_at, None);
 }
 
 #[test]
@@ -330,6 +364,7 @@ fn wire_order() -> Snapshot {
                 (Some((300, 200)), 14),
             ])),
             releases: None,
+            followed_at: None,
         }]),
         albums: Some(vec![SavedAlbum {
             uri: "spotify:album:1".to_owned(),
@@ -408,7 +443,10 @@ fn the_account_name_is_not_written() {
 fn the_header_is_the_version_and_a_hex_account() {
     let text = render(&Snapshot::new(account()));
     let mut lines = text.lines();
-    assert_eq!(lines.next(), Some("takofy-library\t1"));
+    assert_eq!(
+        lines.next(),
+        Some(format!("takofy-library\t{VERSION}").as_str())
+    );
     let account_line = lines.next().expect("an account line");
     let hex = account_line.strip_prefix("account\t").expect("an account");
     assert_eq!(hex, account_hex(account()));
@@ -483,8 +521,11 @@ fn a_foreign_header_is_refused() {
 
 #[test]
 fn another_version_is_refused() {
-    for version in ["0", "2", "one"] {
-        let text = file(&[]).replace("takofy-library\t1", &format!("takofy-library\t{version}"));
+    for version in ["0", "1", "3", "one"] {
+        let text = file(&[]).replace(
+            &format!("takofy-library\t{VERSION}"),
+            &format!("takofy-library\t{version}"),
+        );
         assert_eq!(reason(&text), Reason::BadVersion, "version {version}");
     }
 }
@@ -498,14 +539,17 @@ fn an_account_that_is_not_16_lowercase_hex_is_refused() {
         "gggggggggggggggg",
         "",
     ] {
-        let text = format!("takofy-library\t1\naccount\t{account}\nend\n");
+        let text = format!("takofy-library\t{VERSION}\naccount\t{account}\nend\n");
         assert_eq!(reason(&text), Reason::BadAccount, "account {account:?}");
     }
 }
 
 #[test]
 fn a_missing_account_line_is_refused() {
-    assert_eq!(reason("takofy-library\t1\nend\n"), Reason::MissingAccount);
+    assert_eq!(
+        reason(&format!("takofy-library\t{VERSION}\nend\n")),
+        Reason::MissingAccount
+    );
 }
 
 #[test]
@@ -517,7 +561,10 @@ fn a_missing_final_newline_is_refused() {
 
 #[test]
 fn a_missing_end_is_refused() {
-    let text = format!("takofy-library\t1\naccount\t{}\n", account_hex(account()));
+    let text = format!(
+        "takofy-library\t{VERSION}\naccount\t{}\n",
+        account_hex(account())
+    );
     assert_eq!(reason(&text), Reason::MissingEnd);
 }
 
@@ -560,7 +607,7 @@ fn a_count_above_the_lines_left_is_refused() {
     assert_eq!(reason(&file(&[("liked", 2, &[])])), Reason::BadCount);
     assert_eq!(
         reason(&format!(
-            "takofy-library\t1\naccount\t{}\nsection\tliked\t\nend\n",
+            "takofy-library\t{VERSION}\naccount\t{}\nsection\tliked\t\nend\n",
             account_hex(account())
         )),
         Reason::BadCount
@@ -580,7 +627,7 @@ fn a_huge_count_is_refused_without_allocating() {
         Reason::BadCount
     );
     let text = format!(
-        "takofy-library\t1\naccount\t{}\nsection\tliked\t99999999999999999999999999\nend\n",
+        "takofy-library\t{VERSION}\naccount\t{}\nsection\tliked\t99999999999999999999999999\nend\n",
         account_hex(account())
     );
     assert_eq!(reason(&text), Reason::BadCount);
@@ -710,7 +757,7 @@ fn a_section_out_of_order_is_refused() {
 fn a_malformed_section_line_is_refused() {
     assert_eq!(
         reason(&format!(
-            "takofy-library\t1\naccount\t{}\nsection\tliked\nend\n",
+            "takofy-library\t{VERSION}\naccount\t{}\nsection\tliked\nend\n",
             account_hex(account())
         )),
         Reason::BadSection

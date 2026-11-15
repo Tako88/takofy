@@ -19,12 +19,12 @@ use takofy_model::{CoverSet, FollowedArtist, LikedTrack, SavedAlbum, SavedAt};
 
 use crate::artist::{answered_albums, portrait_of, release_chunks, release_of, release_uris};
 use crate::collection::Item;
-use crate::followed::{Dated, newest_dated, newest_first};
+use crate::followed::{Dated, newest_dated};
 use crate::remote::uri_of;
 
-/// The saved artists' URIs, newest save first.
-pub(crate) fn artist_order(items: Vec<Item>) -> Vec<String> {
-    newest_first(items, |uri| matches!(uri, SpotifyUri::Artist { .. }))
+/// The saved artists' URIs and follow dates, newest follow first.
+pub(crate) fn artist_dated(items: Vec<Item>) -> Vec<Dated> {
+    newest_dated(items, |uri| matches!(uri, SpotifyUri::Artist { .. }))
 }
 
 /// The saved albums' URIs and save dates, newest save first.
@@ -49,6 +49,28 @@ pub(crate) fn liked_tracks(dated: Vec<Dated>) -> Vec<LikedTrack> {
         .map(|dated| LikedTrack {
             uri: dated.uri,
             saved_at: dated.added_at.and_then(SavedAt::from_secs),
+        })
+        .collect()
+}
+
+/// The artists, each with the follow date its own URI is dated at.
+///
+/// Matched by URI, so an artist the dates do not name keeps no date, and a
+/// reordered answer cannot stamp the wrong artist.
+pub(crate) fn stamp_artists(artists: Vec<FollowedArtist>, dated: &[Dated]) -> Vec<FollowedArtist> {
+    let added: HashMap<&str, Option<i64>> = dated
+        .iter()
+        .map(|dated| (dated.uri.as_str(), dated.added_at))
+        .collect();
+    artists
+        .into_iter()
+        .map(|artist| FollowedArtist {
+            followed_at: added
+                .get(artist.uri.as_str())
+                .copied()
+                .flatten()
+                .and_then(SavedAt::from_secs),
+            ..artist
         })
         .collect()
 }
@@ -118,6 +140,7 @@ pub(crate) fn artist_entries(
                 named: card.is_some(),
                 portrait: card.and_then(|card| card.portrait.clone()),
                 releases: card.map(|card| card.releases),
+                followed_at: None,
             }
         })
         .collect()

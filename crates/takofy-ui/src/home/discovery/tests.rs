@@ -40,6 +40,7 @@ fn artist(index: usize) -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 

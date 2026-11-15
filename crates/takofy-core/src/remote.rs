@@ -1183,7 +1183,8 @@ pub(crate) async fn read_followed_artists(
     session: &Session,
 ) -> Result<Vec<FollowedArtist>, FollowedError> {
     let items = read_set(session, collection::ARTIST_SET, followed::Pager::new()).await?;
-    let order = collected::artist_order(items);
+    let dated = collected::artist_dated(items);
+    let order: Vec<String> = dated.iter().map(|dated| dated.uri.clone()).collect();
     if !needs_labels(&order) {
         return Ok(Vec::new());
     }
@@ -1199,7 +1200,7 @@ pub(crate) async fn read_followed_artists(
         .into_iter()
         .filter_map(|(uri, card)| card.map(|card| (uri, card)))
         .collect();
-    let artists = collected::artist_entries(&order, &cards);
+    let artists = collected::stamp_artists(collected::artist_entries(&order, &cards), &dated);
     let unnamed = artists.iter().filter(|artist| !artist.named).count();
     if unnamed > 0 {
         log::warn!(

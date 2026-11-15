@@ -147,6 +147,7 @@ pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 

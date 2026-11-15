@@ -51,6 +51,7 @@ fn artist(uri: &str) -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 

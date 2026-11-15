@@ -32,6 +32,7 @@ pub(super) fn followed_artist(uri: &str, name: &str) -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 

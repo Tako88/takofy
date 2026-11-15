@@ -648,6 +648,8 @@ pub struct FollowedArtist {
     pub portrait: Option<CoverSet>,
     /// How many current releases the artist has, when they could be read.
     pub releases: Option<u32>,
+    /// When the follow was made, `None` when the wire gave no usable date.
+    pub followed_at: Option<SavedAt>,
 }
 
 /// One artist's portrait, as a search menu's artist row draws it.

@@ -38,6 +38,7 @@ fn artist() -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 
