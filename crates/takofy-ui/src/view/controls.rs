@@ -267,6 +267,74 @@ pub fn icon_button_keyed(
     )
 }
 
+/// A corner tile that sits on a card rather than on a picture.
+///
+/// A card's face has its own colour, so a glyph alone disappears into it: this
+/// tile brings a plate and a hairline with it, and the plate is the page's own
+/// surface so it reads as something laid on the card. A tile that cannot act yet
+/// keeps both and dims only its glyph.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same facts as a button: where, what, which key, and whether it can act"
+)]
+pub fn plate_tile_keyed(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+) -> Slot {
+    plate_tile_open(
+        ui, tokens, control, key, rect, icon, size, label, live, false,
+    )
+}
+
+/// The same tile, drawn as the one whose menu is open.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same facts as a button, plus whether its menu is showing"
+)]
+pub fn plate_tile_open(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+    open: bool,
+) -> Slot {
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius::SM, tokens.palette.surface);
+    let edge = if !slot.live {
+        tokens.palette.border
+    } else if open || slot.hover > 0.0 {
+        tokens.palette.text
+    } else {
+        tokens.palette.border_strong
+    };
+    painter.rect_stroke(
+        rect,
+        radius::SM,
+        egui::Stroke::new(stroke::HAIRLINE, edge),
+        egui::StrokeKind::Inside,
+    );
+    let colour = if slot.live {
+        tokens.palette.text
+    } else {
+        tokens.palette.text_subtle
+    };
+    icon::paint(painter, icon, centred(ui, rect, size.side), size, colour);
+    slot
+}
+
 /// An icon button whose own state is on: the glyph takes the accent tone, the
 /// one signal colour the palette has.
 #[expect(

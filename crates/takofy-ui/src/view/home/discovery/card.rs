@@ -102,7 +102,7 @@ pub(super) fn show(
 
     if revealed {
         let follow_rect = discovery::follow(card.rect);
-        let _ = controls::icon_button_keyed(
+        let _ = controls::plate_tile_keyed(
             ui,
             tokens,
             Control::DiscoveryFollow,
@@ -114,7 +114,7 @@ pub(super) fn show(
             false,
         );
 
-        let more = controls::icon_button_open(
+        let more = controls::plate_tile_open(
             ui,
             tokens,
             Control::DiscoveryMore,
