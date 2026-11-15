@@ -138,6 +138,7 @@ pub(super) fn show(
             key,
             discovery::play(card.rect),
             Icon::Play,
+            Size::SM,
             &format!("Play {}", card.data.artist.name),
             live,
         );

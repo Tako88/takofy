@@ -201,6 +201,7 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Opti
             media.uri,
             tile_play_rect(rect),
             Icon::Play,
+            Size::MD,
             &format!("Play {}", media.name),
             !carry::carrying(ui.ctx()),
         );
@@ -409,6 +410,7 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
             media.uri,
             row_play_rect(rect),
             Icon::Play,
+            Size::MD,
             &format!("Play {}", media.name),
             live,
         );

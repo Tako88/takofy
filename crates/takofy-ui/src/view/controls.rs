@@ -641,7 +641,7 @@ pub fn play_tile(
     label: &str,
     live: bool,
 ) -> Slot {
-    play_tile_keyed(ui, tokens, control, (), rect, glyph, label, live)
+    play_tile_keyed(ui, tokens, control, (), rect, glyph, Size::MD, label, live)
 }
 
 /// The accent tile, keyed so one control can appear once per card or row.
@@ -660,6 +660,7 @@ pub fn play_tile_keyed(
     key: impl Hash + std::fmt::Debug,
     rect: Rect,
     glyph: Icon,
+    size: Size,
     label: &str,
     live: bool,
 ) -> Slot {
@@ -679,8 +680,8 @@ pub fn play_tile_keyed(
     icon::paint(
         ui.painter(),
         glyph,
-        centred(ui, rect, Size::MD.side),
-        Size::MD,
+        centred(ui, rect, size.side),
+        size,
         tokens.palette.text_inverse,
     );
     slot
