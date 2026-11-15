@@ -1430,7 +1430,7 @@ a.section__link:hover {
 
 /* The re-roll wears the hairline rather than the play's strong border, and bone
    rather than green on hover: it changes what you are looking at, it does not
-   make a sound. Spent, it goes inert and says nothing about why. */
+   make a sound. */
 .row-head__action--quiet {
   border-color: var(--color-border);
   color: var(--color-text-muted);
@@ -1445,6 +1445,27 @@ a.section__link:hover {
   border-color: var(--color-border);
   color: var(--color-text-subtle);
   cursor: default;
+}
+
+/* The wait, drawn. A re-roll whose cooldown is running paints its own edge on,
+   clockwise from the top-left corner, and is whole — and pressable — when the
+   line closes. A button that comes back in a moment says so; one that never
+   comes back is not drawn at all (see the spent head below). The stroke is laid
+   inside the border underneath it, so the square is never wider for it. */
+.row-head__action--waiting {
+  border-color: var(--color-border);
+  color: var(--color-text-subtle);
+  cursor: default;
+}
+
+.row-head__sweep {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: var(--color-text-muted);
+  stroke-width: 1;
 }
 
 /* --------------------------------------------------------------------------

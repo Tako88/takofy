@@ -119,6 +119,13 @@ fn playlists_only(day: Day, count: usize) -> State {
     state
 }
 
+/// Lands the playlist row's first answer at `now`, which is when its wait starts.
+fn land_playlist(state: &mut State, now: u64) {
+    let seed = state.next_ask().expect("the playlist row asks");
+    state.land(&answer(seed, neighbours(&[0])));
+    state.stamp_landed(now);
+}
+
 /// The seed the row of `kind` is on.
 fn current(state: &State, kind: DiscoveryKind) -> DiscoverySeed {
     let row = &state.rows[kind.index()];
@@ -423,21 +430,27 @@ fn settle_leaves_a_landed_row_with_fresh_cards_alone() {
 fn reroll_moves_forward_within_the_pool_and_waits_out_the_cooldown() {
     let mut state = playlists_only(today(), 3);
     let reseeds = state.rows[0].reseeds_left;
+    land_playlist(&mut state, NOW);
 
     assert!(
-        state.reroll(DiscoveryKind::Playlist, NOW),
-        "the first re-roll is free"
+        state.reroll(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS),
+        "the wait is over once its two seconds are"
     );
     assert_eq!(state.positions()[0], 1);
     assert!(
-        !state.reroll(DiscoveryKind::Playlist, NOW),
-        "a second re-roll inside the cooldown is refused"
+        !state.reroll(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS),
+        "the answer the re-roll asked for is still owed, so it cannot be asked again"
     );
-    assert!(!state.reroll(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS - 1));
-    assert!(state.reroll(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS));
+    land_playlist(&mut state, NOW + REROLL_COOLDOWN_MS);
+    assert!(
+        !state.reroll(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS),
+        "the new answer's own wait has only just started"
+    );
+    assert!(!state.reroll(DiscoveryKind::Playlist, NOW + 2 * REROLL_COOLDOWN_MS - 1));
+    assert!(state.reroll(DiscoveryKind::Playlist, NOW + 2 * REROLL_COOLDOWN_MS));
     assert_eq!(state.positions()[0], 2);
     assert!(
-        !state.reroll(DiscoveryKind::Playlist, NOW + 2 * REROLL_COOLDOWN_MS),
+        !state.reroll(DiscoveryKind::Playlist, NOW + 4 * REROLL_COOLDOWN_MS),
         "the end of the pool is as far as a re-roll goes"
     );
     assert_eq!(state.positions()[0], state.rows[0].pool.len() - 1);
@@ -642,14 +655,16 @@ fn reroll_state_reports_the_remaining_cooldown_and_agrees_with_reroll() {
     let mut state = playlists_only(today(), 3);
     assert_eq!(
         state.reroll_state(DiscoveryKind::Playlist, NOW),
-        Reroll::Ready
+        Reroll::Wait(REROLL_COOLDOWN_MS),
+        "a row with no answer yet has no wait to give"
     );
-    assert!(state.can_reroll(DiscoveryKind::Playlist, NOW));
+    assert!(!state.can_reroll(DiscoveryKind::Playlist, NOW));
 
-    assert!(state.reroll(DiscoveryKind::Playlist, NOW));
+    land_playlist(&mut state, NOW);
     assert_eq!(
         state.reroll_state(DiscoveryKind::Playlist, NOW),
-        Reroll::Wait(REROLL_COOLDOWN_MS)
+        Reroll::Wait(REROLL_COOLDOWN_MS),
+        "the wait starts at the answer, not at the press"
     );
     assert_eq!(
         state.reroll_state(DiscoveryKind::Playlist, NOW + 4),
@@ -687,4 +702,33 @@ fn reroll_state_is_never_at_the_pools_end() {
         Reroll::Never
     );
     assert!(!state.reroll(DiscoveryKind::Playlist, NOW));
+}
+
+#[test]
+fn the_wait_draws_from_empty_at_the_answer_to_whole_as_it_ends() {
+    let mut state = playlists_only(today(), 3);
+    assert_eq!(
+        state.reroll_state(DiscoveryKind::Playlist, NOW).waited(),
+        Some(0.0),
+        "its answer is still owed, so the edge has not started"
+    );
+    land_playlist(&mut state, NOW);
+
+    let at = |elapsed: u64| {
+        state
+            .reroll_state(DiscoveryKind::Playlist, NOW + elapsed)
+            .waited()
+            .expect("the cooldown is running")
+    };
+    assert!(at(0) <= 0.001, "the answer starts the edge at nothing");
+    assert!((at(REROLL_COOLDOWN_MS / 2) - 0.5).abs() < 0.01);
+    assert!(at(REROLL_COOLDOWN_MS - 1) > 0.99);
+    assert_eq!(
+        state
+            .reroll_state(DiscoveryKind::Playlist, NOW + REROLL_COOLDOWN_MS)
+            .waited(),
+        None,
+        "a row that is ready has nothing left to fill"
+    );
+    assert_eq!(Reroll::Never.waited(), None, "a spent row promises nothing");
 }

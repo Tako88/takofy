@@ -577,6 +577,9 @@ pub(crate) fn drain(
             commands.push(command);
         }
     }
+    // A discovery row's wait is drawn from the moment its answer landed, and this
+    // is the only place that knows the wall clock while the answer is folded in.
+    library.stamp_discovery(wall_clock_ms());
     commands
 }
 

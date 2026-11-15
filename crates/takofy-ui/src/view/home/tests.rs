@@ -949,6 +949,14 @@ fn a_reroll_and_a_play_in_one_frame_both_land_with_the_play_first() {
     library.set_local_day(Day::from_days(20_253));
     let seed = discovery_seed(&mut library);
     assert_eq!(seed.kind, DiscoveryKind::Playlist);
+    library.apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+        seed: seed.clone(),
+        outcome: DiscoveryOutcome::Neighbours {
+            cards: (0..4).map(discovery_card).collect(),
+            genre: Some("Alternative".to_owned()),
+        },
+    })));
+    library.stamp_discovery(NOW_MS - crate::home::discovery::REROLL_COOLDOWN_MS);
     assert_eq!(
         library.reroll_state_discovery(seed.kind, NOW_MS),
         crate::home::discovery::Reroll::Ready,

@@ -2055,6 +2055,12 @@ impl Library {
         self.home.discovery.reroll(kind, now_ms)
     }
 
+    /// Stamps the discovery rows whose answers have just landed, so each one's
+    /// wait is the two seconds it draws from the moment it could be pressed.
+    pub fn stamp_discovery(&mut self, now_ms: u64) {
+        self.home.discovery.stamp_landed(now_ms);
+    }
+
     /// Whether `kind`'s row can re-roll now, and when it can next.
     pub fn reroll_state_discovery(&self, kind: DiscoveryKind, now_ms: u64) -> Reroll {
         self.home.discovery.reroll_state(kind, now_ms)

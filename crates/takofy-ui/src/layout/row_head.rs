@@ -7,7 +7,7 @@
 //!
 //! Every size is handed in already measured; this module decides only places.
 
-use egui::{Rect, Vec2, pos2, vec2};
+use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::theme::space;
 
@@ -98,6 +98,44 @@ pub fn place(head: Rect, about: About, cluster: Cluster, gap: f32) -> RowHeadRec
 /// that has no measured button yet.
 pub fn square(side: f32) -> Vec2 {
     Vec2::splat(side)
+}
+
+/// A rect's own edge, from its top-left corner clockwise, cut where `progress`
+/// has reached: the line a cooling button draws as it comes back.
+///
+/// The corners are not rounded here. The radius a control wears is two pixels
+/// and this line is laid inside the border it retraces, so it lies on the edge
+/// the border already covers.
+pub fn edge(rect: Rect, progress: f32) -> Vec<Pos2> {
+    let progress = progress.clamp(0.0, 1.0);
+    if progress <= 0.0 {
+        return Vec::new();
+    }
+    let mut walked = progress * 2.0 * (rect.width() + rect.height());
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    let mut points = vec![corners[0]];
+    for pair in corners.windows(2) {
+        if walked <= 0.0 {
+            break;
+        }
+        let (from, to) = (pair[0], pair[1]);
+        let side = (to - from).length();
+        if walked >= side {
+            points.push(to);
+            walked -= side;
+        } else {
+            let reached = if side > 0.0 { walked / side } else { 0.0 };
+            points.push(from + (to - from) * reached);
+            walked = 0.0;
+        }
+    }
+    points
 }
 
 #[cfg(test)]

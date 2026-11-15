@@ -98,6 +98,7 @@ fn row_show(
     let ready = row.read == RowRead::Ready;
     let body = ready.then(|| body::body_of(&row.cards, narrow));
     let width = ui.available_width();
+    let mut waited = None;
 
     let ledger = body.map(|body| {
         let (artists, tracks) = body::ledger_counts(&row.cards, body);
@@ -107,12 +108,21 @@ fn row_show(
 
     let reroll = if ready {
         let state = draw.library.reroll_state_discovery(row.seed.kind, now_ms);
-        if let crate::home::discovery::Reroll::Wait(ms) = state {
-            // The cooldown never moves unless something asks for a frame, so the
-            // button would stay dim until the pointer happened to move.
-            ui.ctx().request_repaint_after(Duration::from_millis(ms));
+        if let crate::home::discovery::Reroll::Wait(_) = state {
+            waited = state.waited();
+            // The border draws itself as the wait runs out, so the frame has to
+            // come before the wait ends: one wake at the end would freeze it at
+            // whatever share the last repaint caught.
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
-        Some(crate::home::discovery::Reroll::Ready == state)
+        // A row with nothing left to draw has no button to dim: the play keeps
+        // the edge, because a box that will never come back is a promise the row
+        // cannot keep.
+        (state != crate::home::discovery::Reroll::Never).then(|| row_head::Button {
+            control: Control::DiscoveryReroll,
+            key: row.seed.uri.as_str(),
+            live: state == crate::home::discovery::Reroll::Ready,
+        })
     } else {
         None
     };
@@ -128,11 +138,8 @@ fn row_show(
             seed_page: page_of(row.seed),
             provenance: &discovery_source(row.seed.kind, row.genre),
             ledger: ledger.as_deref(),
-            reroll: reroll.map(|live| row_head::Button {
-                control: Control::DiscoveryReroll,
-                key: row.seed.uri.as_str(),
-                live,
-            }),
+            reroll,
+            waited,
             play: ready.then(|| row_head::Button {
                 control: Control::DiscoveryRowPlay,
                 key: row.seed.uri.as_str(),

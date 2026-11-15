@@ -583,7 +583,7 @@
       <section class="section" aria-labelledby="state-disc-controls">
         <div class="section__head">
           <h2 class="section__title" id="state-disc-controls"><span class="states__no">07</span>The card's one corner, and the head's two buttons</h2>
-          <p class="label states__meta">play · follow · unfollow · menu · re-draw</p>
+          <p class="label states__meta">play · follow · unfollow · menu · re-draw · the wait</p>
         </div>
 
         <div class="states__stage">
@@ -677,9 +677,23 @@
             </div>
             <div class="row-head__controls">
               <p class="row-head__ledger">3 artists</p>
-              <button class="row-head__action row-head__action--quiet" type="button" aria-label="Draw another playlist" disabled>
+              <button class="row-head__action row-head__action--quiet row-head__action--waiting" type="button" aria-label="Draw another playlist" disabled>
                 <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+                <svg class="row-head__sweep" viewBox="0 0 32 32" aria-hidden="true"><rect x="0.5" y="0.5" width="31" height="31" rx="2" pathLength="100" stroke-dasharray="45 100"></rect></svg>
               </button>
+              <button class="row-head__action" type="button" aria-label="Play this row">
+                <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <h3 class="row-head__seed">Late Shift</h3>
+              <p class="row-head__source">From your playlist · Ambient</p>
+            </div>
+            <div class="row-head__controls">
+              <p class="row-head__ledger">2 artists</p>
               <button class="row-head__action" type="button" aria-label="Play this row">
                 <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
               </button>
@@ -701,9 +715,21 @@
           by then the artist is in your library and the band is for things that are not. Because a write
           can fail, the tile holds the pressed, dimmed look until the follow confirms — no spinner,
           because nothing in this client spins. In the head, the count sits with the two things that act
-          on the whole row: re-draw, then play. Re-draw wears the hairline and bone on hover — it changes
-          what you are looking at, it does not make a sound — and when the day's seeds for that kind are
-          spent it goes inert without a word of explanation.
+          on the whole row: re-draw, then play. Both are boxes with a border, because a head sits on the
+          page and the border is what makes the square a target there — the card's tiles carry a plate
+          only because a hairline laid over a photograph cannot be seen. Play wears the strong border and
+          answers in green; re-draw wears the hairline and answers in bone, because it changes what you
+          are looking at and makes no sound.
+
+          A re-draw is never offered while its own row is still loading: the box returns when the answer
+          does, so the wait is never shorter than the work it asked for. Its two seconds are counted from
+          that answer rather than from the press — the lookups a re-seed asks for outlast any wait short
+          enough to press through, so a timer started at the press would be spent before the box came
+          back. While it runs, the border draws itself around the square, clockwise from the top-left
+          corner, dim, with the glyph dimmed under it; the button is whole, and pressable, at the moment
+          the line closes. When the day's seeds for that kind are
+          spent the box is not drawn at all and the play keeps the trailing edge, because a control that
+          will never come back is a promise the row cannot keep.
         </p>
       </section>
 

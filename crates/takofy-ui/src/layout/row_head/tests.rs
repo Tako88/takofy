@@ -129,3 +129,64 @@ fn no_cluster_leaves_the_about_block_the_whole_head() {
     assert_eq!(placed.play, None);
     assert!((placed.about.width() - head.width()).abs() < 0.01);
 }
+
+fn square_at(x: f32, side: f32) -> Rect {
+    Rect::from_min_size(pos2(x, 10.0), vec2(side, side))
+}
+
+#[test]
+fn an_edge_at_nothing_is_no_line() {
+    assert!(edge(square_at(0.0, 34.0), 0.0).is_empty());
+    assert!(edge(square_at(0.0, 34.0), -3.0).is_empty());
+}
+
+#[test]
+fn a_whole_edge_closes_on_the_corner_it_started_from() {
+    let rect = square_at(0.0, 34.0);
+    let points = edge(rect, 1.0);
+    assert_eq!(
+        points,
+        vec![
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+            rect.left_top()
+        ]
+    );
+    assert_eq!(edge(rect, 9.0), points, "more than whole is still whole");
+}
+
+#[test]
+fn a_quarter_of_a_square_reaches_the_first_corner_then_lands_on_the_side() {
+    let rect = square_at(0.0, 40.0);
+    let quarter = edge(rect, 0.25);
+    assert_eq!(quarter, vec![rect.left_top(), rect.right_top()]);
+
+    // Three tenths of four sides is past the top edge and eight pixels down the
+    // right one.
+    let walked = edge(rect, 0.3);
+    assert_eq!(
+        walked.len(),
+        3,
+        "the corner it turned, then the side it is on"
+    );
+    assert!((walked[2].x - rect.right()).abs() < 0.01);
+    assert!((walked[2].y - (rect.top() + 8.0)).abs() < 0.01);
+
+    let half = edge(rect, 0.5);
+    assert_eq!(
+        half,
+        vec![rect.left_top(), rect.right_top(), rect.right_bottom()]
+    );
+}
+
+#[test]
+fn a_tall_rect_walks_its_own_sides_not_the_square_it_is_not() {
+    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, 60.0));
+    // Total 160; a fifth is 32, which is past the 20-wide top and 12 down the right.
+    let points = edge(rect, 0.2);
+    assert_eq!(points.len(), 3, "both top corners, then the side it is on");
+    assert!((points[2].x - 20.0).abs() < 0.01);
+    assert!((points[2].y - 12.0).abs() < 0.01);
+}

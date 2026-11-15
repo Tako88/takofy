@@ -112,6 +112,7 @@ fn cell_of(
             provenance: station.source,
             ledger: None,
             reroll: None,
+            waited: None,
             play: Some(row_head::Button {
                 control: crate::availability::Control::StationPlay,
                 key: station.uri,

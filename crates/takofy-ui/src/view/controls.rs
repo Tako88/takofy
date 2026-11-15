@@ -432,6 +432,80 @@ pub fn icon_button_open(
     slot
 }
 
+/// How a head's square answers the pointer: the play in the accent, the re-draw
+/// in ink.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HeadTone {
+    /// The loud one: a strong border that turns accent under the pointer.
+    Strong,
+    /// The quiet one: a hairline that turns to ink under the pointer.
+    Quiet,
+}
+
+/// A bordered square in a row head: the play, and the re-draw beside it.
+///
+/// A head sits on the page, not on artwork, so this square brings a border and no
+/// plate. The card's corner tiles need the plate because a hairline laid over a
+/// photograph is not something the eye can find; the head has no photograph to
+/// fight with.
+///
+/// `waited` is how much of a cooldown has run, when the square is coming back:
+/// its own edge is drawn in from nothing to whole, so a button that cannot act yet
+/// says how long that lasts instead of looking broken. The glyph stays dim under
+/// the line, because the button is still inert.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a control needs its identity, place, label, tone and state"
+)]
+pub fn head_action_keyed(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    tone: HeadTone,
+    waited: Option<f32>,
+    live: bool,
+) -> Slot {
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
+    let hovered = slot.live && slot.hover > 0.0;
+    let edge = match (tone, hovered) {
+        (HeadTone::Strong, true) => tokens.palette.accent,
+        (HeadTone::Strong, false) if slot.live => tokens.palette.border_strong,
+        (HeadTone::Quiet, true) => tokens.palette.text,
+        _ => tokens.palette.border,
+    };
+    let glyph = match (tone, slot.live, hovered) {
+        (_, false, _) => tokens.palette.text_subtle,
+        (HeadTone::Strong, true, false) => tokens.palette.text,
+        (HeadTone::Strong, true, true) => tokens.palette.accent,
+        (HeadTone::Quiet, true, false) => tokens.palette.text_muted,
+        (HeadTone::Quiet, true, true) => tokens.palette.text,
+    };
+
+    let painter = ui.painter();
+    painter.rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, edge),
+        StrokeKind::Inside,
+    );
+    if let Some(waited) = waited {
+        let walked = crate::layout::row_head::edge(rect.shrink(stroke::HAIRLINE / 2.0), waited);
+        if walked.len() > 1 {
+            painter.add(egui::Shape::line(
+                walked,
+                Stroke::new(stroke::HAIRLINE, tokens.palette.text_muted),
+            ));
+        }
+    }
+    icon::paint(painter, icon, centred(ui, rect, size.side), size, glyph);
+    slot
+}
+
 /// How an icon button is lit, if at all.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Lit {

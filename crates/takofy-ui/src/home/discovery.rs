@@ -22,8 +22,14 @@ pub mod fresh;
 pub mod hidden;
 pub mod pool;
 
-/// How long one row waits before it may re-roll again.
-pub const REROLL_COOLDOWN_MS: u64 = 10_000;
+/// How long one row waits after its answer lands before it may re-roll again.
+///
+/// The wait runs from the answer, not from the press. A re-seed's lookups outlast
+/// any cooldown short enough to press through, so a wait started at the press
+/// would already be over when the row came back and there would be nothing to
+/// draw; started at the answer it is always the same two seconds, the ones the
+/// button draws as its border.
+pub const REROLL_COOLDOWN_MS: u64 = 2_000;
 
 /// Whether a row's re-roll can act now, and when it can next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +40,22 @@ pub enum Reroll {
     Wait(u64),
     /// The row has no seed left, or the open has no ask to spend.
     Never,
+}
+
+impl Reroll {
+    /// How much of the wait has run, when there is a wait worth drawing.
+    ///
+    /// A row that is ready has nothing to fill and a spent row has nothing to
+    /// promise, so only the cooldown answers.
+    pub fn waited(&self) -> Option<f32> {
+        match self {
+            Reroll::Wait(ms) => {
+                let left = *ms as f32 / REROLL_COOLDOWN_MS as f32;
+                Some(1.0 - left.clamp(0.0, 1.0))
+            }
+            Reroll::Ready | Reroll::Never => None,
+        }
+    }
 }
 
 /// How many asks one open allows, enough for every row to advance through its
@@ -65,7 +87,8 @@ pub struct Row {
     at: usize,
     reseeds_left: u8,
     read: Read,
-    last_reroll_ms: Option<u64>,
+    /// When the seed the row is on answered, which is when its wait starts.
+    landed_ms: Option<u64>,
 }
 
 impl Default for Row {
@@ -75,7 +98,7 @@ impl Default for Row {
             at: 0,
             reseeds_left: 1,
             read: Read::Idle,
-            last_reroll_ms: None,
+            landed_ms: None,
         }
     }
 }
@@ -253,6 +276,7 @@ impl State {
         if row.read != Read::Asked || seed.kind != answer.seed.kind || seed.uri != answer.seed.uri {
             return;
         }
+        row.landed_ms = None;
         match &answer.outcome {
             DiscoveryOutcome::Off => row.read = Read::Idle,
             DiscoveryOutcome::Unreachable => row.read = Read::Unreachable,
@@ -331,16 +355,34 @@ impl State {
         if row.at + 1 >= row.pool.len() {
             return Reroll::Never;
         }
-        match row.last_reroll_ms {
-            Some(last) => {
-                let elapsed = now_ms.saturating_sub(last);
-                if elapsed < REROLL_COOLDOWN_MS {
-                    Reroll::Wait(REROLL_COOLDOWN_MS - elapsed)
+        match row.landed_ms {
+            Some(landed) => {
+                let left = landed
+                    .saturating_add(REROLL_COOLDOWN_MS)
+                    .saturating_sub(now_ms);
+                if left > 0 {
+                    Reroll::Wait(left)
                 } else {
                     Reroll::Ready
                 }
             }
-            None => Reroll::Ready,
+            // Its answer is still owed, so the wait it will draw has not begun.
+            None => Reroll::Wait(REROLL_COOLDOWN_MS),
+        }
+    }
+
+    /// Stamps the rows whose answer has just arrived, and clears the stamp of a
+    /// row that has left its answer behind.
+    ///
+    /// The app calls this once a frame because it is the only place that holds the
+    /// wall clock; a row stamped here is a row whose wait the button can draw.
+    pub fn stamp_landed(&mut self, now_ms: u64) {
+        for row in &mut self.rows {
+            if matches!(row.read, Read::Landed { .. }) {
+                row.landed_ms.get_or_insert(now_ms);
+            } else {
+                row.landed_ms = None;
+            }
         }
     }
 
@@ -349,8 +391,8 @@ impl State {
         matches!(self.reroll_state(kind, now_ms), Reroll::Ready)
     }
 
-    /// Moves one row on to its next seed, at most once per cooldown and never
-    /// past the pool's end.
+    /// Moves one row on to its next seed, once its own wait is out and never past
+    /// the pool's end.
     ///
     /// A re-roll the open cannot ask for is refused: moving the row to `Idle`
     /// with no ask behind it would draw a row that is loading forever.
@@ -361,7 +403,7 @@ impl State {
         let row = &mut self.rows[kind.index()];
         row.at += 1;
         row.read = Read::Idle;
-        row.last_reroll_ms = Some(now_ms);
+        row.landed_ms = None;
         true
     }
 

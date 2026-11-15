@@ -396,11 +396,12 @@ fn a_reroll_moves_the_row_on_to_its_next_seed() {
     let mut library = ready();
     let seeds = asks_on(&mut library, day);
     land(&mut library, &seeds[0], vec![card("spotify:artist:n1")]);
+    library.stamp_discovery(5_000);
 
-    assert!(library.reroll_discovery(DiscoveryKind::Playlist, 1_000));
+    assert!(library.reroll_discovery(DiscoveryKind::Playlist, 7_000));
     assert!(
-        !library.reroll_discovery(DiscoveryKind::Playlist, 1_500),
-        "a second press inside the cooldown moves nothing"
+        !library.reroll_discovery(DiscoveryKind::Playlist, 7_500),
+        "a second press before the new answer lands moves nothing"
     );
 
     assert_eq!(asks(&mut library), [pools[0][1].clone()]);

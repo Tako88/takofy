@@ -34,6 +34,7 @@ fn head<'a>() -> Head<'a, &'a str> {
         provenance: "From your playlist",
         ledger: None,
         reroll: None,
+        waited: None,
         play: Some(Button {
             control: Control::StationPlay,
             key: "spotify:station:artist:1",
@@ -136,4 +137,76 @@ fn a_live_play_reports() {
     let (_, play) = places(&ctx);
     let opened = press(&ctx, play.center(), false);
     assert!(opened.play);
+}
+
+#[test]
+fn a_spent_row_registers_no_reroll_and_the_play_keeps_the_edge() {
+    let ctx = context();
+    let tokens = Tokens::DARK;
+    let mut reroll = Rect::NOTHING;
+    let mut play = Rect::NOTHING;
+    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        show(ui, RECT, head(), &tokens);
+        reroll = ui
+            .ctx()
+            .read_response(controls::slot_id(ui, Control::DiscoveryReroll, "row"))
+            .map_or(Rect::NOTHING, |response| response.rect);
+        play = ui
+            .ctx()
+            .read_response(controls::slot_id(
+                ui,
+                Control::StationPlay,
+                "spotify:station:artist:1",
+            ))
+            .map_or(Rect::NOTHING, |response| response.rect);
+    });
+    output.textures_delta.clear();
+
+    assert_eq!(reroll, Rect::NOTHING, "nothing to draw, nothing to click");
+    assert!(
+        (play.right() - RECT.right()).abs() < 0.01,
+        "the play takes the edge the re-roll left"
+    );
+}
+
+#[test]
+fn a_cooling_reroll_is_drawn_with_the_edge_it_has_walked() {
+    let ctx = context();
+    let tokens = Tokens::DARK;
+    let mut reroll = Rect::NOTHING;
+    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        let mut head = head();
+        head.reroll = Some(Button {
+            control: Control::DiscoveryReroll,
+            key: "row",
+            live: false,
+        });
+        head.waited = Some(0.5);
+        show(ui, RECT, head, &tokens);
+        reroll = ui
+            .ctx()
+            .read_response(controls::slot_id(ui, Control::DiscoveryReroll, "row"))
+            .map_or(Rect::NOTHING, |response| response.rect);
+    });
+    let walked = output
+        .shapes
+        .iter()
+        .filter(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Path(path) => {
+                !path.closed
+                    && matches!(
+                        path.stroke.color,
+                        egui::epaint::ColorMode::Solid(colour) if colour == tokens.palette.text_muted
+                    )
+                    && path.points.iter().all(|point| reroll.expand(1.0).contains(*point))
+            }
+            _ => false,
+        })
+        .count();
+    output.textures_delta.clear();
+
+    assert_eq!(
+        walked, 1,
+        "the half-walked edge is drawn on the button, not just its border"
+    );
 }

@@ -41,6 +41,8 @@ pub struct Head<'a, K> {
     /// The row's arithmetic, when it has one to report.
     pub ledger: Option<&'a str>,
     pub reroll: Option<Button<K>>,
+    /// How much of the re-roll's wait has run, when it is cooling.
+    pub waited: Option<f32>,
     pub play: Option<Button<K>>,
 }
 
@@ -147,7 +149,7 @@ pub fn show<K: Hash + Debug>(
     }
 
     if let (Some(button), Some(slot)) = (head.reroll, placed.reroll) {
-        let control = controls::icon_button_keyed(
+        let control = controls::head_action_keyed(
             ui,
             tokens,
             button.control,
@@ -156,13 +158,15 @@ pub fn show<K: Hash + Debug>(
             Icon::Again,
             Size::SM,
             &format!("Draw another {}", head.seed),
+            controls::HeadTone::Quiet,
+            head.waited,
             button.live,
         );
         opened.reroll = control.response.clicked();
     }
 
     if let (Some(button), Some(slot)) = (head.play, placed.play) {
-        let control = controls::icon_button_keyed(
+        let control = controls::head_action_keyed(
             ui,
             tokens,
             button.control,
@@ -171,6 +175,8 @@ pub fn show<K: Hash + Debug>(
             Icon::Play,
             Size::SM,
             &format!("Play {}", head.seed),
+            controls::HeadTone::Strong,
+            None,
             button.live,
         );
         opened.play = control.response.clicked();
