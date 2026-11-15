@@ -193,7 +193,7 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
 /// which holds one write per artist, Add to
 /// playlist acts on the card's first track, which is the one its play names,
 /// and Hide is the destructive row.
-pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -> Request {
+pub fn discovery_request(card: &DiscoveryCard, door: Door) -> Request {
     let name = card.artist.name.clone();
     let mut items = vec![Item {
         label: format!("Follow {name}"),
@@ -232,7 +232,10 @@ pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -
             uri: card.artist.uri.clone(),
             name,
         }),
-        page,
+        // A card only exists on Home, and a menu opened on one closes as soon as
+        // the page under it changes. Naming the card's own destination here
+        // instead would close the menu on the frame after it opened.
+        page: Some(Page::Home),
     }
 }
 

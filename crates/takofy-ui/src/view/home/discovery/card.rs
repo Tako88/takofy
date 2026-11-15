@@ -194,11 +194,7 @@ pub(super) fn show(
 
 /// Posts the card's menu request for `door`.
 fn post_menu(ui: &Ui, card: &Card<'_>, door: Door) {
-    let request = verbs::discovery_request(
-        card.data,
-        door,
-        Some(crate::route::Page::Artist(card.data.artist.uri.clone())),
-    );
+    let request = verbs::discovery_request(card.data, door);
     context_menu::post(ui.ctx(), request);
 }
 

@@ -35,7 +35,7 @@ fn hide_request() -> crate::menu::Request {
         tracks: Vec::new(),
         latest_year: None,
     };
-    crate::verbs::discovery_request(&card, door(), None)
+    crate::verbs::discovery_request(&card, door())
 }
 
 fn open(window: &mut Window, request: crate::menu::Request) {
@@ -73,6 +73,7 @@ fn a_hide_row_hides_the_artist_and_reports_no_command() {
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
+    window.library.open(Page::Home);
     open(&mut window, hide_request());
     settle_menu(&mut window, &mut transport, &mut queue);
 
