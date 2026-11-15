@@ -1,0 +1,310 @@
+//! One discovery row's lookup, in the order the outside can answer it.
+//!
+//! The gate is read before anything else, so an off setting costs no read. The
+//! seed's anchor is identified by title overlap rather than by name, because
+//! the service returns same-name noise. A neighbour is only accepted when its
+//! title and credited artist both match, and the genre read comes after the
+//! cards so a missing genre never costs a row its artists.
+
+use std::collections::HashSet;
+use std::fmt::Write as _;
+use std::future::Future;
+
+use takofy_model::TrackEntry;
+use takofy_model::home::{
+    DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed,
+};
+
+use super::verify::{confirm_hit, normalise, overlaps};
+use super::{Fetch, Outside, OutsideError, genre, wire};
+
+/// How often an artist must lead a playlist's first page to anchor it.
+const ANCHOR_MIN: usize = 2;
+/// How many search candidates may be verified before the row is rejected.
+const VERIFY_MAX: usize = 3;
+/// How many neighbours may be tried before the row stops looking.
+const RESOLVE_MAX: usize = 8;
+/// How many neighbours a row may resolve into cards.
+const CARDS_MAX: usize = 6;
+/// How many of the anchor's own titles may be compared.
+const SEED_TITLES_MAX: usize = 10;
+
+/// The Spotify reads a lookup needs, faked in tests.
+pub(crate) trait Spotify: Send + Sync {
+    fn seed_titles(&self, artist: &DiscoveryArtist) -> impl Future<Output = Vec<String>> + Send;
+    fn playlist_head(&self, uri: &str) -> impl Future<Output = Vec<TrackEntry>> + Send;
+    fn search(&self, query: &str) -> impl Future<Output = Vec<TrackEntry>> + Send;
+    fn cards(&self, uris: &[String]) -> impl Future<Output = Vec<DiscoveryCard>> + Send;
+}
+
+/// Looks one seed up outside and returns the seed with its resolved anchor.
+pub(crate) async fn lookup<S, F>(
+    spotify: &S,
+    outside: &Outside<F>,
+    mut seed: DiscoverySeed,
+) -> (DiscoverySeed, DiscoveryOutcome)
+where
+    S: Spotify,
+    F: Fetch + Sync,
+{
+    if !outside.is_open() {
+        return (seed, DiscoveryOutcome::Off);
+    }
+    let Some(anchor) = anchor_for(spotify, &seed).await else {
+        return (seed, DiscoveryOutcome::Rejected);
+    };
+    seed.anchor = Some(anchor.clone());
+
+    let mut seed_titles = spotify.seed_titles(&anchor).await;
+    seed_titles.truncate(SEED_TITLES_MAX);
+    if seed_titles.is_empty() {
+        return (seed, DiscoveryOutcome::Rejected);
+    }
+
+    let candidate = match identify(outside, &anchor, &seed_titles).await {
+        Ok(Some(candidate)) => candidate,
+        Ok(None) => return (seed, DiscoveryOutcome::Rejected),
+        Err(error) => return (seed, outcome_of(error)),
+    };
+
+    let path = format!("/artist/{}/related?limit=10", candidate.id);
+    let body = match outside.get(&path).await {
+        Ok(body) => body,
+        Err(error) => return (seed, outcome_of(error)),
+    };
+    let related = match wire::related_artists(&body) {
+        Ok(related) => related,
+        Err(_) => return (seed, DiscoveryOutcome::Unreachable),
+    };
+
+    let resolved = match neighbours(spotify, outside, &related, &anchor.uri).await {
+        Ok(resolved) => resolved,
+        Err(error) => return (seed, outcome_of(error)),
+    };
+    if resolved.attempted > 0 && resolved.failed == resolved.attempted {
+        return (seed, DiscoveryOutcome::Unreachable);
+    }
+
+    let cards = if resolved.uris.is_empty() {
+        Vec::new()
+    } else {
+        spotify.cards(&resolved.uris).await
+    };
+    let genre = genre_for(outside, &seed, candidate.id).await;
+    (seed, DiscoveryOutcome::Neighbours { cards, genre })
+}
+
+struct Resolved {
+    uris: Vec<String>,
+    attempted: usize,
+    failed: usize,
+}
+
+async fn anchor_for<S: Spotify>(spotify: &S, seed: &DiscoverySeed) -> Option<DiscoveryArtist> {
+    match seed.kind {
+        DiscoveryKind::Playlist => {
+            let head = spotify.playlist_head(&seed.uri).await;
+            recurring_anchor(&head)
+        }
+        DiscoveryKind::Artist | DiscoveryKind::Album => seed.anchor.clone(),
+    }
+}
+
+/// The first-credited artist that leads at least [`ANCHOR_MIN`] rows, ties to
+/// the one that appeared first.
+fn recurring_anchor(head: &[TrackEntry]) -> Option<DiscoveryArtist> {
+    let mut counts: Vec<(DiscoveryArtist, usize)> = Vec::new();
+    for entry in head {
+        let Some(name) = entry.artist_names.first() else {
+            continue;
+        };
+        let Some(uri) = entry.artist_uris.first() else {
+            continue;
+        };
+        if name.trim().is_empty() || uri.is_empty() {
+            continue;
+        }
+        if let Some((_, count)) = counts.iter_mut().find(|(artist, _)| artist.uri == *uri) {
+            *count += 1;
+        } else {
+            counts.push((
+                DiscoveryArtist {
+                    uri: uri.clone(),
+                    name: name.clone(),
+                },
+                1,
+            ));
+        }
+    }
+    let mut best: Option<(DiscoveryArtist, usize)> = None;
+    for candidate in counts {
+        if candidate.1 < ANCHOR_MIN {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, count)| candidate.1 > *count) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(artist, _)| artist)
+}
+
+async fn identify<F: Fetch + Sync>(
+    outside: &Outside<F>,
+    anchor: &DiscoveryArtist,
+    seed_titles: &[String],
+) -> Result<Option<wire::ArtistHit>, OutsideError> {
+    let path = format!("/search/artist?q={}&limit=5", encode(&anchor.name));
+    let body = outside.get(&path).await?;
+    let candidates = wire::search_artists(&body).map_err(|_| OutsideError::Failed)?;
+    let mut failed = false;
+    for candidate in candidates.into_iter().take(VERIFY_MAX) {
+        let path = format!("/artist/{}/top?limit=10", candidate.id);
+        let body = match outside.get(&path).await {
+            Ok(body) => body,
+            Err(OutsideError::Off) => return Err(OutsideError::Off),
+            Err(OutsideError::Backoff) => return Err(OutsideError::Backoff),
+            Err(OutsideError::Failed) => {
+                failed = true;
+                continue;
+            }
+        };
+        let titles = match wire::top_titles(&body) {
+            Ok(titles) => titles,
+            Err(_) => {
+                failed = true;
+                continue;
+            }
+        };
+        if overlaps(seed_titles, &titles) {
+            return Ok(Some(candidate));
+        }
+    }
+    if failed {
+        Err(OutsideError::Failed)
+    } else {
+        Ok(None)
+    }
+}
+
+async fn neighbours<S, F>(
+    spotify: &S,
+    outside: &Outside<F>,
+    related: &[wire::ArtistHit],
+    anchor_uri: &str,
+) -> Result<Resolved, OutsideError>
+where
+    S: Spotify,
+    F: Fetch + Sync,
+{
+    let mut uris = Vec::new();
+    let mut seen_uris: HashSet<String> = HashSet::new();
+    let mut seen_ids: HashSet<i64> = HashSet::new();
+    let mut attempted = 0usize;
+    let mut failed = 0usize;
+    for neighbour in related {
+        if uris.len() >= CARDS_MAX || attempted >= RESOLVE_MAX {
+            break;
+        }
+        if !seen_ids.insert(neighbour.id) {
+            continue;
+        }
+        attempted += 1;
+        let path = format!("/artist/{}/top?limit=1", neighbour.id);
+        let body = match outside.get(&path).await {
+            Ok(body) => body,
+            Err(OutsideError::Off) => return Err(OutsideError::Off),
+            Err(OutsideError::Backoff) => return Err(OutsideError::Backoff),
+            Err(OutsideError::Failed) => {
+                failed += 1;
+                continue;
+            }
+        };
+        let titles = match wire::top_titles(&body) {
+            Ok(titles) => titles,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        let Some(title) = titles.into_iter().next() else {
+            continue;
+        };
+        let query = format!("{} {}", neighbour.name, title);
+        let hits = spotify.search(&query).await;
+        let Some((entry, index)) = hits.iter().find_map(|entry| {
+            confirm_hit(entry, &title, &neighbour.name).map(|index| (entry, index))
+        }) else {
+            continue;
+        };
+        let Some(uri) = entry.artist_uris.get(index) else {
+            continue;
+        };
+        if uri.is_empty() || uri == anchor_uri || !seen_uris.insert(uri.clone()) {
+            continue;
+        }
+        uris.push(uri.clone());
+    }
+    Ok(Resolved {
+        uris,
+        attempted,
+        failed,
+    })
+}
+
+async fn genre_for<F: Fetch + Sync>(
+    outside: &Outside<F>,
+    seed: &DiscoverySeed,
+    artist_id: i64,
+) -> Option<String> {
+    let body = outside
+        .get(&format!("/artist/{artist_id}/albums?limit=100"))
+        .await
+        .ok()?;
+    let albums = wire::albums(&body).ok()?;
+    let records: Vec<i64> = match seed.kind {
+        DiscoveryKind::Album => {
+            let wanted = normalise(&seed.name);
+            albums
+                .iter()
+                .find(|album| normalise(&album.title) == wanted)
+                .and_then(|album| album.genre_id)
+                .into_iter()
+                .collect()
+        }
+        DiscoveryKind::Artist | DiscoveryKind::Playlist => {
+            albums.iter().filter_map(|album| album.genre_id).collect()
+        }
+    };
+    if records.is_empty() {
+        return None;
+    }
+    let table = outside.genres().await.ok()?;
+    genre::vote(&records, &table)
+}
+
+fn outcome_of(error: OutsideError) -> DiscoveryOutcome {
+    match error {
+        OutsideError::Off => DiscoveryOutcome::Off,
+        OutsideError::Backoff | OutsideError::Failed => DiscoveryOutcome::Unreachable,
+    }
+}
+
+/// Percent-encodes one query value so a name containing `&`, `=` or a space
+/// cannot split the query it is part of.
+fn encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                let _ = write!(encoded, "%{byte:02X}");
+            }
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests;

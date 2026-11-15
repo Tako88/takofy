@@ -1,0 +1,27 @@
+{
+  "_synthetic": "Synthetic fixture: the 22 names Deezer's genre table was measured to carry, not a real payload. Ids are positional and every picture is omitted.",
+  "data": [
+    { "id": 0, "name": "All" },
+    { "id": 1, "name": "Pop" },
+    { "id": 2, "name": "Rap/Hip Hop" },
+    { "id": 3, "name": "Rock" },
+    { "id": 4, "name": "Dance" },
+    { "id": 5, "name": "R&B" },
+    { "id": 6, "name": "Alternative" },
+    { "id": 7, "name": "Electro" },
+    { "id": 8, "name": "Folk" },
+    { "id": 9, "name": "Reggae" },
+    { "id": 10, "name": "Jazz" },
+    { "id": 11, "name": "Classical" },
+    { "id": 12, "name": "Films/Games" },
+    { "id": 13, "name": "Metal" },
+    { "id": 14, "name": "Soul & Funk" },
+    { "id": 15, "name": "African Music" },
+    { "id": 16, "name": "Asian Music" },
+    { "id": 17, "name": "Blues" },
+    { "id": 18, "name": "Brazilian Music" },
+    { "id": 19, "name": "Indian Music" },
+    { "id": 20, "name": "Kids" },
+    { "id": 21, "name": "Latin Music" }
+  ]
+}

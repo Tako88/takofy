@@ -8,6 +8,9 @@ mod bridge;
 mod cover;
 mod decode;
 mod devices;
+// Lookups are only exercised by this module's tests for now.
+#[allow(dead_code)]
+mod discovery;
 mod headless;
 mod keychain;
 mod latest_writer;

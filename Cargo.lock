@@ -5202,6 +5202,7 @@ dependencies = [
  "librespot",
  "log",
  "reqwest",
+ "serde_json",
  "takofy-core",
  "takofy-model",
  "takofy-ui",
