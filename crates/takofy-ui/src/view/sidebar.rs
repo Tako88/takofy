@@ -114,9 +114,9 @@ fn draw(
     // The count is one string in two places: the field's resting line, and a
     // polite status node. Sighted users see it whenever the field is empty; a
     // screen reader hears it when it changes, which is not every keystroke.
-    let (kind_shown, total) = counts(library);
-    let shown = kept.as_ref().map_or(kind_shown, Vec::len);
-    announce(ui, shown, total, head.field);
+    let total = total_in_kind(library);
+    let shown = kept.as_ref().map_or(total, Vec::len);
+    announce(ui, shown, total, library.sidebar_kind.chosen(), head.field);
 
     let list = Rect::from_min_size(
         Pos2::new(band.left() + space::S2, head.top),
@@ -230,8 +230,8 @@ fn head(
         name_field(ui, slot, library, tokens);
         None
     } else {
-        let (shown, total) = counts(library);
-        let placeholder = library_count(shown, total);
+        let total = total_in_kind(library);
+        let placeholder = library_count(total, total, library.sidebar_kind.chosen());
         let id = ui.scope_id().with("library-filter");
         let edited = filter_field::show(
             ui,
@@ -381,8 +381,8 @@ pub(crate) fn take_submit(ctx: &egui::Context) -> bool {
 /// the same string on the field's own node as its placeholder. It is announced
 /// when the node's name changes — a keystroke that leaves the count alone says
 /// nothing — and when the node first appears. It is not an ARIA emulation.
-fn announce(ui: &Ui, shown: usize, total: usize, field: Option<egui::Id>) {
-    let text = library_count(shown, total);
+fn announce(ui: &Ui, shown: usize, total: usize, kind: SidebarKind, field: Option<egui::Id>) {
+    let text = library_count(shown, total, kind);
     let ctx = ui.ctx();
     let _ = ctx.accesskit_node_builder(ui.scope_id().with("library-count"), |node| {
         node.set_role(egui::Role::Status);
@@ -397,31 +397,25 @@ fn announce(ui: &Ui, shown: usize, total: usize, field: Option<egui::Id>) {
     }
 }
 
-/// How many things the sidebar lists, and how many the chosen filter shows.
-fn counts(library: &Library) -> (usize, usize) {
-    let playlists = match &library.playlists {
-        Load::Ready(playlists) => playlists.len(),
+/// How many rows the chosen chip's list holds.
+///
+/// The rail draws one kind and its query filters that kind, so this is the only
+/// total worth reporting: summing all four was a number no chip could reach.
+fn total_in_kind(library: &Library) -> usize {
+    match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => ready_len(&library.playlists),
+        SidebarKind::Podcasts => ready_len(&library.followed),
+        SidebarKind::Artists => ready_len(&library.followed_artists),
+        SidebarKind::Albums => ready_len(&library.saved_albums),
+    }
+}
+
+/// One list's length, counted only once it has arrived.
+fn ready_len<T>(list: &Load<Vec<T>>) -> usize {
+    match list {
+        Load::Ready(items) => items.len(),
         Load::Idle | Load::Loading | Load::Failed(_) => 0,
-    };
-    let shows = match &library.followed {
-        Load::Ready(shows) => shows.len(),
-        Load::Idle | Load::Loading | Load::Failed(_) => 0,
-    };
-    let artists = match &library.followed_artists {
-        Load::Ready(artists) => artists.len(),
-        Load::Idle | Load::Loading | Load::Failed(_) => 0,
-    };
-    let albums = match &library.saved_albums {
-        Load::Ready(albums) => albums.len(),
-        Load::Idle | Load::Loading | Load::Failed(_) => 0,
-    };
-    let shown = match library.sidebar_kind.chosen() {
-        SidebarKind::Playlists => playlists,
-        SidebarKind::Podcasts => shows,
-        SidebarKind::Artists => artists,
-        SidebarKind::Albums => albums,
-    };
-    (shown, playlists + shows + artists + albums)
+    }
 }
 
 /// The true rows the rail's query leaves, ascending; `None` when it leaves the

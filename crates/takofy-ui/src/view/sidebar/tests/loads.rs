@@ -136,12 +136,18 @@ fn the_size_counts_the_two_new_lists() {
     ]);
     library.saved_albums = Load::Ready(vec![saved_album("spotify:album:a", "A", "X")]);
 
-    assert_eq!(counts(&library), (1, 5), "one shown of five saved");
+    assert_eq!(
+        total_in_kind(&library),
+        1,
+        "the chosen chip's own list, not all four summed"
+    );
 
     library.sidebar_kind.choose(SidebarKind::Artists);
-    assert_eq!(counts(&library), (2, 5));
+    assert_eq!(total_in_kind(&library), 2);
     library.sidebar_kind.choose(SidebarKind::Albums);
-    assert_eq!(counts(&library), (1, 5));
+    assert_eq!(total_in_kind(&library), 1);
+    library.sidebar_kind.choose(SidebarKind::Podcasts);
+    assert_eq!(total_in_kind(&library), 1);
 }
 
 #[test]

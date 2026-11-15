@@ -887,14 +887,14 @@ fn the_count_label_returns_when_naming_closes() {
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     assert!(
-        text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_some(),
+        text_in(&frame, "2 PLAYLISTS", sidebar_rect(&window)).is_some(),
         "the field's resting line is missing"
     );
 
     open_naming(&mut window, &mut transport, &mut queue);
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     assert!(
-        text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_none(),
+        text_in(&frame, "2 PLAYLISTS", sidebar_rect(&window)).is_none(),
         "the count stayed beside the field"
     );
 
@@ -905,7 +905,7 @@ fn the_count_label_returns_when_naming_closes() {
     );
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     assert!(
-        text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_some(),
+        text_in(&frame, "2 PLAYLISTS", sidebar_rect(&window)).is_some(),
         "the count did not come back"
     );
 }

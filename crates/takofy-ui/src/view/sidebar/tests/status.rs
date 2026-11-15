@@ -37,7 +37,7 @@ fn the_status_node_carries_the_count_politely() {
     assert_eq!(read.1, Some(egui::accesskit::Live::Polite));
     assert_eq!(
         read.2.as_deref(),
-        Some("2 saved"),
+        Some("2 playlists"),
         "the rest string is the reference's own words"
     );
 }
@@ -70,14 +70,14 @@ fn the_status_node_follows_a_chip_change() {
 
     assert_eq!(
         status_label(&ctx, &mut library, &mut art).as_deref(),
-        Some("2 of 3")
+        Some("2 playlists")
     );
 
     assert!(library.choose_kind(SidebarKind::Artists));
     assert_eq!(
         status_label(&ctx, &mut library, &mut art).as_deref(),
-        Some("1 of 3"),
-        "the chosen kind is what the count counts"
+        Some("1 artist"),
+        "the chosen kind is what the count counts, and the whole of it"
     );
 }
 
@@ -107,7 +107,7 @@ fn the_fields_placeholder_property_matches_the_status_string() {
     };
 
     let (count, field) = read(&mut library, &mut art);
-    assert_eq!(count.as_deref(), Some("2 saved"));
+    assert_eq!(count.as_deref(), Some("2 playlists"));
     assert_eq!(field, count, "the two are one string");
 
     library.rail_filter.edit().push_str("mid");
@@ -140,7 +140,7 @@ fn a_status_node_exists_while_the_create_field_is_open_but_the_field_gets_no_str
 
     assert_eq!(
         status.as_deref(),
-        Some("2 saved"),
+        Some("2 playlists"),
         "the count is announced whether or not the field is drawn"
     );
     assert!(!stray, "the undrawn field was given a node of its own");
@@ -154,7 +154,7 @@ fn the_head_draws_the_resting_count_as_the_placeholder() {
     let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
 
     let field = filter_field_of(&output);
-    let (pos, _) = painted_text(&output, "2 SAVED");
+    let (pos, _) = painted_text(&output, "2 PLAYLISTS");
     assert!(
         field.contains(pos),
         "the count is the field's resting line: {pos:?} in {field:?}"
@@ -183,13 +183,13 @@ fn the_placeholder_names_the_kind_count_when_a_chip_narrows() {
     let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
 
     assert!(
-        painted(&output, "2 OF 4"),
-        "the resting line names what the chip shows: {:?}",
+        painted(&output, "2 PLAYLISTS"),
+        "the resting line counts the chip's own list: {:?}",
         drawn_text(&output)
     );
     assert!(
         !painted(&output, "4 SAVED"),
-        "the total is not the whole story"
+        "the other kinds are not in this count"
     );
 }
 
@@ -202,10 +202,10 @@ fn the_old_count_line_is_gone() {
 
     let texts = drawn_text(&output);
     assert!(
-        !texts.contains(&"2 saved".to_owned()),
+        !texts.contains(&"2 playlists".to_owned()),
         "the head still draws a second copy of the count: {texts:?}"
     );
-    assert!(texts.contains(&"2 SAVED".to_owned()));
+    assert!(texts.contains(&"2 PLAYLISTS".to_owned()));
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn the_placeholder_disappears_the_moment_text_exists() {
 
     assert_eq!(library.rail_filter.query(), "a");
     assert!(
-        !painted(&output, "2 SAVED"),
+        !painted(&output, "2 PLAYLISTS"),
         "the placeholder is still painted over the text"
     );
 }
@@ -308,5 +308,8 @@ fn closing_the_create_field_restores_the_filter_field() {
         1,
         "the filter field came back"
     );
-    assert!(painted(&output, "2 SAVED"), "and its resting line with it");
+    assert!(
+        painted(&output, "2 PLAYLISTS"),
+        "and its resting line with it"
+    );
 }

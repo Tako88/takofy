@@ -44,7 +44,7 @@ fn the_row_count_updates() {
     creatable_sidebar(&mut window);
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     assert!(
-        text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_some(),
+        text_in(&frame, "2 PLAYLISTS", sidebar_rect(&window)).is_some(),
         "the field's resting line is missing"
     );
 
@@ -58,7 +58,7 @@ fn the_row_count_updates() {
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
 
     assert!(
-        text_in(&frame, "3 SAVED", sidebar_rect(&window)).is_some(),
+        text_in(&frame, "3 PLAYLISTS", sidebar_rect(&window)).is_some(),
         "the head did not count the new row"
     );
 }

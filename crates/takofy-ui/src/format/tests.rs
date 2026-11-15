@@ -726,9 +726,24 @@ fn a_joined_byline_drops_blank_parts() {
 
 #[test]
 fn library_counts() {
-    assert_eq!(library_count(0, 0), "0 saved");
-    assert_eq!(library_count(28, 28), "28 saved");
-    assert_eq!(library_count(3, 28), "3 of 28");
+    assert_eq!(library_count(0, 0, SidebarKind::Albums), "0 albums");
+    assert_eq!(
+        library_count(28, 28, SidebarKind::Playlists),
+        "28 playlists"
+    );
+    assert_eq!(library_count(3, 28, SidebarKind::Albums), "3 of 28");
+    assert_eq!(library_count(26, 26, SidebarKind::Artists), "26 artists");
+    assert_eq!(library_count(7, 7, SidebarKind::Podcasts), "7 podcasts");
+    assert_eq!(
+        library_count(1, 1, SidebarKind::Artists),
+        "1 artist",
+        "a total of one is singular"
+    );
+    assert_eq!(
+        library_count(2, 3, SidebarKind::Podcasts),
+        "2 of 3",
+        "a narrowed list still counts against its own kind"
+    );
 }
 
 #[test]

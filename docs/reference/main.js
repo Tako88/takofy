@@ -135,9 +135,15 @@
   }
 
   /* One phrasing for the library's size readout, so the unfiltered and
-     filtered states can never drift apart. */
-  function countLabel(shown, total) {
-    return shown === total ? total + " saved" : shown + " of " + total;
+     filtered states can never drift apart. The noun is the chosen chip's: the
+     list is one kind, and a total that never moves when the chip does reads as a
+     static number. No chip means the whole library, which is "saved". */
+  var COUNT_NOUNS = { playlist: "playlists", artist: "artists", album: "albums", podcast: "podcasts" };
+
+  function countLabel(shown, total, noun) {
+    if (shown !== total) return shown + " of " + total;
+    if (!noun) return total + " saved";
+    return total + " " + (total === 1 ? noun.replace(/s$/, "") : noun);
   }
 
   /* A tracklist's readout, which only exists while a query is narrowing the list —
@@ -588,8 +594,15 @@
       empty.hidden = shown > 0;
     }
 
-    // Groups that own a size readout keep it honest as either axis changes.
-    var text = countLabel(shown, items.length);
+    // Groups that own a size readout keep it honest as either axis changes. The
+    // total is the chosen kind's own rows: the field beside it filters that kind,
+    // so a denominator outside the kind is a number no chip can reach.
+    var ofKind = kind
+      ? items.filter(function (item) {
+          return item.getAttribute("data-kind") === kind;
+        })
+      : items;
+    var text = countLabel(shown, ofKind.length, kind ? COUNT_NOUNS[kind] : null);
     var countSel = group.getAttribute("data-count-target");
     if (countSel) {
       var countEl = document.querySelector(countSel);

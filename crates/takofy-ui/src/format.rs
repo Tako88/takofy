@@ -492,11 +492,29 @@ pub fn search_empty_copy() -> (&'static str, &'static str) {
 }
 
 /// The sidebar's size readout: the whole library, or what a filter leaves.
-pub fn library_count(shown: usize, total: usize) -> String {
+pub fn library_count(shown: usize, total: usize, kind: SidebarKind) -> String {
     if shown == total {
-        format!("{total} saved")
+        format!("{total} {}", kind_noun(kind, total))
     } else {
         format!("{shown} of {total}")
+    }
+}
+
+/// The noun a kind's rows are counted in, singular at one.
+///
+/// The list the rail draws is one kind, so the readout names that kind rather
+/// than the library: "35 albums" is the truth about the list under the chips, and
+/// a total that never moves when the chip does reads as a static number.
+fn kind_noun(kind: SidebarKind, total: usize) -> &'static str {
+    match (kind, total == 1) {
+        (SidebarKind::Playlists, true) => "playlist",
+        (SidebarKind::Playlists, false) => "playlists",
+        (SidebarKind::Artists, true) => "artist",
+        (SidebarKind::Artists, false) => "artists",
+        (SidebarKind::Albums, true) => "album",
+        (SidebarKind::Albums, false) => "albums",
+        (SidebarKind::Podcasts, true) => "podcast",
+        (SidebarKind::Podcasts, false) => "podcasts",
     }
 }
 
