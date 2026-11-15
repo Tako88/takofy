@@ -282,3 +282,30 @@ fn a_hide_reaches_the_file_when_the_window_closes() {
         "closing writes the hide no frame had time to settle: {saved:?}"
     );
 }
+
+#[test]
+fn an_unhide_reaches_the_file_when_the_window_closes() {
+    let log: Arc<Mutex<Vec<Hidden>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let log = Arc::clone(&log);
+        move |hidden: &Hidden| {
+            log.lock().expect("the sink log").push(hidden.clone());
+            Ok(())
+        }
+    };
+    let saved = Hidden::parse("hide=spotify:artist:n1\n").expect("a hidden set");
+    let (mut app, _received) = launched(Loaded::Absent, HiddenLoaded::Found(saved));
+    app.hidden = HiddenSync::for_test(0, HiddenWriter::with_sink(sink, Duration::from_secs(2)));
+
+    app.library.unhide_artist("spotify:artist:n1");
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    let saved = log.lock().expect("the sink log");
+    assert!(
+        saved
+            .last()
+            .is_some_and(|hidden| !hidden.contains("spotify:artist:n1")),
+        "closing writes the unhide no frame had time to settle: {saved:?}"
+    );
+}

@@ -3,6 +3,7 @@
 use takofy_model::{CoverOrigin, Revision};
 
 use crate::cover_refresh::first_track_uri;
+use crate::message::Command;
 
 use super::{Library, Load, restore};
 
@@ -129,6 +130,29 @@ impl Library {
         {
             entry.tracks = entry.tracks.map(|count| count.saturating_sub(gone));
         }
+    }
+
+    /// The follow or unfollow write a view asked for, if it may go out.
+    ///
+    /// One write per artist at a time: the artist page's button holds the artist
+    /// it names, and a card's tile holds it until its own answer lands.
+    pub fn ask_follow(&mut self, artist: &str, followed: bool) -> Option<Command> {
+        if self.follow.artist() == Some(artist) && self.follow.pending() {
+            return None;
+        }
+        if self.follow_writes.contains_key(artist) {
+            return None;
+        }
+        self.follow_writes.insert(artist.to_owned(), followed);
+        Some(Command::SetFollow {
+            artist: artist.to_owned(),
+            followed,
+        })
+    }
+
+    /// Whether a follow write is in flight for `artist`.
+    pub fn follow_pending(&self, artist: &str) -> bool {
+        self.follow_writes.contains_key(artist)
     }
 
     /// Whether a write for this playlist is in flight.

@@ -27,7 +27,7 @@ fn door() -> Door {
 }
 
 #[test]
-fn a_discovery_card_offers_follow_add_and_hide_with_only_add_live() {
+fn a_discovery_card_offers_follow_add_and_hide_all_live() {
     let request = discovery_request(
         &card(vec![entry("spotify:track:a"), entry("spotify:track:b")]),
         door(),
@@ -52,8 +52,8 @@ fn a_discovery_card_offers_follow_add_and_hide_with_only_add_live() {
             .iter()
             .map(|item| item.live)
             .collect::<Vec<_>>(),
-        [false, true, false],
-        "only the add is live"
+        [true, true, true],
+        "every row can act"
     );
     assert_eq!(
         request.items.last().map(|item| item.kind),
@@ -92,15 +92,30 @@ fn an_unplayable_card_offers_no_add_row() {
 }
 
 #[test]
-fn hiding_is_not_a_write_this_change_can_apply() {
+fn hide_and_show_act_on_the_artist_the_row_names() {
+    let row = LibraryItem {
+        kind: SidebarKind::Artists,
+        uri: "spotify:artist:vane".to_owned(),
+        name: "Ilse Vane".to_owned(),
+    };
+
     assert_eq!(
-        outcome(Verb::HideFromDiscovery, &[entry("spotify:track:a")]),
-        None
+        library_outcome(Verb::HideFromDiscovery, &row),
+        Some(Outcome::Hide("spotify:artist:vane".to_owned()))
+    );
+    assert_eq!(
+        library_outcome(Verb::ShowInDiscovery, &row),
+        Some(Outcome::Show("spotify:artist:vane".to_owned()))
+    );
+    assert_eq!(
+        outcome(Verb::ShowInDiscovery, &[entry("spotify:track:a")]),
+        None,
+        "a show acts on a row, not on a pick"
     );
 }
 
 #[test]
-fn a_discovery_menus_only_live_row_is_the_add() {
+fn a_discovery_menus_every_row_live_lands_the_keyboard_on_follow() {
     use crate::menu::{Gate, Menu};
 
     let request = discovery_request(&card(vec![entry("spotify:track:a")]), door(), None);
@@ -108,11 +123,14 @@ fn a_discovery_menus_only_live_row_is_the_add() {
     assert!(menu.open(request, Gate::default()));
     assert_eq!(
         menu.lit(),
-        Some(1),
-        "the keyboard skips the inert Follow and lights Add"
+        Some(0),
+        "the keyboard lights the first row, which can act"
     );
-
-    assert!(menu.items()[1].live, "Add is the row that can act");
-    assert!(menu.items()[1].submenu, "and it opens the playlist list");
-    assert_eq!(menu.choose(0), None, "the inert Follow never fires");
+    assert!(menu.items().iter().all(|item| item.live));
+    assert!(menu.items()[1].submenu, "the add opens the playlist list");
+    assert_eq!(
+        menu.choose(0).and_then(|closed| closed.chose),
+        Some(Verb::Follow),
+        "the Follow row fires"
+    );
 }

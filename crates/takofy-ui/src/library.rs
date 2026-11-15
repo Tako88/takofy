@@ -226,6 +226,13 @@ pub struct Library {
     pub artist: Load<ArtistDetail>,
     /// The artist page's Follow state.
     pub follow: Follow,
+    /// The follow writes in flight, keyed by artist and valued by what was
+    /// asked for.
+    ///
+    /// A card's tile and a menu on the artist can name the same artist, and two
+    /// writes would land in order and leave the two apart. The page's own button
+    /// is guarded by [`Follow`] instead.
+    follow_writes: HashMap<String, bool>,
     /// The artist page's discography filter. Unlike `follow`, going home does
     /// not reset it: home then Back reloads the same artist, so the choice is
     /// kept, and opening a different artist is what resets it.
@@ -1072,6 +1079,7 @@ impl Library {
             Update::FollowedArtists(artists) => {
                 self.followed_artists = Load::Ready(artists.clone());
                 self.sources.artists = Source::Live;
+                self.follow_writes.clear();
             }
             Update::FollowedArtistsFailed(failure) => {
                 fail_list(
@@ -1144,10 +1152,14 @@ impl Library {
                 if !followed {
                     self.end_saved(artist, false);
                 }
+                if self.follow_writes.get(artist) == Some(followed) {
+                    self.follow_writes.remove(artist);
+                }
                 self.settle_follow(artist, *followed);
             }
             Update::FollowFailed { artist, .. } => {
                 self.follow.apply(update);
+                self.follow_writes.remove(artist);
                 if self.saved_pending(artist, false) {
                     self.sidebar_pending = None;
                     self.sidebar_notice = Some(SidebarWrite::Remove);

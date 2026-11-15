@@ -65,7 +65,7 @@ fn open_rows_menu(window: &mut Window, row: LibraryItem) {
 fn open_band_menu(window: &mut Window, row: LibraryItem) {
     let page = window.library.page().cloned();
     let request = if row.kind == SidebarKind::Artists {
-        crate::verbs::artist_request(row, door(), false, page)
+        crate::verbs::artist_request(row, door(), false, false, page)
     } else {
         crate::verbs::library_request(row, door(), rights(), page, crate::naming::Surface::Band)
     };

@@ -93,8 +93,7 @@ pub enum Control {
     DiscoveryReroll,
     /// A discovery row's play: every track it draws, in order.
     DiscoveryRowPlay,
-    /// A discovery card's Follow tile. Drawn present and inert until the follow
-    /// write lands.
+    /// A discovery card's Follow tile. Acts through `Library::ask_follow`.
     DiscoveryFollow,
     Authorize,
 }
@@ -233,15 +232,14 @@ pub fn availability(control: Control) -> Availability {
         // A station's rows are loaded state, so its play is a want and not a
         // read.
         Control::StationPlay => Availability::Ready,
-        // A discovery row draws loaded state. Follow is the one write whose
-        // command does not exist yet, so its tile is drawn present and inert
-        // until the follow write lands.
+        // A discovery row draws loaded state, and its presses are wants and
+        // writes over it.
         Control::DiscoveryCard => Availability::Ready, // #90
         Control::DiscoveryMore => Availability::Ready, // #90
         Control::DiscoveryPlay => Availability::Ready, // #90
         Control::DiscoveryReroll => Availability::Ready, // #90
         Control::DiscoveryRowPlay => Availability::Ready, // #90
-        Control::DiscoveryFollow => Availability::Waiting, // #90, inert until the follow write lands
+        Control::DiscoveryFollow => Availability::Ready, // #90
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome

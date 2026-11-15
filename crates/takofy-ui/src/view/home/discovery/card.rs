@@ -102,7 +102,7 @@ pub(super) fn show(
 
     if revealed {
         let follow_rect = discovery::follow(card.rect);
-        let _ = controls::plate_tile_keyed(
+        let follow = controls::plate_tile_keyed(
             ui,
             tokens,
             Control::DiscoveryFollow,
@@ -111,8 +111,11 @@ pub(super) fn show(
             Icon::Plus,
             Size::SM,
             &format!("Follow {}", card.data.artist.name),
-            false,
+            live && !draw.library.follow_pending(&card.data.artist.uri),
         );
+        if follow.response.clicked() {
+            out.follow = Some(card.data.artist.uri.clone());
+        }
 
         let more = controls::plate_tile_open(
             ui,
@@ -161,8 +164,8 @@ pub(super) fn show(
         }
     }
 
-    // A corner keeps its click even while inert: a press on Follow must do
-    // nothing, not fall through and open the artist instead.
+    // A corner keeps its click even while inert: a press on Follow or the
+    // menu must do nothing, not fall through and open the artist instead.
     let on_tile = slot.response.interact_pointer_pos().is_some_and(|at| {
         [
             discovery::follow(card.rect),

@@ -42,6 +42,10 @@ pub enum Outcome {
     Save(LibraryItem),
     /// An artist is followed or unfollowed.
     Follow { artist: String, followed: bool },
+    /// An artist stops appearing in discovery, now and in later days.
+    Hide(String),
+    /// A hidden artist is offered in discovery again.
+    Show(String),
     /// The sidebar row's name field opens.
     Rename(LibraryItem),
 }
@@ -176,6 +180,8 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
             artist: row.uri.clone(),
             followed: verb == Verb::Follow,
         }),
+        Verb::HideFromDiscovery => Some(Outcome::Hide(row.uri.clone())),
+        Verb::ShowInDiscovery => Some(Outcome::Show(row.uri.clone())),
         _ => None,
     }
 }
@@ -183,9 +189,10 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
 /// The request a discovery card posts for its own menu.
 ///
 /// A card is a stranger: the three verbs are keep them, put one of their tracks
-/// somewhere, or stop them appearing. Follow and Hide are drawn present and
-/// inert until their writes land; Add to playlist is live and acts on the card's
-/// first track, which is the one its play names.
+/// somewhere, or stop them appearing. Follow goes through `Library::ask_follow`,
+/// which holds one write per artist, Add to
+/// playlist acts on the card's first track, which is the one its play names,
+/// and Hide is the destructive row.
 pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -> Request {
     let name = card.artist.name.clone();
     let mut items = vec![Item {
@@ -193,7 +200,7 @@ pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -
         kind: Kind::Plain,
         key: None,
         submenu: false,
-        live: false,
+        live: true,
         verb: Verb::Follow,
     }];
     if card.tracks.first().is_some_and(TrackEntry::is_track) {
@@ -211,7 +218,7 @@ pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -
         kind: Kind::Destructive,
         key: None,
         submenu: false,
-        live: false,
+        live: true,
         verb: Verb::HideFromDiscovery,
     });
     Request {
@@ -232,13 +239,16 @@ pub fn discovery_request(card: &DiscoveryCard, door: Door, page: Option<Page>) -
 /// The request an artist's band posts for its own menu.
 ///
 /// An artist's library entry is its follow, so the menu's rows are that write,
-/// the radio and the link; nothing else in the vocabulary acts on an artist.
+/// the radio and the link; a hidden artist also offers its way back into
+/// discovery, last because it is the rarer direction.
 pub fn artist_request(
     artist: LibraryItem,
     door: Door,
     unfollowed: bool,
+    hidden: bool,
     page: Option<Page>,
 ) -> Request {
+    let name = artist.name.clone();
     let mut items = vec![item(
         if unfollowed {
             Verb::Follow
@@ -252,6 +262,12 @@ pub fn artist_request(
     }
     if spotify_link(&artist.uri).is_some() {
         items.push(item(Verb::CopyLink, "Copy link".to_owned()));
+    }
+    if hidden {
+        items.push(item(
+            Verb::ShowInDiscovery,
+            format!("Show {name} in discovery"),
+        ));
     }
     Request {
         door,
@@ -410,7 +426,8 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
         | Verb::SaveToLibrary
         | Verb::Follow
         | Verb::Unfollow
-        | Verb::HideFromDiscovery => None,
+        | Verb::HideFromDiscovery
+        | Verb::ShowInDiscovery => None,
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
     }

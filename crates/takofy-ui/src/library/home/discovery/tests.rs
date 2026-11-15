@@ -430,3 +430,154 @@ fn a_library_change_mid_day_keeps_the_rows_it_drew() {
         "the day's pool is drawn once, not drawn again from a changed list"
     );
 }
+
+/// A follow leaves the card where it was until the whole list lands again.
+#[test]
+fn a_followed_card_leaves_only_when_the_list_reloads() {
+    let mut library = ready();
+    let seeds = asks_on(&mut library, today());
+    let uri = "spotify:artist:n1";
+    land(&mut library, &seeds[0], vec![card(uri)]);
+
+    assert_eq!(
+        library.ask_follow(uri, true),
+        Some(Command::SetFollow {
+            artist: uri.to_owned(),
+            followed: true,
+        })
+    );
+    assert_eq!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
+        [uri],
+        "the write has not landed, so the card stays"
+    );
+
+    library.apply(&Update::Followed {
+        artist: uri.to_owned(),
+        followed: true,
+    });
+    assert_eq!(
+        library.followed_artists,
+        Load::Idle,
+        "arrange: the answer resets the list for its read"
+    );
+    assert!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist).is_empty(),
+        "the band is drawn empty through the waiting interlude"
+    );
+
+    let mut artists = lists().1;
+    artists.push(artist(uri));
+    library.apply(&Update::FollowedArtists(artists));
+    assert!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist).is_empty(),
+        "the reloaded list holds the artist, so the card is gone"
+    );
+}
+
+#[test]
+fn a_failed_follow_keeps_the_card_and_lets_the_tile_act_again() {
+    let mut library = ready();
+    let seeds = asks_on(&mut library, today());
+    let uri = "spotify:artist:n1";
+    land(&mut library, &seeds[0], vec![card(uri)]);
+    assert!(library.ask_follow(uri, true).is_some());
+
+    library.apply(&Update::FollowFailed {
+        artist: uri.to_owned(),
+        failure: Failure::Save,
+    });
+
+    assert!(!library.follow_pending(uri), "the tile retries");
+    assert_eq!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
+        [uri],
+        "a write that did not stick changes nothing"
+    );
+}
+
+/// A follow that lands while the list is out keeps the card: `settle_follow`
+/// has no list to remove it from. The guard still clears, and pressing again is
+/// an idempotent write.
+#[test]
+fn a_follow_that_lands_while_the_list_is_out_keeps_the_card_and_clears_the_guard() {
+    let mut library = ready();
+    let seeds = asks_on(&mut library, today());
+    let uri = "spotify:artist:n1";
+    land(&mut library, &seeds[0], vec![card(uri)]);
+
+    library.followed_artists = Load::Idle;
+    assert!(library.ask_follow(uri, true).is_some());
+    library.apply(&Update::Followed {
+        artist: uri.to_owned(),
+        followed: true,
+    });
+    assert!(!library.follow_pending(uri), "the answer clears the guard");
+
+    library.apply(&Update::FollowedArtists(lists().1));
+    assert_eq!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
+        [uri],
+        "the stale list never held the artist, so the card stays"
+    );
+    assert!(
+        library.ask_follow(uri, true).is_some(),
+        "a second press is an idempotent write"
+    );
+}
+
+#[test]
+fn a_hide_drops_the_artist_from_every_row_it_is_drawn_in() {
+    let mut library = ready();
+    let seeds = asks_on(&mut library, today());
+    land(
+        &mut library,
+        &seeds[0],
+        vec![card("spotify:artist:n1"), card("spotify:artist:n2")],
+    );
+    land(
+        &mut library,
+        &seeds[1],
+        vec![card("spotify:artist:n3"), card("spotify:artist:n4")],
+    );
+
+    library.hide_artist("spotify:artist:n1");
+    library.hide_artist("spotify:artist:n3");
+
+    let band = library.discovery_band();
+    assert_eq!(drawn(&band, DiscoveryKind::Playlist), ["spotify:artist:n2"]);
+    assert_eq!(drawn(&band, DiscoveryKind::Artist), ["spotify:artist:n4"]);
+}
+
+#[test]
+fn a_hide_keeps_the_artist_out_of_a_day_built_after_a_restart() {
+    let day = today();
+    let mut library = ready();
+    let seeds = asks_on(&mut library, day);
+    land(
+        &mut library,
+        &seeds[0],
+        vec![card("spotify:artist:n1"), card("spotify:artist:n2")],
+    );
+    let before = library.hidden().revision();
+    library.hide_artist("spotify:artist:n1");
+    assert!(
+        library.hidden().revision() > before,
+        "the hide is a change the file records"
+    );
+
+    let mut restarted = ready();
+    restarted.restore_hidden(library.hidden().clone());
+    let seeds = asks_on(&mut restarted, day);
+    land(
+        &mut restarted,
+        &seeds[0],
+        vec![card("spotify:artist:n1"), card("spotify:artist:n2")],
+    );
+
+    assert_eq!(
+        drawn(&restarted.discovery_band(), DiscoveryKind::Playlist),
+        ["spotify:artist:n2"],
+        "a day built from the stored set does not offer the artist again"
+    );
+}

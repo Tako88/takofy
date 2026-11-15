@@ -89,6 +89,8 @@ pub enum Verb {
     Unfollow,
     /// Hides the one artist a discovery card named from every discovery row.
     HideFromDiscovery,
+    /// Offers the one artist a discovery card hid in discovery again.
+    ShowInDiscovery,
 }
 
 /// The list a menu's rows came from, which decides its verbs and their labels.
@@ -464,8 +466,8 @@ impl Menu {
     /// Moves the lit row one step through the live rows, staying put at the
     /// ends rather than wrapping.
     ///
-    /// A row that cannot act is skipped: a discovery card's inert Follow is not
-    /// where Enter should land.
+    /// A row that cannot act is skipped, so Enter never lands where nothing
+    /// would happen.
     pub fn step(&mut self, step: Step) {
         if !self.open || self.items.is_empty() {
             return;

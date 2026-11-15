@@ -63,6 +63,8 @@ pub(super) struct Pressed {
     pub(super) discovery: Option<Vec<TrackEntry>>,
     /// The discovery row whose re-roll was pressed.
     pub(super) reroll: Option<takofy_model::home::DiscoveryKind>,
+    /// The artist whose card's Follow tile was pressed.
+    pub(super) follow: Option<String>,
     /// The day-one door asked the topbar's field for the keyboard.
     pub(super) focus_search: bool,
     /// The shelf whose foot door was pressed.
@@ -276,6 +278,9 @@ pub(super) fn home_view(
         && library.reroll_discovery(kind, now_ms)
     {
         ui.ctx().request_repaint();
+    }
+    if let Some(artist) = out.follow.take() {
+        return library.ask_follow(&artist, true);
     }
     if out.focus_search {
         // The topbar draws the field and is drawn before this page, so the ask is

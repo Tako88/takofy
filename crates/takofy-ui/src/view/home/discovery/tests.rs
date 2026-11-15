@@ -435,7 +435,7 @@ fn a_card_play_queues_only_its_first_track() {
 }
 
 #[test]
-fn an_inert_follow_does_nothing_and_does_not_open_the_artist() {
+fn pressing_the_follow_tile_asks_for_the_follow_and_opens_nothing() {
     let ctx = context();
     let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
     let cards = vec![card(0, 1)];
@@ -461,7 +461,44 @@ fn an_inert_follow_does_nothing_and_does_not_open_the_artist() {
     );
     let frame = click(&ctx, &band, &Library::default(), at);
 
+    assert_eq!(frame.out.follow, Some(ARTIST.to_owned()));
     assert_eq!(frame.out.discovery, None);
+    assert_eq!(frame.open, None, "the tile does not fall through");
+}
+
+#[test]
+fn a_pending_follow_makes_the_tile_inert_without_falling_through() {
+    let ctx = context();
+    let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
+    let cards = vec![card(0, 1)];
+    let refs: Vec<&DiscoveryCard> = cards.iter().collect();
+    let band = Band::Rows(vec![row(&seed, refs, RowRead::Ready)]);
+
+    let mut library = Library::default();
+    assert!(
+        library.ask_follow(ARTIST, true).is_some(),
+        "arrange: the follow must be in flight"
+    );
+    let key = (SEED, ARTIST);
+    let dry = run(&ctx, &band, &library, Table::Full, Vec::new());
+    let point = reveal_point(&dry.output, "Artist 0");
+    let at = probe(
+        &ctx,
+        &band,
+        &library,
+        Table::Full,
+        vec![Event::PointerMoved(point)],
+        |ui| {
+            ui.ctx()
+                .read_response(controls::slot_id(ui, Control::DiscoveryFollow, key))
+                .expect("the follow tile is drawn present")
+                .rect
+                .center()
+        },
+    );
+    let frame = click(&ctx, &band, &library, at);
+
+    assert_eq!(frame.out.follow, None, "a write already out is not doubled");
     assert_eq!(frame.open, None, "an inert tile does not fall through");
 }
 
@@ -495,7 +532,7 @@ fn the_card_menu_is_posted_with_only_the_add_live() {
     let request =
         crate::view::context_menu::take_request(&ctx).expect("the card posted its menu this frame");
     let live: Vec<bool> = request.items.iter().map(|item| item.live).collect();
-    assert_eq!(live, [false, true, false]);
+    assert_eq!(live, [true, true, true]);
     assert!(
         request
             .items
@@ -569,7 +606,7 @@ fn focus_card(
 }
 
 #[test]
-fn tab_reaches_the_card_then_its_live_corners() {
+fn tab_reaches_the_card_then_its_corners() {
     let ctx = context();
     let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
     let cards = vec![card(0, 1)];
@@ -585,16 +622,12 @@ fn tab_reaches_the_card_then_its_live_corners() {
 
     let [press, release] = crate::view::test_support::tab();
     let mut reached = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         let _ = run(&ctx, &band, &library, table, vec![press.clone()]);
         reached.push(ctx.memory(|memory| memory.focused()));
         let _ = run(&ctx, &band, &library, table, vec![release.clone()]);
     }
-    assert_eq!(reached, [Some(more_id), Some(play_id)]);
-    assert!(
-        !reached.contains(&Some(follow_id)),
-        "an inert Follow is not a Tab stop"
-    );
+    assert_eq!(reached, [Some(follow_id), Some(more_id), Some(play_id)]);
 }
 
 #[test]

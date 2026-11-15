@@ -801,7 +801,7 @@ fn opened_live(device: Device, lives: &[bool]) -> Menu {
 #[test]
 fn a_keyboard_open_lights_the_first_live_row_or_none() {
     let menu = opened_live(Device::Keyboard, &[false, false, true, true]);
-    assert_eq!(menu.lit(), Some(2), "the inert Follow row is skipped");
+    assert_eq!(menu.lit(), Some(2), "the inert rows are skipped");
 
     let menu = opened_live(Device::Keyboard, &[false, false]);
     assert_eq!(menu.lit(), None, "nothing live means nothing lit");
@@ -856,5 +856,8 @@ fn choosing_an_inert_row_is_refused_and_leaves_the_menu_open() {
     });
     assert!(menu.open(request, Gate::default()));
     assert_eq!(menu.choose_destructive(), None);
-    assert!(menu.is_open(), "Del on an inert Hide does nothing");
+    assert!(
+        menu.is_open(),
+        "Del on an inert destructive row does nothing"
+    );
 }
