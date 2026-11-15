@@ -488,6 +488,53 @@ fn a_card_play_queues_only_its_first_track() {
 }
 
 #[test]
+fn the_cards_corner_controls_live_in_the_picture_not_the_words() {
+    let ctx = context();
+    let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
+    let cards = vec![card(0, 1)];
+    let refs: Vec<&DiscoveryCard> = cards.iter().collect();
+    let band = Band::Rows(vec![row(&seed, refs, RowRead::Ready)]);
+
+    let key = (SEED, ARTIST);
+    let dry = run(&ctx, &band, &Library::default(), Table::Full, Vec::new());
+    let point = reveal_point(&dry.output, "Artist 0");
+    let name = name_rect(&dry.output, "Artist 0");
+    let (card, follow, more, play) = probe(
+        &ctx,
+        &band,
+        &Library::default(),
+        Table::Full,
+        vec![Event::PointerMoved(point)],
+        |ui| {
+            let rect = |control| {
+                ui.ctx()
+                    .read_response(controls::slot_id(ui, control, key))
+                    .expect("the card draws its corners")
+                    .rect
+            };
+            (
+                rect(Control::DiscoveryCard),
+                rect(Control::DiscoveryFollow),
+                rect(Control::DiscoveryMore),
+                rect(Control::DiscoveryPlay),
+            )
+        },
+    );
+
+    let art = crate::layout::discovery::card_art(card);
+    for tile in [follow, more, play] {
+        assert!(
+            art.contains_rect(tile),
+            "a corner control sits outside the picture: {tile:?} against {art:?}"
+        );
+    }
+    assert!(
+        play.bottom() <= name.top(),
+        "the play sits on the artist's own name: {play:?} against {name:?}"
+    );
+}
+
+#[test]
 fn pressing_the_follow_tile_asks_for_the_follow_and_opens_nothing() {
     let ctx = context();
     let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");

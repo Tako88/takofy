@@ -75,39 +75,39 @@ pub fn card_art(card: Rect) -> Rect {
     Rect::from_min_size(inner.min, Vec2::splat(inner.width()))
 }
 
-/// One corner control, `space-2` in from the card's own corner.
+/// One corner control, `space-2` in from the picture's own corner.
 ///
-/// The controls belong to the card's raised rectangle — the box that changes
-/// colour under the pointer — not to the picture's box inside it, and not to the
-/// circle the picture is drawn as: the picture's box has no visible corner to sit
-/// against, so a control placed there reads as floating.
-fn corner(card: Rect, size: f32, across: f32, down: f32) -> Rect {
+/// The controls live in the picture's box, as the reference's `.card__play` and
+/// `.card__library` do inside `.card__art`: the picture is what they act on, and
+/// the box below it carries the words, so a control pinned to the card's corner
+/// would sit on the title once the card is narrow enough.
+fn corner(art: Rect, size: f32, across: f32, down: f32) -> Rect {
     let x = if across > 0.0 {
-        card.right() - space::S2 - size
+        art.right() - space::S2 - size
     } else {
-        card.left() + space::S2
+        art.left() + space::S2
     };
     let y = if down > 0.0 {
-        card.bottom() - space::S2 - size
+        art.bottom() - space::S2 - size
     } else {
-        card.top() + space::S2
+        art.top() + space::S2
     };
     Rect::from_min_size(pos2(x, y), Vec2::splat(size))
 }
 
-/// The `⋯` tile on the card's upper right.
-pub fn more(card: Rect) -> Rect {
-    corner(card, extent::CARD_PLAY, 1.0, -1.0)
+/// The `⋯` tile on the picture's upper right.
+pub fn more(art: Rect) -> Rect {
+    corner(art, extent::CARD_PLAY, 1.0, -1.0)
 }
 
 /// The Follow tile beside the `⋯`, one step to its left.
-pub fn follow(card: Rect) -> Rect {
-    more(card).translate(vec2(-(extent::CARD_PLAY + space::S1), 0.0))
+pub fn follow(art: Rect) -> Rect {
+    more(art).translate(vec2(-(extent::CARD_PLAY + space::S1), 0.0))
 }
 
-/// The play tile on the card's lower right.
-pub fn play(card: Rect) -> Rect {
-    corner(card, extent::CARD_PLAY, 1.0, 1.0)
+/// The play tile on the picture's lower right.
+pub fn play(art: Rect) -> Rect {
+    corner(art, extent::CARD_PLAY, 1.0, 1.0)
 }
 
 #[cfg(test)]
