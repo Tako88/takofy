@@ -1000,8 +1000,30 @@ a.section__link:hover {
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 
-.list-more:hover,
-.list-more:focus-visible {
+/* Centred, for a control that belongs to the body under it rather than to the
+   section's own axis: a row that can grow says so where it would grow. */
+.list-more--centred {
+  justify-content: center;
+}
+
+/* The one press that finds nothing is a sentence, not a control: it keeps the
+   line's height, loses the hover and the chevron, and goes on the next press. */
+.list-more--quiet {
+  justify-content: center;
+  color: var(--color-text-subtle);
+  pointer-events: none;
+}
+
+/* While the next ring is being fetched the line stays where it is, dim and
+   inert: the same wait the head's square draws, in the same tokens. */
+.list-more[disabled],
+.list-more[aria-busy="true"] {
+  color: var(--color-text-subtle);
+  cursor: default;
+}
+
+.list-more:not([disabled]):hover,
+.list-more:not([disabled]):focus-visible {
   background: var(--color-row-hover);
   color: var(--color-text);
 }

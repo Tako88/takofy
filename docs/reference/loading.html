@@ -76,13 +76,13 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Loading states</h1>
-        <p class="page-head__note">Concept · 10 states · no spinners</p>
+        <p class="page-head__note">Concept · 11 states · no spinners</p>
       </div>
 
       <p class="states__intro">
         Nothing in this client spins. When the catalogue is late, the interface keeps the shape of
         what is coming, counts what it already holds, and reports it in the same mono voice it uses
-        for a bitrate. Ten states are documented here; the first and the fifth animate on this page.
+        for a bitrate. Eleven states are documented here; the first and the fifth animate on this page.
       </p>
 
       <!-- ============ 01 · Library grid ============ -->
@@ -884,6 +884,50 @@
         <p class="states__note">
           The greeting and its mono count survive an empty library; only the shelves go. One paragraph
           says plainly why the page is empty, and two doors lead somewhere that is not empty.
+        </p>
+      </section>
+
+      <!-- ============ 11 · Drawing deeper ============ -->
+      <section class="section" aria-labelledby="state-deeper">
+        <div class="section__head">
+          <h2 class="section__title" id="state-deeper"><span class="states__no">11</span>Drawing deeper</h2>
+          <p class="label states__meta">more · drawing · nothing deeper</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">More to draw</span>
+            <span class="label states__status">a press fetches the next ring</span>
+          </div>
+          <button class="list-more list-more--centred" type="button">Load more</button>
+
+          <div class="states__bar">
+            <span class="label">Drawing</span>
+            <span class="label states__status">dim and inert, no spinner</span>
+          </div>
+          <button class="list-more list-more--centred" type="button" aria-busy="true" disabled>Load more</button>
+
+          <div class="states__bar">
+            <span class="label">Nothing deeper</span>
+            <span class="label states__status">the line is not drawn at all</span>
+          </div>
+          <p class="label">no line · the row ends where its last card ends</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">One press that found nothing</span>
+            <span class="label states__status">the sentence replaces the line, once</span>
+          </div>
+          <p class="list-more list-more--quiet">Nothing deeper from here</p>
+        </div>
+
+        <p class="states__note">
+          A row grows by walking outward from the seed it already has: every press fetches one more ring
+          of neighbours, drops everything the row has already shown and everything the seed's own source
+          names, and appends what is left. The line is the whole control — no third square in the head —
+          and it reuses the one this page already draws for a row that leads somewhere: full width,
+          muted, centred here because it belongs to the body rather than to a section.
         </p>
       </section>
 
