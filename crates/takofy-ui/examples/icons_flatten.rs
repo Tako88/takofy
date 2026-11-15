@@ -55,6 +55,7 @@ const SCOPE: &[(&str, &str)] = &[
     ("i-more", "More"),
     ("i-close", "Close"),
     ("i-plus", "Plus"),
+    ("i-minus", "Minus"),
     ("i-volume", "Volume"),
     ("i-volume-low", "VolumeLow"),
     ("i-volume-mute", "VolumeMute"),

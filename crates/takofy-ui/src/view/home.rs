@@ -66,6 +66,8 @@ pub(super) struct Pressed {
     pub(super) reroll: Option<takofy_model::home::DiscoveryKind>,
     /// The artist whose card's Follow tile was pressed.
     pub(super) follow: Option<String>,
+    /// The artist whose card's tile was pressed to take that follow back.
+    pub(super) unfollow: Option<String>,
     /// The setting the discovery switch was pressed to.
     pub(super) switch: Option<bool>,
     /// The day-one door asked the topbar's field for the keyboard.
@@ -299,6 +301,9 @@ pub(super) fn home_view(
     }
     if let Some(artist) = out.follow.take() {
         return library.ask_follow(&artist, true);
+    }
+    if let Some(artist) = out.unfollow.take() {
+        return library.ask_follow(&artist, false);
     }
     if let Some(enabled) = out.switch.take() {
         // The binary hands the setting to the gate and the preferences file

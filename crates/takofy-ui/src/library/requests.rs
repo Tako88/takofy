@@ -362,6 +362,9 @@ impl Library {
 
     /// The followed artists' ask, in the same shape.
     fn artists_ask(&mut self) -> Option<Command> {
+        if std::mem::take(&mut self.artists_stale) {
+            return Some(Command::LoadFollowedArtists);
+        }
         restore::ask(&mut self.followed_artists, &mut self.sources.artists)
             .then_some(Command::LoadFollowedArtists)
     }

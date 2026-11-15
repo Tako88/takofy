@@ -38,6 +38,11 @@ impl Owned {
     pub fn contains(&self, artist: &str) -> bool {
         self.artists.contains(artist)
     }
+
+    /// Forgets `artist`, so a card the user has just followed stays drawable.
+    pub fn forget(&mut self, artist: &str) {
+        self.artists.remove(artist);
+    }
 }
 
 /// Whether `card` may be drawn: an artist the library does not already hold,

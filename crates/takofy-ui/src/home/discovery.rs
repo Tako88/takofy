@@ -103,6 +103,13 @@ pub struct State {
     latched: Option<Day>,
     rows: [Row; 3],
     asks_left: usize,
+    /// The artists followed since this page was opened.
+    ///
+    /// A follow removes its card, because the artist is no longer outside the
+    /// library. Keeping the click that did it undoable for the rest of the open
+    /// is worth more than the tidiness of an immediate removal: the band is
+    /// rebuilt on the next open, and the artist is not in it then.
+    just_followed: HashSet<String>,
 }
 
 impl Default for State {
@@ -112,6 +119,7 @@ impl Default for State {
             latched: None,
             rows: std::array::from_fn(|_| Row::default()),
             asks_left: 0,
+            just_followed: HashSet::new(),
         }
     }
 }
@@ -130,12 +138,33 @@ impl State {
         if self.day != Some(day) {
             self.day = None;
             self.rows = std::array::from_fn(|_| Row::default());
+            self.just_followed.clear();
         }
     }
 
     /// The day this page opened on, once the binary has named it.
     pub fn latched(&self) -> Option<Day> {
         self.latched
+    }
+
+    /// Records a follow the wire confirmed, so its card keeps its place.
+    pub fn note_follow(&mut self, artist: &str) {
+        self.just_followed.insert(artist.to_owned());
+    }
+
+    /// Records an unfollow, which puts the card back among the fresh ones.
+    pub fn note_unfollow(&mut self, artist: &str) {
+        self.just_followed.remove(artist);
+    }
+
+    /// Whether `artist` was followed since this page was opened.
+    pub fn followed_here(&self, artist: &str) -> bool {
+        self.just_followed.contains(artist)
+    }
+
+    /// The artists followed since this page was opened, in no order.
+    pub fn just_followed(&self) -> impl Iterator<Item = &str> {
+        self.just_followed.iter().map(String::as_str)
     }
 
     /// Whether `day`'s pools have been built.
@@ -148,6 +177,7 @@ impl State {
     pub fn open(&mut self) {
         self.latched = None;
         self.asks_left = ASKS_PER_OPEN;
+        self.just_followed.clear();
         for row in &mut self.rows {
             if matches!(row.read, Read::Asked | Read::Unreachable) {
                 row.read = Read::Idle;

@@ -15,6 +15,7 @@ use crate::format::{
 use crate::home::discovery::{Band, RowRead, RowView};
 use crate::layout::Table;
 use crate::library::Library;
+use crate::message::Update;
 use crate::theme::{Tokens, fonts, style};
 use crate::view::controls;
 use crate::view::playlist::root::MediaDraw;
@@ -567,6 +568,46 @@ fn pressing_the_follow_tile_asks_for_the_follow_and_opens_nothing() {
     let frame = click(&ctx, &band, &Library::default(), at);
 
     assert_eq!(frame.out.follow, Some(ARTIST.to_owned()));
+    assert_eq!(frame.out.discovery, None);
+    assert_eq!(frame.open, None, "the tile does not fall through");
+}
+
+#[test]
+fn a_followed_card_offers_the_undo_in_the_same_tile() {
+    let ctx = context();
+    let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
+    let cards = vec![card(0, 1)];
+    let refs: Vec<&DiscoveryCard> = cards.iter().collect();
+    let band = Band::Rows(vec![row(&seed, refs, RowRead::Ready)]);
+
+    let mut library = Library::default();
+    library.apply(&Update::Followed {
+        artist: ARTIST.to_owned(),
+        followed: true,
+    });
+    assert!(library.followed_here(ARTIST), "arrange: the follow landed");
+
+    let key = (SEED, ARTIST);
+    let dry = run(&ctx, &band, &library, Table::Full, Vec::new());
+    let point = reveal_point(&dry.output, "Artist 0");
+    let at = probe(
+        &ctx,
+        &band,
+        &library,
+        Table::Full,
+        vec![Event::PointerMoved(point)],
+        |ui| {
+            ui.ctx()
+                .read_response(controls::slot_id(ui, Control::DiscoveryFollow, key))
+                .expect("the tile is drawn present")
+                .rect
+                .center()
+        },
+    );
+    let frame = click(&ctx, &band, &library, at);
+
+    assert_eq!(frame.out.unfollow, Some(ARTIST.to_owned()));
+    assert_eq!(frame.out.follow, None, "the tile does not follow again");
     assert_eq!(frame.out.discovery, None);
     assert_eq!(frame.open, None, "the tile does not fall through");
 }

@@ -64,6 +64,7 @@ pub enum Icon {
     More,
     Close,
     Plus,
+    Minus,
     Volume,
     VolumeLow,
     VolumeMute,
@@ -78,7 +79,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -98,6 +99,7 @@ impl Icon {
         Self::More,
         Self::Close,
         Self::Plus,
+        Self::Minus,
         Self::Volume,
         Self::VolumeLow,
         Self::VolumeMute,

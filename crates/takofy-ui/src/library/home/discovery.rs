@@ -57,6 +57,12 @@ impl Library {
 
     /// The read Discovery owes, if one is due.
     ///
+    /// Whether `artist` was followed since Home was opened, which is what turns
+    /// a card's Follow tile into the undo of that follow.
+    pub(crate) fn followed_here(&self, artist: &str) -> bool {
+        self.home.discovery.followed_here(artist)
+    }
+
     /// One ask per call, and the row machine never asks the same seed twice, so
     /// a lookup that never answers costs one ask rather than one a frame.
     pub(super) fn discovery_ask(&mut self) -> Option<Command> {
@@ -97,22 +103,35 @@ pub(in crate::library) fn band(library: &Library) -> Band<'_> {
     if library.home.discovery.latched().is_none() {
         return Band::Waiting;
     }
+    let owned = owned_of(library);
+    let band = library.home.discovery.band(&owned, &library.hidden);
     match library.discovery_inputs() {
         Inputs::Failed => Band::Absent,
-        Inputs::Waiting => Band::Waiting,
-        Inputs::Ready => {
-            let owned = owned_of(library);
-            library.home.discovery.band(&owned, &library.hidden)
-        }
+        // A list reloading is the band's own write settling, so what has already
+        // landed keeps drawing until the lists answer again: the rows must not
+        // blink out under the click that asked for them.
+        Inputs::Waiting => match band {
+            Band::Rows(_) => band,
+            _ => Band::Waiting,
+        },
+        Inputs::Ready => band,
     }
 }
 
 /// The artists the library already holds.
+///
+/// An artist followed since this page opened is left out, so its card keeps its
+/// place and the tile that would undo it stays reachable. The next open rebuilds
+/// the band without it.
 fn owned_of(library: &Library) -> Owned {
-    match (&library.followed_artists, &library.saved_albums) {
+    let mut owned = match (&library.followed_artists, &library.saved_albums) {
         (Load::Ready(artists), Load::Ready(albums)) => Owned::new(artists, albums),
         _ => Owned::default(),
+    };
+    for artist in library.home.discovery.just_followed() {
+        owned.forget(artist);
     }
+    owned
 }
 
 #[cfg(test)]

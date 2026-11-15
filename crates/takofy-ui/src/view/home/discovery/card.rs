@@ -106,6 +106,7 @@ pub(super) fn show(
     let mut pressed_play = false;
 
     if revealed {
+        let following = draw.library.followed_here(&card.data.artist.uri);
         let follow_rect = discovery::follow(art);
         let follow = controls::plate_tile_keyed(
             ui,
@@ -113,13 +114,21 @@ pub(super) fn show(
             Control::DiscoveryFollow,
             key,
             follow_rect,
-            Icon::Plus,
+            if following { Icon::Minus } else { Icon::Plus },
             glyph,
-            &format!("Follow {}", card.data.artist.name),
+            &if following {
+                format!("Unfollow {}", card.data.artist.name)
+            } else {
+                format!("Follow {}", card.data.artist.name)
+            },
             live && !draw.library.follow_pending(&card.data.artist.uri),
         );
         if follow.response.clicked() {
-            out.follow = Some(card.data.artist.uri.clone());
+            if following {
+                out.unfollow = Some(card.data.artist.uri.clone());
+            } else {
+                out.follow = Some(card.data.artist.uri.clone());
+            }
         }
 
         let more = controls::plate_tile_open(

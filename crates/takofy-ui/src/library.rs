@@ -235,6 +235,12 @@ pub struct Library {
     /// writes would land in order and leave the two apart. The page's own button
     /// is guarded by [`Follow`] instead.
     follow_writes: HashMap<String, bool>,
+    /// Whether a follow landed and the list that holds it wants re-reading.
+    ///
+    /// The rows stay on screen while that read is in flight: dropping a live
+    /// list to `Idle` for one round trip takes every shelf drawn from it with
+    /// it, and the page jumps under the click that caused it.
+    artists_stale: bool,
     /// The artist page's discography filter. Unlike `follow`, going home does
     /// not reset it: home then Back reloads the same artist, so the choice is
     /// kept, and opening a different artist is what resets it.

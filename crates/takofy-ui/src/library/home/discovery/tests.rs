@@ -274,6 +274,8 @@ fn each_row_asks_once_and_a_new_open_asks_again() {
     assert!(asks(&mut library).is_empty(), "nor on a later frame");
 
     library.open(Page::Album("spotify:album:x".to_owned()));
+    // A genuine re-open: leaving Home and coming back.
+    library.open(Page::Artist("spotify:artist:elsewhere".to_owned()));
     library.go_home(NOW_MS + 1_000);
 
     assert_eq!(
@@ -456,9 +458,10 @@ fn a_library_change_mid_day_keeps_the_rows_it_drew() {
     );
 }
 
-/// A follow leaves the card where it was until the whole list lands again.
+/// A follow keeps its card, and the tile that undoes it, until the page is
+/// opened again.
 #[test]
-fn a_followed_card_leaves_only_when_the_list_reloads() {
+fn a_followed_card_stays_so_the_click_can_be_taken_back() {
     let mut library = ready();
     let seeds = asks_on(&mut library, today());
     let uri = "spotify:artist:n1";
@@ -471,32 +474,88 @@ fn a_followed_card_leaves_only_when_the_list_reloads() {
             followed: true,
         })
     );
-    assert_eq!(
-        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
-        [uri],
-        "the write has not landed, so the card stays"
-    );
+    assert!(!library.followed_here(uri), "the write has not landed yet");
 
     library.apply(&Update::Followed {
         artist: uri.to_owned(),
         followed: true,
     });
+    assert!(
+        matches!(library.followed_artists, Load::Ready(_)),
+        "the rows stay while the refresh is in flight, so no shelf loses its place"
+    );
     assert_eq!(
-        library.followed_artists,
-        Load::Idle,
-        "arrange: the answer resets the list for its read"
+        library.followed_artists_request(),
+        Some(Command::LoadFollowedArtists),
+        "the artist's name and portrait come from a read"
     );
     assert!(
-        drawn(&library.discovery_band(), DiscoveryKind::Playlist).is_empty(),
-        "the band is drawn empty through the waiting interlude"
+        library.followed_here(uri),
+        "the tile now offers the undo of that follow"
+    );
+    assert_eq!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
+        [uri],
+        "the card keeps its place through the reload"
     );
 
     let mut artists = lists().1;
     artists.push(artist(uri));
     library.apply(&Update::FollowedArtists(artists));
+    assert_eq!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
+        [uri],
+        "the list holds the artist, and the card is still there on this page"
+    );
+
+    library.apply(&Update::Followed {
+        artist: uri.to_owned(),
+        followed: false,
+    });
+    assert!(!library.followed_here(uri), "the undo took it back");
+    assert_eq!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist),
+        [uri],
+        "an unfollowed artist is fresh again"
+    );
+}
+
+/// The next page does not carry it: an artist you follow is not outside your
+/// library.
+#[test]
+fn the_next_open_drops_a_card_followed_here() {
+    let mut library = ready();
+    let seeds = asks_on(&mut library, today());
+    let uri = "spotify:artist:n1";
+    land(&mut library, &seeds[0], vec![card(uri)]);
+
+    library.ask_follow(uri, true);
+    library.apply(&Update::Followed {
+        artist: uri.to_owned(),
+        followed: true,
+    });
+    let mut artists = lists().1;
+    artists.push(artist(uri));
+    library.apply(&Update::FollowedArtists(artists));
+
+    // A genuine re-open: leaving Home and coming back.
+    library.open(Page::Artist("spotify:artist:elsewhere".to_owned()));
+    library.go_home(NOW_MS + 1_000);
+    // A new page re-reads the lists, so the band is rebuilt from answers that
+    // have landed again rather than from the last page's.
+    let mut artists = lists().1;
+    artists.push(artist(uri));
+    library.apply(&Update::FollowedArtists(artists));
+    let _ = asks_on(&mut library, today());
+    let asked = asks(&mut library);
+    if let Some(seed) = asked.first() {
+        land(&mut library, seed, vec![card(uri)]);
+    }
+    let band = library.discovery_band();
+    let shown = drawn(&band, DiscoveryKind::Playlist);
     assert!(
-        drawn(&library.discovery_band(), DiscoveryKind::Playlist).is_empty(),
-        "the reloaded list holds the artist, so the card is gone"
+        !shown.contains(&uri),
+        "a followed artist is no longer outside the library: {shown:?}"
     );
 }
 

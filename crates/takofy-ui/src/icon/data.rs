@@ -581,6 +581,13 @@ const PLUS_LINES: &[Line] = &[
 ];
 const PLUS_FILLS: &[&[Point]] = &[];
 
+const MINUS_LINES: &[Line] = &[Line {
+    points: &[(5.4, 12.0), (18.6, 12.0)],
+    closed: false,
+    width: None,
+}];
+const MINUS_FILLS: &[&[Point]] = &[];
+
 const VOLUME_LINES: &[Line] = &[
     Line {
         points: &[
@@ -1210,6 +1217,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: PLUS_LINES,
             fills: PLUS_FILLS,
         },
+        Icon::Minus => Glyph {
+            source: 0xe27370ae5b20d73c,
+            lines: MINUS_LINES,
+            fills: MINUS_FILLS,
+        },
         Icon::Volume => Glyph {
             source: 0x8120d018f45fca2f,
             lines: VOLUME_LINES,
@@ -1289,6 +1301,7 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::More => "i-more",
         Icon::Close => "i-close",
         Icon::Plus => "i-plus",
+        Icon::Minus => "i-minus",
         Icon::Volume => "i-volume",
         Icon::VolumeLow => "i-volume-low",
         Icon::VolumeMute => "i-volume-mute",
