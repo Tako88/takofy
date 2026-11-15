@@ -762,15 +762,26 @@
       var skeleton = $("[data-load-skeleton]", demo);
       var content = $("[data-load-content]", demo);
       var status = $("[data-load-status]", demo);
+      var ledgerWaiting = $("[data-load-ledger-waiting]", demo);
+      var ledgerLoaded = $("[data-load-ledger-loaded]", demo);
       var replay = $("[data-load-replay]", demo);
       var total = skeleton ? skeleton.children.length : 0;
       var timer = 0;
+
+      /* A discovery row's ledger is arithmetic, not a heading, so it cannot
+         arrive with the head: while the outside graph is being asked it says so
+         and claims no count. */
+      function setLedger(settled) {
+        if (ledgerWaiting) ledgerWaiting.hidden = settled;
+        if (ledgerLoaded) ledgerLoaded.hidden = !settled;
+      }
 
       function land() {
         if (out) out.setAttribute("aria-busy", "false");
         if (skeleton) skeleton.hidden = true;
         if (content) content.hidden = false;
         if (status) status.textContent = total + " of " + total + " items loaded";
+        setLedger(true);
         if (replay) {
           replay.disabled = false;
           replay.textContent = "Replay load";
@@ -783,6 +794,7 @@
         if (skeleton) skeleton.hidden = false;
         if (content) content.hidden = true;
         if (status) status.textContent = "0 of " + total + " items loaded";
+        setLedger(false);
         if (replay) {
           replay.disabled = true;
           replay.textContent = "Loading…";

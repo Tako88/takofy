@@ -72,31 +72,189 @@
 
     There is no feed endpoint behind this client, so every shelf is built from
     something the user can see: a save date, a seed named in the title, a counted
-    holding. Two rules follow, and both are visible in the markup below.
+    holding. Three rules follow, and all three are visible in the markup below.
 
-    1. A shelf's title names its seed — "Because you follow Marta Ísleif" —
-       and inside the stations band every station head names its own: a playlist,
-       an artist you follow, an album you saved, the songs you have liked.
-       "Made for you" would be a claim this app cannot back up.
-    2. A shelf that needs the wire says so in the colophon at the foot, which
-       also counts what was read locally. Nothing here implies play history,
-       because none is recorded.
+    1. A shelf's title names its seed. Inside the stations band every station head
+       names its own; inside the discovery band every row does. "Made for you"
+       would be a claim this app cannot back up.
+    2. The discovery band is the only place the page looks outward, and it looks
+       exactly one hop. An open outside graph (Deezer, no key, no account) decides
+       *which* artist sits next to a seed; every face, name and play is still
+       Spotify's. Anything already owned or followed is dropped before it is
+       drawn, so a row shows two cards where it found nine.
+    3. A row is drawn from confirmed items only, and drawn at their length: four
+       neighbours make four columns, two make two, one makes one, and a seed with
+       nothing you don't already have makes no row at all. Nothing here draws a
+       slot it cannot fill, counts what is missing, or offers to be retried — the
+       band is simply as long as its neighbours are.
 
-    Shelf order and seeds rotate between opens; the bodies do not change, so a
-    shelf never has to be redesigned to become a different shelf.
+    Nothing here implies play history, because none is recorded.
   -->
   <main class="view">
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title" data-greeting>Good evening</h1>
-        <p class="page-head__note">5 shelves · from 28 saved</p>
+        <p class="page-head__note">5 shelves · 28 saved items</p>
       </div>
 
-      <!-- 01 — Recently saved -->
-      <section class="section section--first" aria-labelledby="shelf-recent">
+      <!-- 01 — Discovery: a seed, the neighbours an outside graph puts next to it.
+           Every body here is an existing component; only its length varies, and
+           its length is whatever the filter confirmed. -->
+      <section class="section section--first" aria-labelledby="shelf-discovery">
         <div class="section__head">
-          <h2 class="section__title" id="shelf-recent">Saved in the last 30 days</h2>
-          <span class="section__link">23 added</span>
+          <h2 class="section__title" id="shelf-discovery">Just outside your library</h2>
+          <span class="section__link">Deezer · nothing here is yours</span>
+        </div>
+
+        <!-- A — a full row: four faces, none of them yours -->
+        <article class="discovery" aria-labelledby="disc-seed-1">
+          <div class="row-head">
+            <div class="row-head__about">
+              <h3 class="row-head__seed" id="disc-seed-1"><a href="playlist.html">Windows Down</a></h3>
+              <p class="row-head__source">From your playlist · Alternative</p>
+            </div>
+            <p class="row-head__ledger">4 artists</p>
+          </div>
+
+          <ul class="disc-faces" data-playing-scope>
+            <li class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/sorne.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Low Beam" data-artist="Sorne" data-art="img/artists/sorne.jpg" data-duration="214" aria-label="Play Sorne">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Sorne</a>
+              </div>
+            </li>
+            <li class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/ilse-vane.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Green Field" data-artist="Ilse Vane" data-art="img/artists/ilse-vane.jpg" data-duration="236" aria-label="Play Ilse Vane">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Ilse Vane</a>
+              </div>
+            </li>
+            <li class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/haus-marrow.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Kettle Smoke" data-artist="Haus Marrow" data-art="img/artists/haus-marrow.jpg" data-duration="198" aria-label="Play Haus Marrow">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Haus Marrow</a>
+              </div>
+            </li>
+            <li class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/tidewater-choir.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Salt Rite" data-artist="Tidewater Choir" data-art="img/artists/tidewater-choir.jpg" data-duration="271" aria-label="Play Tidewater Choir">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Tidewater Choir</a>
+              </div>
+            </li>
+          </ul>
+        </article>
+
+        <!-- B — one face and the tracks worth hearing by it: the same seam the
+             stations band uses, turned on its side, for a seed whose neighbour is
+             stronger than it is numerous. -->
+        <article class="discovery" aria-labelledby="disc-seed-2">
+          <div class="row-head">
+            <div class="row-head__about">
+              <h3 class="row-head__seed" id="disc-seed-2"><a href="artist.html">Marta Ísleif</a></h3>
+              <p class="row-head__source">From an artist you follow · Electro · Films/Games</p>
+            </div>
+            <p class="row-head__ledger">1 artist · 3 tracks</p>
+          </div>
+
+          <div class="disc-split">
+            <div class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/nell-varga.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Ashlight" data-artist="Nell Varga" data-art="img/covers/ashlight.jpg" data-duration="232" aria-label="Play Nell Varga">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Nell Varga</a>
+                <p class="card__sub">4 releases</p>
+              </div>
+            </div>
+
+            <ul class="disc-split__tracks" aria-label="Tracks by Nell Varga" data-playing-scope>
+              <li class="mini-row" role="button" tabindex="0" data-track="Ashlight" data-artist="Nell Varga" data-art="img/covers/ashlight.jpg" data-duration="232" aria-label="Play Ashlight by Nell Varga">
+                <span class="mini-row__art"><img src="img/covers/ashlight.jpg" alt="" loading="lazy" /></span>
+                <span><span class="mini-row__name truncate">Ashlight</span><span class="mini-row__sub truncate">Nell Varga</span></span>
+                <span class="mini-row__meta">3:52</span>
+              </li>
+              <li class="mini-row" role="button" tabindex="0" data-track="Winter Ferry" data-artist="Nell Varga" data-art="img/covers/winter-ferry.jpg" data-duration="258" aria-label="Play Winter Ferry by Nell Varga">
+                <span class="mini-row__art"><img src="img/covers/winter-ferry.jpg" alt="" loading="lazy" /></span>
+                <span><span class="mini-row__name truncate">Winter Ferry</span><span class="mini-row__sub truncate">Nell Varga</span></span>
+                <span class="mini-row__meta">4:18</span>
+              </li>
+              <li class="mini-row" role="button" tabindex="0" data-track="Nine Bells" data-artist="Nell Varga" data-art="img/covers/nine-bells.jpg" data-duration="302" aria-label="Play Nine Bells by Nell Varga">
+                <span class="mini-row__art"><img src="img/covers/nine-bells.jpg" alt="" loading="lazy" /></span>
+                <span><span class="mini-row__name truncate">Nine Bells</span><span class="mini-row__sub truncate">Nell Varga</span></span>
+                <span class="mini-row__meta">5:02</span>
+              </li>
+            </ul>
+          </div>
+        </article>
+
+        <!-- C — a short row: the two that survived, and the sentence that stands
+             where the seven dropped ones would have been drawn. -->
+        <article class="discovery" aria-labelledby="disc-seed-3">
+          <div class="row-head">
+            <div class="row-head__about">
+              <h3 class="row-head__seed" id="disc-seed-3"><a href="album.html">Halcyon Street</a></h3>
+              <p class="row-head__source">From an album you saved · Indie Rock</p>
+            </div>
+            <p class="row-head__ledger">2 artists</p>
+          </div>
+
+          <ul class="disc-faces disc-faces--two" data-playing-scope>
+            <li class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/ora-fenn.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Long Field" data-artist="Ora Fenn" data-art="img/artists/ora-fenn.jpg" data-duration="246" aria-label="Play Ora Fenn">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Ora Fenn</a>
+                <p class="card__sub">4 releases</p>
+              </div>
+            </li>
+            <li class="card card--artist card--centred">
+              <div class="card__art">
+                <img src="img/artists/sethe-morrow.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Carrow" data-artist="Sethe Morrow" data-art="img/artists/sethe-morrow.jpg" data-duration="233" aria-label="Play Sethe Morrow">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Sethe Morrow</a>
+                <p class="card__sub">3 releases</p>
+              </div>
+            </li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- 02 — Recently added -->
+      <section class="section" aria-labelledby="shelf-recent">
+        <div class="section__head">
+          <h2 class="section__title" id="shelf-recent">Recently added</h2>
+          <span class="section__link">23 items</span>
         </div>
 
         <ul class="card-grid" data-playing-scope>
@@ -156,7 +314,7 @@
         </a>
       </section>
 
-      <!-- 02 — Stations: four seeds, four lists, one body -->
+      <!-- 03 — Stations: four seeds, four lists, one body -->
       <section class="section" aria-labelledby="shelf-stations">
         <div class="section__head">
           <h2 class="section__title" id="shelf-stations">Stations built from your library</h2>
@@ -165,12 +323,12 @@
 
         <ul class="row-grid" data-playing-scope>
           <li class="station">
-            <div class="station__head">
-              <div class="station__about">
-                <p class="station__seed"><a href="playlist.html">Late Night Drive</a></p>
-                <p class="station__source">From your playlist · 12 tracks</p>
+            <div class="row-head">
+              <div class="row-head__about">
+                <p class="row-head__seed"><a href="playlist.html">Late Night Drive</a></p>
+                <p class="row-head__source">From your playlist · 12 tracks</p>
               </div>
-              <button class="station__play" type="button" data-track="Signal Decay" data-artist="Nils Aker" data-art="img/covers/signal-decay.jpg" data-duration="252" aria-label="Play the Late Night Drive station">
+              <button class="row-head__action" type="button" data-track="Signal Decay" data-artist="Nils Aker" data-art="img/covers/signal-decay.jpg" data-duration="252" aria-label="Play the Late Night Drive station">
                 <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
               </button>
             </div>
@@ -194,12 +352,12 @@
           </li>
 
           <li class="station">
-            <div class="station__head">
-              <div class="station__about">
-                <p class="station__seed"><a href="artist.html">Vela Moreno</a></p>
-                <p class="station__source">From an artist you follow · 26 tracks</p>
+            <div class="row-head">
+              <div class="row-head__about">
+                <p class="row-head__seed"><a href="artist.html">Vela Moreno</a></p>
+                <p class="row-head__source">From an artist you follow · 26 tracks</p>
               </div>
-              <button class="station__play" type="button" data-track="Slow Tide" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="222" aria-label="Play the Vela Moreno station">
+              <button class="row-head__action" type="button" data-track="Slow Tide" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="222" aria-label="Play the Vela Moreno station">
                 <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
               </button>
             </div>
@@ -223,12 +381,12 @@
           </li>
 
           <li class="station">
-            <div class="station__head">
-              <div class="station__about">
-                <p class="station__seed"><a href="album.html">Halcyon Street</a></p>
-                <p class="station__source">From an album you saved · 10 tracks</p>
+            <div class="row-head">
+              <div class="row-head__about">
+                <p class="row-head__seed"><a href="album.html">Halcyon Street</a></p>
+                <p class="row-head__source">From an album you saved · 10 tracks</p>
               </div>
-              <button class="station__play" type="button" data-track="Halcyon Street" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196" aria-label="Play the Halcyon Street station">
+              <button class="row-head__action" type="button" data-track="Halcyon Street" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196" aria-label="Play the Halcyon Street station">
                 <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
               </button>
             </div>
@@ -252,12 +410,12 @@
           </li>
 
           <li class="station">
-            <div class="station__head">
-              <div class="station__about">
-                <p class="station__seed"><a href="library.html">Liked songs</a></p>
-                <p class="station__source">From the songs you liked · 1,461 tracks</p>
+            <div class="row-head">
+              <div class="row-head__about">
+                <p class="row-head__seed"><a href="library.html">Liked songs</a></p>
+                <p class="row-head__source">From the songs you liked · 1,461 tracks</p>
               </div>
-              <button class="station__play" type="button" data-track="Wintering" data-artist="Coastal Divide" data-art="img/covers/wintering.jpg" data-duration="324" aria-label="Play the Liked songs station">
+              <button class="row-head__action" type="button" data-track="Wintering" data-artist="Coastal Divide" data-art="img/covers/wintering.jpg" data-duration="324" aria-label="Play the Liked songs station">
                 <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
               </button>
             </div>
@@ -283,66 +441,6 @@
 
         <a class="list-more" href="library.html">
           Your library
-          <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
-        </a>
-      </section>
-
-      <!-- 03 — One hop out of the artist graph -->
-      <section class="section" aria-labelledby="shelf-related">
-        <div class="section__head">
-          <h2 class="section__title" id="shelf-related">Because you follow Marta Ísleif</h2>
-          <span class="section__link">12 related</span>
-        </div>
-
-        <ul class="card-grid" data-playing-scope>
-          <li class="card card--artist card--centred">
-            <div class="card__art">
-              <img src="img/artists/pale-harbour.jpg" alt="" loading="lazy" />
-              <button class="card__play" type="button" data-track="Undertow" data-artist="Pale Harbour" data-art="img/covers/undertow.jpg" data-duration="242" aria-label="Play Pale Harbour">
-                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-              </button>
-            </div>
-            <div class="card__body">
-              <a class="card__title truncate" href="artist.html">Pale Harbour</a>
-            </div>
-          </li>
-          <li class="card card--artist card--centred">
-            <div class="card__art">
-              <img src="img/artists/wires-and-wolves.jpg" alt="" loading="lazy" />
-              <button class="card__play" type="button" data-track="Chrome Gospel" data-artist="Wires &amp; Wolves" data-art="img/covers/chrome-gospel.jpg" data-duration="261" aria-label="Play Wires &amp; Wolves">
-                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-              </button>
-            </div>
-            <div class="card__body">
-              <a class="card__title truncate" href="artist.html">Wires &amp; Wolves</a>
-            </div>
-          </li>
-          <li class="card card--artist card--centred">
-            <div class="card__art">
-              <img src="img/artists/hana-so.jpg" alt="" loading="lazy" />
-              <button class="card__play" type="button" data-track="Blue Hour" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="215" aria-label="Play Hana Sō">
-                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-              </button>
-            </div>
-            <div class="card__body">
-              <a class="card__title truncate" href="artist.html">Hana Sō</a>
-            </div>
-          </li>
-          <li class="card card--artist card--centred">
-            <div class="card__art">
-              <img src="img/artists/the-rookery.jpg" alt="" loading="lazy" />
-              <button class="card__play" type="button" data-track="Glovebox" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="214" aria-label="Play The Rookery">
-                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-              </button>
-            </div>
-            <div class="card__body">
-              <a class="card__title truncate" href="artist.html">The Rookery</a>
-            </div>
-          </li>
-        </ul>
-
-        <a class="list-more" href="artist.html">
-          All 12 artists near Marta Ísleif
           <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
         </a>
       </section>
@@ -462,9 +560,14 @@
       </section>
 
       <footer class="colophon">
-        <p class="colophon__line">5 shelves · 28 saved items · 4 calls to the wire</p>
+        <p class="colophon__line">5 shelves · 28 saved items · 4 seeds sent to Deezer</p>
         <p class="colophon__note">
-          No play history and no curated feed: every title above names the thing in your library it was built from.
+          No play history and no curated feed: every title above names the thing in your library it was
+          built from. The discovery rows ask one open outside graph — Deezer, no key, no account — which
+          artist sits next to a seed; it decides nothing that is drawn here, because faces, names and
+          playback are Spotify's. Anything you already own or follow is dropped before it is shown, and a
+          seed with no neighbour you don't already have simply has no row: the band is as long as its
+          confirmed neighbours, no longer and no shorter.
         </p>
       </footer>
     </div>

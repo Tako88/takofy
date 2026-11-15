@@ -76,13 +76,13 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Loading states</h1>
-        <p class="page-head__note">Concept · 6 states · no spinners</p>
+        <p class="page-head__note">Concept · 7 states · no spinners</p>
       </div>
 
       <p class="states__intro">
         Nothing in this client spins. When the catalogue is late, the interface keeps the shape of
         what is coming, counts what it already holds, and reports it in the same mono voice it uses
-        for a bitrate. Six states are documented here; the first and the fifth are live.
+        for a bitrate. Seven states are documented here; the first and the fifth animate on this page.
       </p>
 
       <!-- ============ 01 · Library grid ============ -->
@@ -385,11 +385,11 @@
         </div>
       </section>
 
-      <!-- ============ 05 · Home, one shelf in flight ============ -->
+      <!-- ============ 05 · Home, one discovery row in flight ============ -->
       <section class="section" aria-labelledby="state-home">
         <div class="section__head">
-          <h2 class="section__title" id="state-home"><span class="states__no">05</span>Home, one shelf in flight</h2>
-          <p class="label states__meta">head first · 4 cards · 1 request</p>
+          <h2 class="section__title" id="state-home"><span class="states__no">05</span>Home, one discovery row in flight</h2>
+          <p class="label states__meta">head first · 4 faces · count last</p>
         </div>
 
         <div class="states__stage load-demo" data-load-demo>
@@ -400,73 +400,166 @@
           </div>
 
           <div class="load-demo__out" data-load-out aria-busy="true">
-            <div class="section__head">
-              <h3 class="section__title">Because you follow Marta Ísleif</h3>
-              <span class="section__link">12 related</span>
-            </div>
+            <div class="discovery">
+              <div class="row-head">
+                <div class="row-head__about">
+                  <h3 class="row-head__seed"><a href="playlist.html">Windows Down</a></h3>
+                  <p class="row-head__source">From your playlist · Alternative</p>
+                </div>
+                <p class="row-head__ledger">
+                  <span data-load-ledger-waiting></span>
+                  <span data-load-ledger-loaded hidden>4 artists</span>
+                </p>
+              </div>
 
-            <ul class="card-grid load-demo__skeleton" data-load-skeleton aria-hidden="true">
-              <li class="card card--artist">
-                <div class="card__art"><span class="sk sk--fill"></span></div>
-                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+              <ul class="disc-faces load-demo__skeleton" data-load-skeleton aria-hidden="true">
+                <li class="card card--artist card--centred">
+                  <div class="card__art"><span class="sk sk--fill"></span></div>
+                  <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+                </li>
+                <li class="card card--artist card--centred">
+                  <div class="card__art"><span class="sk sk--fill"></span></div>
+                  <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+                </li>
+                <li class="card card--artist card--centred">
+                  <div class="card__art"><span class="sk sk--fill"></span></div>
+                  <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+                </li>
+                <li class="card card--artist card--centred">
+                  <div class="card__art"><span class="sk sk--fill"></span></div>
+                  <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+                </li>
+              </ul>
+
+              <ul class="disc-faces load-demo__content" data-load-content hidden>
+                <li class="card card--artist card--centred">
+                  <div class="card__art">
+                    <img src="img/artists/sorne.jpg" alt="" loading="lazy" />
+                    <button class="card__play" type="button" data-track="Low Beam" data-artist="Sorne" data-art="img/artists/sorne.jpg" data-duration="214" aria-label="Play Sorne">
+                      <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                    </button>
+                  </div>
+                  <div class="card__body">
+                    <a class="card__title truncate" href="artist.html">Sorne</a>
+                  </div>
+                </li>
+                <li class="card card--artist card--centred">
+                  <div class="card__art">
+                    <img src="img/artists/ilse-vane.jpg" alt="" loading="lazy" />
+                    <button class="card__play" type="button" data-track="Green Field" data-artist="Ilse Vane" data-art="img/artists/ilse-vane.jpg" data-duration="236" aria-label="Play Ilse Vane">
+                      <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                    </button>
+                  </div>
+                  <div class="card__body">
+                    <a class="card__title truncate" href="artist.html">Ilse Vane</a>
+                  </div>
+                </li>
+                <li class="card card--artist card--centred">
+                  <div class="card__art">
+                    <img src="img/artists/haus-marrow.jpg" alt="" loading="lazy" />
+                    <button class="card__play" type="button" data-track="Kettle Smoke" data-artist="Haus Marrow" data-art="img/artists/haus-marrow.jpg" data-duration="198" aria-label="Play Haus Marrow">
+                      <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                    </button>
+                  </div>
+                  <div class="card__body">
+                    <a class="card__title truncate" href="artist.html">Haus Marrow</a>
+                  </div>
+                </li>
+                <li class="card card--artist card--centred">
+                  <div class="card__art">
+                    <img src="img/artists/tidewater-choir.jpg" alt="" loading="lazy" />
+                    <button class="card__play" type="button" data-track="Salt Rite" data-artist="Tidewater Choir" data-art="img/artists/tidewater-choir.jpg" data-duration="271" aria-label="Play Tidewater Choir">
+                      <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon="true"></use></svg>
+                    </button>
+                  </div>
+                  <div class="card__body">
+                    <a class="card__title truncate" href="artist.html">Tidewater Choir</a>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          On Home only the body waits. The head and its seed are composed from the library — “from your
+          playlist, Windows Down” needs the playlist, not the wire — so they arrive immediately and hold
+          the shape the faces will take. The count on the right arrives with the faces and not before:
+          it is a fact about the answer, so while the graph is being asked the slot is simply empty. The
+          row is finished the moment its faces are.
+        </p>
+      </section>
+
+      <!-- ============ 06 · Discovery rows that don't fill ============ -->
+      <section class="section" aria-labelledby="state-discovery-short">
+        <div class="section__head">
+          <h2 class="section__title" id="state-discovery-short"><span class="states__no">06</span>Discovery rows that don't fill</h2>
+          <p class="label states__meta">2 columns · 1 column · no row</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Settled</span>
+          </div>
+
+          <!-- Two survivors make a two-column row, not four columns with two holes
+               in them, and nothing is said about the neighbours that were dropped. -->
+          <div class="discovery">
+            <div class="row-head">
+              <div class="row-head__about">
+                <h3 class="row-head__seed">Halcyon Street</h3>
+                <p class="row-head__source">From an album you saved · Indie Rock</p>
+              </div>
+              <p class="row-head__ledger">2 artists</p>
+            </div>
+            <ul class="disc-faces disc-faces--two">
+              <li class="card card--artist card--centred">
+                <div class="card__art">
+                  <img src="img/artists/ora-fenn.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Long Field" data-artist="Ora Fenn" data-art="img/artists/ora-fenn.jpg" data-duration="246" aria-label="Play Ora Fenn">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Ora Fenn</a>
+                  <p class="card__sub">4 releases</p>
+                </div>
               </li>
-              <li class="card card--artist">
-                <div class="card__art"><span class="sk sk--fill"></span></div>
-                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
-              </li>
-              <li class="card card--artist">
-                <div class="card__art"><span class="sk sk--fill"></span></div>
-                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
-              </li>
-              <li class="card card--artist">
-                <div class="card__art"><span class="sk sk--fill"></span></div>
-                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+              <li class="card card--artist card--centred">
+                <div class="card__art">
+                  <img src="img/artists/sethe-morrow.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Carrow" data-artist="Sethe Morrow" data-art="img/artists/sethe-morrow.jpg" data-duration="233" aria-label="Play Sethe Morrow">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Sethe Morrow</a>
+                  <p class="card__sub">3 releases</p>
+                </div>
               </li>
             </ul>
+          </div>
 
-            <ul class="card-grid load-demo__content" data-load-content hidden>
+          <!-- One survivor is one column: a single face at shelf size, holding
+               the row's axis on its own. -->
+          <div class="discovery">
+            <div class="row-head">
+              <div class="row-head__about">
+                <h3 class="row-head__seed">Deep Focus</h3>
+                <p class="row-head__source">From your playlist · Electro</p>
+              </div>
+              <p class="row-head__ledger">1 artist</p>
+            </div>
+            <ul class="disc-faces disc-faces--one">
               <li class="card card--artist card--centred">
                 <div class="card__art">
-                  <img src="img/artists/pale-harbour.jpg" alt="" loading="lazy" />
-                  <button class="card__play" type="button" data-track="Undertow" data-artist="Pale Harbour" data-art="img/covers/undertow.jpg" data-duration="242" aria-label="Play Pale Harbour">
+                  <img src="img/artists/nell-varga.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Ashlight" data-artist="Nell Varga" data-art="img/covers/ashlight.jpg" data-duration="232" aria-label="Play Nell Varga">
                     <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
                   </button>
                 </div>
                 <div class="card__body">
-                  <a class="card__title truncate" href="artist.html">Pale Harbour</a>
-                </div>
-              </li>
-              <li class="card card--artist card--centred">
-                <div class="card__art">
-                  <img src="img/artists/wires-and-wolves.jpg" alt="" loading="lazy" />
-                  <button class="card__play" type="button" data-track="Chrome Gospel" data-artist="Wires &amp; Wolves" data-art="img/covers/chrome-gospel.jpg" data-duration="261" aria-label="Play Wires &amp; Wolves">
-                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-                  </button>
-                </div>
-                <div class="card__body">
-                  <a class="card__title truncate" href="artist.html">Wires &amp; Wolves</a>
-                </div>
-              </li>
-              <li class="card card--artist card--centred">
-                <div class="card__art">
-                  <img src="img/artists/hana-so.jpg" alt="" loading="lazy" />
-                  <button class="card__play" type="button" data-track="Blue Hour" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="215" aria-label="Play Hana Sō">
-                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-                  </button>
-                </div>
-                <div class="card__body">
-                  <a class="card__title truncate" href="artist.html">Hana Sō</a>
-                </div>
-              </li>
-              <li class="card card--artist card--centred">
-                <div class="card__art">
-                  <img src="img/artists/the-rookery.jpg" alt="" loading="lazy" />
-                  <button class="card__play" type="button" data-track="Glovebox" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="214" aria-label="Play The Rookery">
-                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon="true"></use></svg>
-                  </button>
-                </div>
-                <div class="card__body">
-                  <a class="card__title truncate" href="artist.html">The Rookery</a>
+                  <a class="card__title truncate" href="artist.html">Nell Varga</a>
                 </div>
               </li>
             </ul>
@@ -474,18 +567,22 @@
         </div>
 
         <p class="states__note">
-          On Home only the body waits. The head is a sentence the app can compose from what it already
-          holds — “because you follow Marta Ísleif” needs the follow, not the wire — so the band arrives
-          with its title and its count and keeps the shape its cards will take underneath. A shelf
-          whose call fails keeps that head and swaps the cards for one line of explained absence; the
-          other five shelves never learn about it.
+          The column count is the item count, so a row is never longer than what it has to show. Two
+          survivors make a two-column row and each card turns on its side — the picture stays the size a
+          picture is, and the name and release count beside it take up the width, so the pair fills the
+          rule without inflating the faces. One survivor is one column, a single face at shelf size. No
+          row explains its own shortfall, offers a retry, or names a neighbour that was dropped for
+          already being yours: a short row is a short row, the same way “9 artists” is a fact and not an
+          apology. And the last case needs no drawing at all — a seed with nothing you don't already have
+          contributes no row, no head, no line of explanation. The band is one row shorter than it was
+          yesterday and longer than it will be tomorrow.
         </p>
       </section>
 
-      <!-- ============ 06 · Home on day one ============ -->
+      <!-- ============ 07 · Home on day one ============ -->
       <section class="section" aria-labelledby="state-day-one">
         <div class="section__head">
-          <h2 class="section__title" id="state-day-one"><span class="states__no">06</span>Home, day one</h2>
+          <h2 class="section__title" id="state-day-one"><span class="states__no">07</span>Home, day one</h2>
           <p class="label states__meta">0 shelves · two ways out</p>
         </div>
 

@@ -1251,35 +1251,44 @@ a.section__link:hover {
   gap: var(--space-1);
 }
 
-.station__head {
+/* One head for anything that names its own seed — a station, a discovery row.
+   The seed is the visible reason the body exists, so it is set as the row's
+   heading and the line under it says where the seed came from. The trailing
+   edge carries what the row has to report: a count, a filter ledger, or the
+   control that plays the whole list. */
+.row-head {
   display: flex;
-  align-items: center;
+  /* Baseline, not centre: the ledger is a line of accounting and it belongs on
+     the seed's line, not floating between the seed and its provenance. */
+  align-items: baseline;
   justify-content: space-between;
   gap: var(--space-3);
-  /* Sits on the shelf's axis, level with the art below it rather than with the
-     row titles inside it: it is a heading, not a row. */
-  padding: var(--space-1) var(--space-2) var(--space-2);
+  /* Sits on the shelf's own axis — the seed's left edge is the section title's,
+     and the ledger's right edge is the rail every other aside ends on — level
+     with the art below rather than with the row titles inside it. */
+  padding: var(--space-1) 0 var(--space-2);
   min-width: 0;
 }
 
-.station__about {
+.row-head__about {
   min-width: 0;
 }
 
-.station__seed {
+.row-head__seed {
   display: block;
   font-size: var(--text-md);
   font-weight: 600;
   letter-spacing: var(--tracking-tight);
 }
 
-.station__seed:hover {
+.row-head__seed a:hover,
+.row-head__seed a:focus-visible {
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 
-.station__source {
+.row-head__source {
   display: block;
   color: var(--color-text-subtle);
   font-family: var(--font-mono);
@@ -1288,10 +1297,13 @@ a.section__link:hover {
   text-transform: uppercase;
 }
 
-/* The station's own play: the episode rows' bordered square at head-line size,
-   in the same border, glyph and hover as that control. The pad keeps its target
-   at 44 even though the box is 32. */
-.station__play {
+/* The station's own play, at the trailing edge of its head: the episode rows'
+   bordered square at head-line size, in the same border, glyph and hover as
+   that control. The pad keeps its target at 44 even though the box is 32. */
+/* The trailing control is a box, not a line of type, so it stays centred in the
+   head while the text pairs on their baselines. */
+.row-head__action {
+  align-self: center;
   position: relative;
   display: grid;
   flex: none;
@@ -1304,22 +1316,127 @@ a.section__link:hover {
   transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 
-.station__play::after {
+.row-head__action::after {
   content: "";
   position: absolute;
   inset: -0.375rem;
 }
 
-.station__play:hover {
+.row-head__action:hover {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
 
-.station__play .icon {
+.row-head__action .icon {
   width: 0.75rem;
   height: 0.75rem;
   fill: currentColor;
   stroke: none;
+}
+
+/* --------------------------------------------------------------------------
+   Discovery rows — a seed from the library, the artists the outside graph puts
+   next to it, and the ledger of what the filter dropped.
+
+   The row reports its own arithmetic on the trailing edge of its head, because
+   that number is the whole claim: what is drawn here is what the user does not
+   already have. A row is allowed to be short, absent or missing, so its body
+   keeps a fixed shape and stops where the confirmed items stop; nothing
+   stretches to fill a slot that was dropped. Every body below is one of the
+   app's existing components, re-shaped — never a new one.
+   -------------------------------------------------------------------------- */
+
+.discovery {
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* The band's own head and the first row's head are two headings in a row; one
+   step of space between them keeps them from reading as siblings. Padding rather
+   than margin, so the step survives the collapse against the head's margin. */
+.section__head + .discovery {
+  padding-top: var(--space-2);
+}
+
+.discovery + .discovery {
+  margin-top: var(--space-5);
+}
+
+/* The row's count — the same mono aside every other band carries ("23 items",
+   "8 followed"), holding only what is drawn. A row never counts what it does not
+   have, so this line can never read as an apology. */
+.row-head__ledger {
+  flex: none;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Faces, at one size, however many there are: the column count is the item
+   count, so two confirmed neighbours make a two-column row instead of four
+   columns with two holes in them. The grid never outgrows its own cards — a row
+   ends where its last column ends. */
+.disc-faces {
+  --disc-card: 12rem;
+  --disc-cols: 4;
+  display: grid;
+  grid-template-columns: repeat(var(--disc-cols), minmax(0, 1fr));
+  /* Never wider than its own cards: the grid ends where its last column ends. */
+  max-width: calc(var(--disc-cols) * var(--disc-card) + (var(--disc-cols) - 1) * var(--space-3));
+  gap: var(--space-3);
+  margin-inline: calc(var(--space-2) * -1);
+}
+
+/* One survivor is one column, held at card size rather than stretched over
+   whatever rule it happens to have. */
+.disc-faces--one {
+  --disc-cols: 1;
+}
+
+.disc-faces--two {
+  --disc-cols: 2;
+  /* A pair fills the rule — but by turning each card on its side, not by
+     inflating the face: the row stays dense, and a face is the same size
+     whether the row holds four of them or two. */
+  max-width: none;
+}
+
+.disc-faces--two .card {
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: center;
+}
+
+.disc-faces--two .card__body {
+  text-align: left;
+}
+
+.disc-faces--three {
+  --disc-cols: 3;
+}
+
+/* One face and the tracks worth hearing by it: the row shape for a seed whose
+   neighbour is stronger than it is numerous. The card is deliberately larger
+   than a shelf card — it is the row's subject, not one of four peers. */
+.disc-split {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: var(--space-5);
+  /* The tracks are balanced against the face rather than hung from its top: a
+     list of three should sit in the middle of a card that is taller than it. */
+  align-items: center;
+  margin-inline: calc(var(--space-2) * -1);
+}
+
+.disc-split__tracks {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
 /* The library tile: a compact row that keeps its own box. Dense enough to count
@@ -4343,6 +4460,39 @@ a.section__link:hover {
     display: none;
   }
 
+  /* A discovery row keeps its faces at the size every other shelf holds them at
+     by dropping columns, never by shrinking them; a row of two is already two
+     columns wide and simply stays that way. */
+  .disc-faces {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .disc-faces--one {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* A row of two keeps its side-by-side cards down to the phone breakpoint,
+     where two 11rem faces plus their text no longer fit one line. */
+  .disc-faces--two .card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+
+  .disc-faces--two .card__body {
+    text-align: center;
+  }
+
+  /* One face and its tracks become a face over its tracks; the lead card stops
+     being a subject and becomes one more item in the stack. */
+  .disc-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .disc-split .card {
+    max-width: 12rem;
+  }
+
   .hero {
     flex-direction: column;
     align-items: flex-start;
@@ -4916,5 +5066,22 @@ the note is not squeezed into the chips' 152px. */
 
   .ladder__row--head {
     display: none;
+  }
+
+  /* At phone width the seed keeps its line and the ledger drops under it, still
+     right-aligned, so the arithmetic stays a column instead of a squeeze. */
+  .row-head {
+    flex-wrap: wrap;
+  }
+
+  .row-head__ledger {
+    margin-left: auto;
+  }
+
+  /* A band head that has to wrap its title needs its aside on a line of its own;
+     sharing the first line crowds the opening words of the title. */
+  .section__head {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
   }
 }
