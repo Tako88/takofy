@@ -75,15 +75,21 @@ pub fn card_art(card: Rect) -> Rect {
     Rect::from_min_size(inner.min, Vec2::splat(inner.width()))
 }
 
-/// The `⋯` tile at a picture's top-right corner.
+/// One corner control on a round face.
+///
+/// The button's centre is placed on the ink at 45 degrees rather than at the
+/// bounding box's corner: a face is a circle, so a square tucked into the corner
+/// of its box sits mostly over nothing and reads as floating. Tangency inside
+/// the circle keeps the same inset from the edge at every card size.
+fn corner(art: Rect, size: f32, across: f32, down: f32) -> Rect {
+    let reach = (art.width() / 2.0 - size / 2.0 - space::S2).max(0.0) / std::f32::consts::SQRT_2;
+    let centre = art.center() + Vec2::new(reach * across, reach * down);
+    Rect::from_center_size(centre, Vec2::splat(size))
+}
+
+/// The `⋯` tile on the upper right of a picture.
 pub fn more(art: Rect) -> Rect {
-    Rect::from_min_size(
-        pos2(
-            art.right() - space::S2 - extent::CARD_PLAY,
-            art.top() + space::S2,
-        ),
-        Vec2::splat(extent::CARD_PLAY),
-    )
+    corner(art, extent::CARD_PLAY, 1.0, -1.0)
 }
 
 /// The Follow tile beside the `⋯`, one step to its left.
@@ -91,15 +97,9 @@ pub fn follow(art: Rect) -> Rect {
     more(art).translate(vec2(-(extent::CARD_PLAY + space::S1), 0.0))
 }
 
-/// The play tile at a picture's bottom-right corner.
+/// The play tile on the lower right of a picture.
 pub fn play(art: Rect) -> Rect {
-    Rect::from_min_size(
-        pos2(
-            art.right() - space::S2 - extent::CARD_PLAY,
-            art.bottom() - space::S2 - extent::CARD_PLAY,
-        ),
-        Vec2::splat(extent::CARD_PLAY),
-    )
+    corner(art, extent::CARD_PLAY, 1.0, 1.0)
 }
 
 #[cfg(test)]

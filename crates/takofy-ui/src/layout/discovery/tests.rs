@@ -63,21 +63,47 @@ fn a_split_puts_the_tracks_beside_the_card() {
 }
 
 #[test]
-fn the_corner_tiles_never_overlap_the_play_and_sit_inside_the_picture() {
+fn the_corner_tiles_sit_on_the_face_rather_than_in_the_box_corner() {
     let art = Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(300.0));
     let follow = follow(art);
     let more = more(art);
     let play = play(art);
 
+    // The face is drawn as a circle, so a tile is only really over it when every
+    // corner of the tile is inside that circle.
+    let radius = art.width() / 2.0;
     for tile in [follow, more, play] {
-        assert!(art.contains_rect(tile), "{tile:?} is inside {art:?}");
+        for corner in [
+            tile.left_top(),
+            tile.right_top(),
+            tile.left_bottom(),
+            tile.right_bottom(),
+        ] {
+            assert!(
+                (corner - art.center()).length() <= radius + 0.01,
+                "{tile:?} reaches past the face at {corner:?}"
+            );
+        }
     }
     assert!(!overlaps(follow, play));
     assert!(!overlaps(more, play));
     assert!(!overlaps(follow, more));
-    assert!(
-        play.bottom() <= art.bottom(),
-        "the play keeps the bottom edge"
-    );
-    assert!(more.top() >= art.top(), "the menu keeps the top edge");
+    assert!(more.center().y < art.center().y, "the menu sits high");
+    assert!(play.center().y > art.center().y, "the play sits low");
+    assert!(more.center().x > art.center().x, "the menu sits right");
+    assert!(play.center().x > art.center().x, "the play sits right");
+}
+
+#[test]
+fn every_corner_tile_keeps_its_press_point_on_the_face() {
+    for side in [120.0, 192.0, 226.0, 340.0] {
+        let art = Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(side));
+        for tile in [follow(art), more(art), play(art)] {
+            assert!(art.contains_rect(tile), "{tile:?} stays inside {art:?}");
+            assert!(
+                (tile.center() - art.center()).length() < side / 2.0,
+                "a press at the centre of {tile:?} lands on the face"
+            );
+        }
+    }
 }
