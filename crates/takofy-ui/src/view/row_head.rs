@@ -103,6 +103,23 @@ pub fn show<K: Hash + Debug>(
 
     let mut opened = Opened::default();
 
+    if let (Some(button), Some(slot)) = (head.reroll, placed.reroll) {
+        let control = controls::head_action_keyed(
+            ui,
+            tokens,
+            button.control,
+            button.key,
+            slot,
+            Icon::Again,
+            Size::SM,
+            &format!("Draw another {}", head.seed),
+            controls::HeadTone::Quiet,
+            head.waited,
+            button.live,
+        );
+        opened.reroll = control.response.clicked();
+    }
+
     let seed = Placed {
         pos: placed.about.min,
         galley: link::lay(
@@ -146,23 +163,6 @@ pub fn show<K: Hash + Debug>(
             galley,
             tokens.palette.text_subtle,
         );
-    }
-
-    if let (Some(button), Some(slot)) = (head.reroll, placed.reroll) {
-        let control = controls::head_action_keyed(
-            ui,
-            tokens,
-            button.control,
-            button.key,
-            slot,
-            Icon::Again,
-            Size::SM,
-            &format!("Draw another {}", head.seed),
-            controls::HeadTone::Quiet,
-            head.waited,
-            button.live,
-        );
-        opened.reroll = control.response.clicked();
     }
 
     if let (Some(button), Some(slot)) = (head.play, placed.play) {

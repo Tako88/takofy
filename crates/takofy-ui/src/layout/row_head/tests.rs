@@ -40,7 +40,7 @@ fn one_trailing_button_takes_the_heads_right_edge_on_the_seed_line() {
 }
 
 #[test]
-fn a_ledger_and_two_buttons_are_flush_right_with_the_play_last() {
+fn the_reroll_leads_the_seed_and_the_ledger_and_play_keep_the_right_edge() {
     let head = head(600.0);
     let placed = place(
         head,
@@ -62,8 +62,15 @@ fn a_ledger_and_two_buttons_are_flush_right_with_the_play_last() {
         "the count and both controls share one line"
     );
     assert!((play.right() - head.right()).abs() < 0.01);
-    assert!(reroll.right() <= play.left() - S2 + 0.01);
-    assert!(ledger.right() <= reroll.left() - S2 + 0.01);
+    assert!(ledger.right() <= play.left() - S2 + 0.01);
+    assert!(
+        (reroll.left() - head.left()).abs() < 0.01,
+        "the re-roll stands at the head's left edge, beside the seed it replaces"
+    );
+    assert!(
+        placed.about.left() >= reroll.right() + S2 - 0.01,
+        "the seed and its provenance start after the re-roll"
+    );
     assert!(placed.about.right() <= ledger.left() - S2 + 0.01);
 }
 

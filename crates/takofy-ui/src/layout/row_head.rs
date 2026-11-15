@@ -1,9 +1,10 @@
-//! Where a row head's seed block and trailing cluster sit.
+//! Where a row head's seed block and its controls sit.
 //!
-//! A head is one row: the seed and its provenance on the left, and on the right
-//! whatever the row has to report — a ledger, the re-roll, the play. The about
-//! block takes the room the cluster leaves, so a long seed elides rather than
-//! pushing a control off the head at any width.
+//! A head is one row: the re-roll, then the seed and its provenance, and on the
+//! right whatever the row has to report — a ledger and the play. The re-roll
+//! stands beside the seed because it replaces exactly that, and the about block
+//! takes the room the rest leaves, so a long seed elides rather than pushing a
+//! control off the head at any width.
 //!
 //! Every size is handed in already measured; this module decides only places.
 
@@ -22,13 +23,13 @@ pub struct About {
     pub seed: f32,
 }
 
-/// The trailing cluster's measured sizes, right to left in drawing order.
+/// The head's measured controls.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Cluster {
+    /// The re-roll's square, which stands before the seed.
+    pub reroll: Option<Vec2>,
     /// The ledger's measured line, when the row carries one.
     pub ledger: Option<Vec2>,
-    /// The re-roll's square.
-    pub reroll: Option<Vec2>,
     /// The play's square.
     pub play: Option<Vec2>,
 }
@@ -36,9 +37,11 @@ pub struct Cluster {
 /// The placed parts of one head.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowHeadRects {
+    /// The seed and its provenance, starting after the re-roll.
     pub about: Rect,
-    pub ledger: Option<Rect>,
+    /// The re-roll, at the head's left edge on the seed's line.
     pub reroll: Option<Rect>,
+    pub ledger: Option<Rect>,
     pub play: Option<Rect>,
 }
 
@@ -48,12 +51,12 @@ pub fn height(lines: f32, control: f32) -> f32 {
     space::S1 + lines.max(control) + space::S2
 }
 
-/// Places the about block and the cluster inside `head`.
+/// Places the controls and the about block inside `head`.
 ///
-/// The cluster is flush right in the order it is drawn — ledger, re-roll, play —
-/// with `gap` between neighbours, so the play keeps the outer edge. The about
-/// block is centred on the head and its width is clamped to the room left of the
-/// cluster.
+/// The right cluster is flush right in the order it is drawn — ledger, play —
+/// with `gap` between neighbours, so the play keeps the outer edge. The re-roll
+/// takes the head's left edge, and the about block is centred on the head between
+/// it and the cluster.
 pub fn place(head: Rect, about: About, cluster: Cluster, gap: f32) -> RowHeadRects {
     let block_top = head.center().y - about.height / 2.0;
     // The whole cluster rides the seed's line, count and controls alike: a row
@@ -61,13 +64,12 @@ pub fn place(head: Rect, about: About, cluster: Cluster, gap: f32) -> RowHeadRec
     // its provenance sits below the words it belongs to.
     let line = block_top + about.seed / 2.0;
 
+    let reroll = cluster
+        .reroll
+        .map(|size| Rect::from_min_size(pos2(head.left(), line - size.y / 2.0), size));
+
     let mut right = head.right();
     let play = cluster.play.map(|size| {
-        let rect = Rect::from_min_size(pos2(right - size.x, line - size.y / 2.0), size);
-        right = rect.left() - gap;
-        rect
-    });
-    let reroll = cluster.reroll.map(|size| {
         let rect = Rect::from_min_size(pos2(right - size.x, line - size.y / 2.0), size);
         right = rect.left() - gap;
         rect
@@ -78,13 +80,17 @@ pub fn place(head: Rect, about: About, cluster: Cluster, gap: f32) -> RowHeadRec
         rect
     });
 
-    let room = if play.is_none() && reroll.is_none() && ledger.is_none() {
+    let left = match reroll {
+        Some(rect) => rect.right() + gap,
+        None => head.left(),
+    };
+    let room = if play.is_none() && ledger.is_none() && reroll.is_none() {
         head.width()
     } else {
-        (right - gap - head.left()).max(0.0)
+        (right.max(left) - gap - left).max(0.0)
     };
     let width = about.width.min(room).max(0.0);
-    let about = Rect::from_min_size(pos2(head.left(), block_top), vec2(width, about.height));
+    let about = Rect::from_min_size(pos2(left, block_top), vec2(width, about.height));
 
     RowHeadRects {
         about,

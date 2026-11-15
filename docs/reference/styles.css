@@ -1346,7 +1346,6 @@ a.section__link:hover {
   /* Baseline, not centre: the ledger is a line of accounting and it belongs on
      the seed's line, not floating between the seed and its provenance. */
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--space-3);
   /* Sits on the shelf's own axis — the seed's left edge is the section title's,
      and the ledger's right edge is the rail every other aside ends on — level
@@ -1382,13 +1381,25 @@ a.section__link:hover {
   text-transform: uppercase;
 }
 
-/* The head's trailing cluster: the count, then the two things that can be done
-   to the row itself. The play sits last, so the loud action keeps the edge. */
+/* The re-roll stands at the head's left edge, beside the seed it replaces: the
+   control that changes the name sits with the name, not across the row from it.
+   Its box is centred on the seed's line rather than on the whole about block. */
+.row-head__lead {
+  display: flex;
+  flex: none;
+  align-items: center;
+  align-self: center;
+}
+
+/* The head's trailing cluster: the count, then the play. The play sits last, so
+   the loud action keeps the edge. */
 .row-head__controls {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--space-2);
+  /* The count and the play keep the head's trailing edge whatever leads it. */
+  margin-left: auto;
 }
 
 /* The station's own play, at the trailing edge of its head: the episode rows'
@@ -3413,7 +3424,6 @@ a.section__link:hover {
 .meter__head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--space-3);
   color: var(--color-text-subtle);
 }
@@ -3695,7 +3705,6 @@ a.section__link:hover {
 .search-menu__group-label {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--space-3);
   margin: 0;
   padding: var(--space-2) var(--space-3) var(--space-1);
