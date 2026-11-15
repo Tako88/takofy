@@ -189,7 +189,7 @@ fn the_whole_list_competes_up_to_twice_the_edge() {
 }
 
 #[test]
-fn a_long_list_reaches_its_middle_but_never_its_newest_half_far_behind() {
+fn the_middle_competes_and_every_newest_item_is_offered_in_a_few_days() {
     let long = 4 * EDGE;
     let drawn = |day: Day| -> Vec<usize> {
         day_pool(&playlists(long), &[], &[], day)[0]
@@ -198,19 +198,59 @@ fn a_long_list_reaches_its_middle_but_never_its_newest_half_far_behind() {
             .collect()
     };
 
-    let middle = (19_000..19_010).flat_map(|days| drawn(Day::from_days(days)));
+    let offered = (19_000..19_010).flat_map(|days| drawn(Day::from_days(days)));
     assert!(
-        middle.clone().any(|index| index >= 2 * EDGE),
+        offered.clone().any(|index| index >= 2 * EDGE),
         "the middle of the library competes, not just its ends"
     );
 
-    // The newest twelve are always in the candidate set, so over ten days every
-    // one of them is offered at least once.
+    // The newest twelve are always candidates, so over forty days each is
+    // offered at least once.
     let mut newest: Vec<usize> = (0..EDGE).collect();
     for index in (19_000..19_040).flat_map(|days| drawn(Day::from_days(days))) {
         newest.retain(|back| *back != index);
     }
     assert!(newest.is_empty(), "the newest items left out: {newest:?}");
+}
+
+/// The indices of one day's candidate set, newest first for the guaranteed half.
+fn candidate_indices(count: usize, day: i32) -> Vec<usize> {
+    candidates(playlist_seeds(&playlists(count)), Day::from_days(day))
+        .iter()
+        .map(|seed| seed.name.parse().expect("a name is its index"))
+        .collect()
+}
+
+#[test]
+fn the_window_moves_a_step_a_day_and_reaches_every_item_once_round() {
+    // Forty items: the newest twelve, and a window over the twenty-eight behind
+    // them, which takes three days to walk.
+    let long = 40;
+    let older = |day: i32| -> Vec<usize> { candidate_indices(long, day)[EDGE..].to_vec() };
+
+    assert_eq!(
+        candidate_indices(long, 19_000)[..EDGE],
+        (0..EDGE).collect::<Vec<_>>()[..]
+    );
+    assert_ne!(older(19_000), older(19_001), "the window moves daily");
+    assert_ne!(older(19_001), older(19_002));
+
+    let mut seen: Vec<usize> = Vec::new();
+    for day in 19_000..19_003 {
+        for index in older(day) {
+            if !seen.contains(&index) {
+                seen.push(index);
+            }
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        long - EDGE,
+        "one round reaches every older item"
+    );
+
+    // And it wraps: the day after the last window is the first one again.
+    assert_eq!(older(19_003), older(19_000));
 }
 
 #[test]

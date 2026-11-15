@@ -1,8 +1,8 @@
 //! The day's seed pool: what each of the three rows may be seeded from.
 //!
 //! Pure, and drawn from the lists the page already holds. A kind's candidates are
-//! its newest [`EDGE`], which are always there, and [`EDGE`] more drawn from
-//! everything behind them, which the day chooses afresh: the ends alone meant a
+//! its newest [`EDGE`], which are always there, and a window of [`EDGE`] that the
+//! day moves one step through everything behind them: the ends alone meant a
 //! library's middle could never seed a row, and ninety-eight saved albums offered
 //! the same twenty-four every day. The day also decides the order the kept ones
 //! are tried in. The same day and the same lists always give the same pool, so a
@@ -15,8 +15,8 @@ use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 
 use crate::shuffle;
 
-/// How many of a kind's newest items are always candidates, and how many more
-/// the day draws from the rest of the list.
+/// How many of a kind's newest items are always candidates, and how wide the
+/// day's window through the rest of the list is.
 pub const EDGE: usize = 12;
 
 /// How many candidates a kind keeps from the drawn edge set.
@@ -114,7 +114,7 @@ fn album_seeds(albums: &[SavedAlbum]) -> Vec<DiscoverySeed> {
 
 /// One kind's kept candidates: its candidate set in the day's drawn order.
 fn drawn(seeds: Vec<DiscoverySeed>, kind: DiscoveryKind, day: Day) -> Vec<DiscoverySeed> {
-    let candidates = candidates(seeds, kind, day);
+    let candidates = candidates(seeds, day);
     shuffle::order(candidates.len(), mix(day, kind.index()))
         .into_iter()
         .filter_map(|at| candidates.get(at).cloned())
@@ -122,33 +122,24 @@ fn drawn(seeds: Vec<DiscoverySeed>, kind: DiscoveryKind, day: Day) -> Vec<Discov
         .collect()
 }
 
-/// The day's candidate set: a kind's newest [`EDGE`], then [`EDGE`] drawn from
-/// everything behind them.
+/// The day's candidate set: a kind's newest [`EDGE`], then a window of [`EDGE`]
+/// that the day moves one step further through everything behind them.
 ///
 /// The band's cost is the pool it walks, not the size of this set, so a large
 /// library may compete with more of itself than a small one without spending a
 /// request on it. What it must not do is cut off the middle, which is where most
-/// of a big library lives.
-fn candidates(seeds: Vec<DiscoverySeed>, kind: DiscoveryKind, day: Day) -> Vec<DiscoverySeed> {
+/// of a big library lives — and the window reaches all of it within a few days,
+/// taking each item in turn rather than leaving which items by chance.
+fn candidates(seeds: Vec<DiscoverySeed>, day: Day) -> Vec<DiscoverySeed> {
     if seeds.len() <= 2 * EDGE {
         return seeds;
     }
     let (newest, rest) = seeds.split_at(EDGE);
+    let steps = rest.len().div_ceil(EDGE);
+    let step = day.days().rem_euclid(steps as i32) as usize;
     let mut candidates = newest.to_vec();
-    candidates.extend(
-        shuffle::order(rest.len(), rest_mix(day, kind.index()))
-            .into_iter()
-            .take(EDGE)
-            .filter_map(|at| rest.get(at).cloned()),
-    );
+    candidates.extend((0..EDGE).map(|at| rest[(step * EDGE + at) % rest.len()].clone()));
     candidates
-}
-
-/// The draw that brings the day's older half in, apart from the one that orders
-/// the pool.
-fn rest_mix(day: Day, kind: usize) -> u64 {
-    let mut state = mix(day, kind);
-    shuffle::splitmix(&mut state)
 }
 
 /// The shuffle seed for one day's one row.
