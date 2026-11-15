@@ -114,10 +114,14 @@ impl HiddenWriter {
 
 /// Sends the hidden set to the writer thread when it changed.
 ///
-/// The set carries a revision that only a real change moves, so a frame that hid
-/// nobody and moved no row writes nothing.
+/// A position-only change never replaces a file this session could not read: up
+/// to [`HIDE_MAX`] artists would go with it. There the writer is armed by a set
+/// change alone, which is a hide or an unhide and nothing else.
 pub struct HiddenSync {
     revision: u64,
+    set_revision: u64,
+    /// Whether the file we loaded holds every artist the set knows.
+    intact: bool,
     writer: Option<HiddenWriter>,
 }
 
@@ -126,6 +130,8 @@ impl HiddenSync {
     pub fn off() -> Self {
         Self {
             revision: 0,
+            set_revision: 0,
+            intact: true,
             writer: None,
         }
     }
@@ -133,7 +139,12 @@ impl HiddenSync {
     /// A sync whose file already holds `revision`, saving through `writer`.
     #[cfg(test)]
     pub fn for_test(revision: u64, writer: Option<HiddenWriter>) -> Self {
-        Self { revision, writer }
+        Self {
+            revision,
+            set_revision: revision,
+            intact: true,
+            writer,
+        }
     }
 
     /// Sends the set when its revision differs from the last one sent.
@@ -148,10 +159,14 @@ impl HiddenSync {
     }
 
     fn send(&mut self, hidden: &Hidden) {
-        if hidden.revision() == self.revision {
+        // A set change arms the writer whatever the file held; a readable file
+        // also records where its rows start.
+        let set_changed = hidden.set_revision() != self.set_revision;
+        if !set_changed && (hidden.revision() == self.revision || !self.intact) {
             return;
         }
         self.revision = hidden.revision();
+        self.set_revision = hidden.set_revision();
         if let Some(writer) = &self.writer {
             writer.send(hidden.clone());
         }
@@ -173,19 +188,29 @@ pub fn open() -> (Loaded, HiddenSync) {
 /// Reads `path` and starts a writer over it through `start`.
 ///
 /// The sync's baseline is the revision the loaded set already carries, so an
-/// untouched session writes nothing and a refused or unreadable file is left
-/// alone until the set changes; the first change then replaces it whole.
+/// untouched session writes nothing. A refused or unreadable file is not intact,
+/// so only a hide or an unhide replaces it; a readable one also records where
+/// its rows start.
 fn open_at(path: &Path, start: impl FnOnce(&Path) -> Option<HiddenWriter>) -> (Loaded, HiddenSync) {
     let loaded = load(path);
     if let Some(line) = warning(&loaded) {
         warn!("{line}");
     }
-    let revision = match &loaded {
-        Loaded::Found(hidden) => hidden.revision(),
-        Loaded::Absent | Loaded::Refused(_) | Loaded::Unreadable => 0,
+    let (revision, set_revision, intact) = match &loaded {
+        Loaded::Found(hidden) => (hidden.revision(), hidden.set_revision(), true),
+        Loaded::Absent => (0, 0, true),
+        Loaded::Refused(_) | Loaded::Unreadable => (0, 0, false),
     };
     let writer = start(path);
-    (loaded, HiddenSync { revision, writer })
+    (
+        loaded,
+        HiddenSync {
+            revision,
+            set_revision,
+            intact,
+            writer,
+        },
+    )
 }
 
 #[cfg(test)]

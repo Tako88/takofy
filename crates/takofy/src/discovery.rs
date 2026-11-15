@@ -80,6 +80,8 @@ pub(crate) enum OutsideError {
     Backoff,
     /// The request failed without asking for a pause, so one may be dropped.
     Failed,
+    /// The service answered, and holds no such record.
+    Absent,
 }
 
 /// The gate, the pacing and the genre table one lookup reaches the outside
@@ -127,8 +129,9 @@ impl<F: Fetch + Sync> Outside<F> {
 
     /// Checks the gate, waits for the limiter, then fetches.
     ///
-    /// An error body answers HTTP 200, so it is read here as a failure and
-    /// backs off; the caller never sees it as an empty list.
+    /// An error body answers HTTP 200, so it is read here: the quota pauses the
+    /// outside, and any other error code is a record the service does not hold.
+    /// Neither reaches the caller as an empty list.
     pub(crate) async fn get(&self, path_and_query: &str) -> Result<Vec<u8>, OutsideError> {
         loop {
             if !self.is_open() {
@@ -145,12 +148,15 @@ impl<F: Fetch + Sync> Outside<F> {
         }
         let result = self.fetcher.get(path_and_query).await;
         if let Ok(body) = &result
-            && wire::has_error(body)
+            && let Some(error) = wire::body_error(body)
         {
-            if let Ok(mut limiter) = self.limiter.lock() {
-                limiter.backoff(Instant::now(), None);
+            if error == wire::BodyError::Quota {
+                if let Ok(mut limiter) = self.limiter.lock() {
+                    limiter.backoff(Instant::now(), None);
+                }
+                return Err(OutsideError::Backoff);
             }
-            return Err(OutsideError::Backoff);
+            return Err(OutsideError::Absent);
         }
         self.record(&result);
         match result {

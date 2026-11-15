@@ -5,6 +5,9 @@
 
 use crate::{ArtistPortrait, CoverSet, FollowedArtist, ShowDetail, TrackEntry};
 
+/// The credit a compilation carries, which names no artist to reach further.
+pub const VARIOUS_ARTISTS: &str = "Various Artists";
+
 /// The kind of thing a station was seeded from, in the order the page seeds
 /// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

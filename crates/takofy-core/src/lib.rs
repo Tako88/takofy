@@ -47,6 +47,7 @@ mod watch;
 mod wire;
 
 pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};
+pub use discovery::ReadFailed;
 pub use engine::{
     DiscoveryReads, Engine, EngineError, OrderAnswer, Orders, PlaylistPage, TrackPages,
 };

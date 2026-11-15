@@ -2012,8 +2012,8 @@ impl Library {
 
     /// Moves `kind`'s row on to its next seed, at most once per cooldown.
     ///
-    /// Whether it moved: a row with no seed left, or one asked again too soon,
-    /// stays where it is.
+    /// Whether it moved: a row with no seed left, one asked again too soon, or
+    /// an open with no ask left to spend stays where it is.
     pub fn reroll_discovery(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
         self.home.discovery.reroll(kind, now_ms)
     }

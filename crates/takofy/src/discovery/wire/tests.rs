@@ -1,7 +1,7 @@
 //! The parsers pinned to synthetic bodies in the measured shapes.
 
 use super::{
-    AlbumHit, ArtistHit, WireError, albums, genre_table, has_error, related_artists,
+    AlbumHit, ArtistHit, BodyError, WireError, albums, body_error, genre_table, related_artists,
     search_artists, top_titles,
 };
 
@@ -11,7 +11,9 @@ const RELATED: &str = include_str!("../fixtures/related.json");
 const ALBUMS: &str = include_str!("../fixtures/albums.json");
 const GENRE: &str = include_str!("../fixtures/genre.json");
 
-const QUOTA_ERROR: &str = r#"{"error":{"type":"DataException","message":"no data","code":800}}"#;
+const QUOTA_ERROR: &str =
+    r#"{"error":{"type":"Exception","message":"Quota limit exceeded","code":4}}"#;
+const NO_DATA_ERROR: &str = r#"{"error":{"type":"DataException","message":"no data","code":800}}"#;
 const HTML: &str = "<html><body><h1>Service unavailable</h1></body></html>";
 
 #[test]
@@ -100,8 +102,32 @@ fn the_genre_table_keeps_the_service_order() {
 }
 
 #[test]
+fn a_quota_error_is_the_one_pause() {
+    assert_eq!(body_error(QUOTA_ERROR.as_bytes()), Some(BodyError::Quota));
+}
+
+#[test]
+fn a_no_data_error_is_not_a_pause() {
+    assert_eq!(
+        body_error(NO_DATA_ERROR.as_bytes()),
+        Some(BodyError::Absent)
+    );
+    assert_eq!(
+        body_error(br#"{"error":{"type":"DataException"}}"#),
+        Some(BodyError::Absent),
+        "an error without a code is no reason to pause the outside"
+    );
+}
+
+#[test]
+fn a_body_that_is_not_an_error_carries_none() {
+    assert_eq!(body_error(TOP.as_bytes()), None);
+    assert_eq!(body_error(HTML.as_bytes()), None);
+}
+
+#[test]
 fn an_error_object_is_not_an_empty_list() {
-    for body in [QUOTA_ERROR, HTML] {
+    for body in [QUOTA_ERROR, NO_DATA_ERROR, HTML] {
         assert_eq!(search_artists(body.as_bytes()), Err(WireError));
         assert_eq!(related_artists(body.as_bytes()), Err(WireError));
         assert_eq!(top_titles(body.as_bytes()), Err(WireError));
@@ -131,9 +157,9 @@ fn an_empty_data_array_is_a_valid_empty_list() {
 
 #[test]
 fn the_error_object_is_recognised_without_failing_the_json() {
-    assert!(has_error(QUOTA_ERROR.as_bytes()));
-    assert!(!has_error(TOP.as_bytes()));
-    assert!(!has_error(HTML.as_bytes()));
+    assert_eq!(body_error(QUOTA_ERROR.as_bytes()), Some(BodyError::Quota));
+    assert_eq!(body_error(TOP.as_bytes()), None);
+    assert_eq!(body_error(HTML.as_bytes()), None);
 }
 
 #[test]

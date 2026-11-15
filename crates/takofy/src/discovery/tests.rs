@@ -22,17 +22,36 @@ async fn the_gate_is_read_before_any_fetch() {
     assert_eq!(fetch.count(), 0);
 }
 
-#[tokio::test]
-async fn an_error_body_is_unreachable_not_an_empty_answer() {
+#[tokio::test(start_paused = true)]
+async fn a_quota_error_body_pauses_the_outside() {
     let fetch = FakeFetch::new();
     fetch.ok(
         "/genre",
-        br#"{"error":{"type":"DataException","code":800}}"#.to_vec(),
+        br#"{"error":{"type":"Exception","code":4}}"#.to_vec(),
     );
     let outside = outside(&fetch, true);
 
     assert_eq!(outside.get("/genre").await, Err(OutsideError::Backoff));
     assert_eq!(fetch.count(), 1);
+}
+
+#[tokio::test]
+async fn a_no_data_error_body_is_not_a_pause() {
+    let fetch = FakeFetch::new();
+    fetch.ok(
+        "/genre",
+        br#"{"error":{"type":"DataException","code":800}}"#.to_vec(),
+    );
+    fetch.ok("/genre", GENRE.as_bytes().to_vec());
+    let outside = outside(&fetch, true);
+
+    assert_eq!(outside.get("/genre").await, Err(OutsideError::Absent));
+    assert_eq!(
+        outside.get("/genre").await,
+        Ok(GENRE.as_bytes().to_vec()),
+        "a record the service does not hold does not pause the next request"
+    );
+    assert_eq!(fetch.count(), 2);
 }
 
 #[tokio::test]

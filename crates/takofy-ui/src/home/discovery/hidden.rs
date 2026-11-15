@@ -127,6 +127,7 @@ pub struct Hidden {
     positions: [usize; 3],
     artists: BTreeSet<String>,
     revision: u64,
+    set_revision: u64,
 }
 
 impl PartialEq for Hidden {
@@ -148,7 +149,7 @@ impl Hidden {
             return false;
         }
         self.artists.insert(artist.to_owned());
-        self.bump();
+        self.bump_set();
         true
     }
 
@@ -157,7 +158,7 @@ impl Hidden {
         if !self.artists.remove(artist) {
             return false;
         }
-        self.bump();
+        self.bump_set();
         true
     }
 
@@ -187,8 +188,23 @@ impl Hidden {
         self.revision
     }
 
+    /// How many changes the artist set itself has seen.
+    ///
+    /// Only `hide` and `unhide` move this, so a caller can tell a change the
+    /// user made from a row that moved.
+    pub fn set_revision(&self) -> u64 {
+        self.set_revision
+    }
+
     fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// A change to the artist set itself, which is the only change a file this
+    /// session could not read may be replaced by.
+    fn bump_set(&mut self) {
+        self.bump();
+        self.set_revision = self.set_revision.wrapping_add(1);
     }
 
     /// The file this set writes.

@@ -16,7 +16,7 @@ use takofy_core::engine::{DiscoveryReads, Engine, EngineError, Orders, RootlistR
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
-use takofy_core::{Resolution, TransferPlan};
+use takofy_core::{ReadFailed, Resolution, TransferPlan};
 use takofy_model::home::{
     DiscoveryArtist, DiscoveryCard, DiscoveryOutcome, DiscoverySeed, Station, StationSeed,
 };
@@ -1176,21 +1176,19 @@ impl Discover for LiveDiscovery {
 }
 
 impl Spotify for LiveDiscovery {
-    async fn seed_titles(&self, artist: &DiscoveryArtist) -> Vec<String> {
+    async fn seed_titles(&self, artist: &DiscoveryArtist) -> Result<Vec<String>, ReadFailed> {
         self.reads.top_titles(&artist.uri).await
     }
 
-    async fn playlist_head(&self, uri: &str) -> Vec<TrackEntry> {
+    async fn playlist_head(&self, uri: &str) -> Result<Vec<TrackEntry>, ReadFailed> {
         self.reads.playlist_head(uri).await
     }
 
-    async fn search(&self, query: &str) -> Vec<TrackEntry> {
-        // A resolve that failed is a neighbour with no hit, which is what an
-        // empty page says: the lookup drops the card either way.
-        self.reads.search(query).await.unwrap_or_default()
+    async fn search(&self, query: &str) -> Result<Vec<TrackEntry>, ReadFailed> {
+        self.reads.search(query).await.map_err(|_| ReadFailed)
     }
 
-    async fn cards(&self, uris: &[String]) -> Vec<DiscoveryCard> {
+    async fn cards(&self, uris: &[String]) -> Result<Vec<DiscoveryCard>, ReadFailed> {
         self.reads.cards(uris).await
     }
 }

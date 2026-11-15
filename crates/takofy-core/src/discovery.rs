@@ -20,6 +20,13 @@ use takofy_model::{Release, TrackEntry};
 
 use crate::artist::{portrait_of, release_of, release_uris, top_track_positions};
 
+/// Why a discovery read did not answer.
+///
+/// A read that failed and a read that answered nothing are different answers: a
+/// dead session must never look like a seed the service rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadFailed;
+
 /// The artist one encoded `ARTIST_V4` answer carries.
 ///
 /// Shaped as the seam `remote::request_parsed` takes. The echoed URI is not read:

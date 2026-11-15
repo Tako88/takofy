@@ -70,11 +70,15 @@ impl Default for Row {
 
 impl Row {
     /// Moves to the next seed, going nowhere when the pool is spent.
+    ///
+    /// A spent row's position is the pool's end, which is what the hidden file
+    /// saves and what a restart reads back as spent.
     fn advance(&mut self) {
         self.at += 1;
         self.read = if self.at < self.pool.len() {
             Read::Idle
         } else {
+            self.at = self.pool.len();
             Read::Gone
         };
     }
@@ -160,7 +164,14 @@ impl State {
         });
         if let Some(positions) = positions {
             for (row, position) in self.rows.iter_mut().zip(positions) {
-                row.at = position.min(row.pool.len().saturating_sub(1));
+                // The pool's end is a row spent on this day, which a restart
+                // must not refill.
+                row.at = position.min(row.pool.len());
+                row.read = if row.at < row.pool.len() {
+                    Read::Idle
+                } else {
+                    Read::Gone
+                };
             }
         }
     }
@@ -218,16 +229,36 @@ impl State {
     /// and the user has not hidden, in kind order.
     ///
     /// A row that has not landed counts nothing, so a caller may settle with
-    /// this wherever it likes in the frame.
+    /// this wherever it likes in the frame. Counting and drawing share
+    /// [`Self::kept`], so a row counts exactly the cards the band shows.
     pub fn fresh_counts(&self, owned: &fresh::Owned, hidden: &hidden::Hidden) -> [usize; 3] {
-        std::array::from_fn(|index| {
-            let row = &self.rows[index];
+        self.kept(owned, hidden).map(|cards| cards.len())
+    }
+
+    /// The cards each row may draw, in kind order, each artist kept for the
+    /// first row that offers it.
+    ///
+    /// A row that has not landed keeps nothing. The library's filter is applied
+    /// before the artist is claimed, so a card one row drops never hides the same
+    /// artist from the next.
+    fn kept<'a>(
+        &'a self,
+        owned: &fresh::Owned,
+        hidden: &hidden::Hidden,
+    ) -> [Vec<&'a DiscoveryCard>; 3] {
+        let mut kept: [Vec<&'a DiscoveryCard>; 3] = std::array::from_fn(|_| Vec::new());
+        let mut seen: HashSet<&'a str> = HashSet::new();
+        for (slot, row) in kept.iter_mut().zip(&self.rows) {
             let Read::Landed { cards, .. } = &row.read else {
-                return 0;
+                continue;
             };
             let anchor = row.pool.get(row.at).and_then(|seed| seed.anchor.as_ref());
-            fresh::fresh(cards, anchor, owned, hidden).len()
-        })
+            *slot = fresh::fresh(cards, anchor, owned, hidden)
+                .into_iter()
+                .filter(|card| seen.insert(card.artist.uri.as_str()))
+                .collect();
+        }
+        kept
     }
 
     /// Spends the one re-seed a landed row has when nothing it found is fresh.
@@ -237,6 +268,7 @@ impl State {
                 continue;
             }
             if row.reseeds_left == 0 {
+                row.at = row.pool.len();
                 row.read = Read::Gone;
                 continue;
             }
@@ -247,7 +279,13 @@ impl State {
 
     /// Moves one row on to its next seed, at most once per cooldown and never
     /// past the pool's end.
+    ///
+    /// A re-roll the open cannot ask for is refused: moving the row to `Idle`
+    /// with no ask behind it would draw a row that is loading forever.
     pub fn reroll(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
+        if self.asks_left == 0 {
+            return false;
+        }
         let row = &mut self.rows[kind.index()];
         if let Some(last) = row.last_reroll_ms
             && now_ms.saturating_sub(last) < REROLL_COOLDOWN_MS
@@ -271,11 +309,13 @@ impl State {
     /// What the band draws this frame.
     ///
     /// The setting being off and the library's inputs being absent are the
-    /// caller's to answer; this covers the rows themselves.
-    pub fn band(&self) -> Band<'_> {
-        let mut seen: HashSet<&str> = HashSet::new();
+    /// caller's to answer; this covers the rows themselves. A landed row whose
+    /// cards all belong to an earlier row is not drawn, and a band left with no
+    /// row at all is absent rather than empty.
+    pub fn band(&self, owned: &fresh::Owned, hidden: &hidden::Hidden) -> Band<'_> {
+        let cards = self.kept(owned, hidden);
         let mut views: Vec<RowView<'_>> = Vec::with_capacity(self.rows.len());
-        for row in &self.rows {
+        for (row, cards) in self.rows.iter().zip(cards) {
             let Some(seed) = row.pool.get(row.at) else {
                 continue;
             };
@@ -283,14 +323,12 @@ impl State {
                 Read::Idle | Read::Asked => (RowRead::Loading, None, Vec::new()),
                 Read::Unreachable => (RowRead::Unreachable, None, Vec::new()),
                 Read::Gone => continue,
-                Read::Landed { cards, genre } => (
-                    RowRead::Ready,
-                    genre.as_deref(),
-                    cards
-                        .iter()
-                        .filter(|card| seen.insert(card.artist.uri.as_str()))
-                        .collect(),
-                ),
+                Read::Landed { genre, .. } => {
+                    if cards.is_empty() {
+                        continue;
+                    }
+                    (RowRead::Ready, genre.as_deref(), cards)
+                }
             };
             views.push(RowView {
                 seed,

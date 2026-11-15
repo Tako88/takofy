@@ -50,12 +50,29 @@ impl GenreTable {
     }
 }
 
+/// What a 200 body's error object means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyError {
+    /// The quota ran out, so the outside has to pause.
+    Quota,
+    /// The record is not there, which no pause will change.
+    Absent,
+}
+
+/// The service's quota error code.
+const QUOTA_CODE: i64 = 4;
+
 /// Whether a 200 body is the service's error object.
-pub(crate) fn has_error(body: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|value| value.as_object().map(|object| object.contains_key("error")))
-        .unwrap_or(false)
+///
+/// Every code but the quota's is "no such record": a removed artist id answers
+/// one, so pausing the whole outside over it would stall every row.
+pub(crate) fn body_error(body: &[u8]) -> Option<BodyError> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    let error = value.as_object()?.get("error")?.as_object()?;
+    Some(match error.get("code").and_then(Value::as_i64) {
+        Some(QUOTA_CODE) => BodyError::Quota,
+        _ => BodyError::Absent,
+    })
 }
 
 pub(crate) fn search_artists(body: &[u8]) -> Result<Vec<ArtistHit>, WireError> {

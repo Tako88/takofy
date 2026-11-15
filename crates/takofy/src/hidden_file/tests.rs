@@ -4,6 +4,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use takofy_model::home::Day;
+
 use super::*;
 
 struct Temp(PathBuf);
@@ -351,6 +353,94 @@ fn a_refused_file_starts_empty_and_the_first_change_replaces_it_whole() {
         written(&dir),
         set.render(),
         "the first change replaces the unreadable file whole"
+    );
+}
+
+#[test]
+fn a_position_write_leaves_a_refused_file_alone_until_an_artist_is_hidden() {
+    let dir = Temp::new("a_position_write_leaves_a_refused_file_alone_until_an_artist_is_hidden");
+    let text = "format=1\nhide=not-an-address\n";
+    let path = put(&dir, text);
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let writes = Arc::clone(&writes);
+        let sink_path = path.clone();
+        move |hidden: &Hidden| {
+            writes.lock().expect("the write log").push(hidden.clone());
+            write_atomic(&sink_path, hidden)
+        }
+    };
+    let (loaded, mut sync) = opened(&path, sink);
+    assert!(matches!(loaded, Loaded::Refused(_)), "{loaded:?}");
+
+    let mut set = Hidden::default();
+    set.set_positions(Day::from_days(19_000), [3, 2, 1]);
+    sync.observe(&set);
+    sync.close(&set);
+    assert_eq!(
+        written(&dir),
+        text,
+        "a frame that only moved the rows must not replace a file it could not read"
+    );
+    assert!(
+        writes.lock().expect("the write log").is_empty(),
+        "and nothing reached the writer"
+    );
+
+    assert!(set.hide(&artist(9)));
+    sync.observe(&set);
+    sync.observe(&set);
+    drop(sync);
+
+    let replaced = written(&dir);
+    assert_eq!(
+        writes.lock().expect("the write log").len(),
+        1,
+        "the hide replaces the file once"
+    );
+    assert_eq!(replaced, set.render(), "with the hidden set present");
+    assert_eq!(replaced.matches("hide=").count(), 1);
+}
+
+#[test]
+fn a_position_write_leaves_an_unreadable_file_alone() {
+    let dir = Temp::new("a_position_write_leaves_an_unreadable_file_alone");
+    fs::create_dir_all(dir.file()).expect("a directory at the path");
+    let (log, sink) = recorder();
+    let (loaded, mut sync) = opened(&dir.file(), sink);
+    assert_eq!(loaded, Loaded::Unreadable);
+
+    let mut set = Hidden::default();
+    set.set_positions(Day::from_days(19_000), [1, 1, 1]);
+    sync.observe(&set);
+    sync.close(&set);
+    assert!(
+        logged(&log).is_empty(),
+        "an unreadable file is not replaced by where a row stands"
+    );
+
+    assert!(set.hide(&artist(2)));
+    sync.close(&set);
+    drop(sync);
+    assert_eq!(logged(&log), vec![set], "a hide is still written, once");
+}
+
+#[test]
+fn a_position_write_on_a_readable_file_records_where_the_rows_start() {
+    let dir = Temp::new("a_position_write_on_a_readable_file_records_where_the_rows_start");
+    let path = put(&dir, "format=1\n");
+    let (loaded, mut sync) = open_at(&path, HiddenWriter::start);
+    assert_eq!(loaded, Loaded::Found(Hidden::default()));
+
+    let mut set = Hidden::default();
+    set.set_positions(Day::from_days(19_000), [2, 1, 0]);
+    sync.observe(&set);
+    drop(sync);
+
+    assert_eq!(
+        written(&dir),
+        set.render(),
+        "a day's positions survive a restart on their own"
     );
 }
 

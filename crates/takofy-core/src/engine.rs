@@ -11,6 +11,7 @@ use crate::artist::ArtistError;
 use crate::connect::{ClusterView, ConnectError, Steer};
 use crate::context::{ContextError, PageSource, Walker, resolve_uris};
 use crate::credentials::AccessToken;
+use crate::discovery::ReadFailed;
 use crate::followed::FollowedError;
 use crate::hold;
 use crate::latest::Latest;
@@ -753,19 +754,20 @@ impl DiscoveryReads {
     /// The cards for `uris`, in the order given.
     ///
     /// One batched request per stage: the artists, the dates of their releases,
-    /// and the names of their top tracks.
-    pub async fn cards(&self, uris: &[String]) -> Vec<DiscoveryCard> {
+    /// and the names of their top tracks. A request that did not answer is an
+    /// error, so a caller can tell it from a row with no neighbours.
+    pub async fn cards(&self, uris: &[String]) -> Result<Vec<DiscoveryCard>, ReadFailed> {
         let country = self.session.country();
         read_discovery_cards(&self.session, &self.labels, uris, &country).await
     }
 
     /// The seed artist's own top-track titles, at most ten.
-    pub async fn top_titles(&self, artist_uri: &str) -> Vec<String> {
+    pub async fn top_titles(&self, artist_uri: &str) -> Result<Vec<String>, ReadFailed> {
         read_top_titles(&self.session, &self.labels, artist_uri).await
     }
 
     /// A playlist's first page, labelled in the playlist's own order.
-    pub async fn playlist_head(&self, playlist_uri: &str) -> Vec<TrackEntry> {
+    pub async fn playlist_head(&self, playlist_uri: &str) -> Result<Vec<TrackEntry>, ReadFailed> {
         read_playlist_head(&self.session, &self.labels, playlist_uri).await
     }
 

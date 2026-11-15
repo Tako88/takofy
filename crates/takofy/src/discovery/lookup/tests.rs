@@ -15,6 +15,7 @@ use takofy_model::home::{
 use super::{Spotify, lookup};
 use crate::discovery::test_support::FakeFetch;
 use crate::discovery::{FetchError, Outside};
+use takofy_core::ReadFailed;
 
 const SEARCH: &str = include_str!("../fixtures/search_artist.json");
 const TOP: &str = include_str!("../fixtures/top.json");
@@ -31,6 +32,19 @@ struct FakeSpotify {
     cards: Vec<DiscoveryCard>,
     reads: AtomicUsize,
     asked_cards: Mutex<Vec<Vec<String>>>,
+    /// The reads this fake answers with an error instead.
+    failing: Vec<Call>,
+    /// The queries whose search answers with an error.
+    failing_searches: Mutex<Vec<String>>,
+}
+
+/// One of the four reads a lookup asks Spotify for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Call {
+    Titles,
+    Head,
+    Search,
+    Cards,
 }
 
 impl FakeSpotify {
@@ -42,7 +56,26 @@ impl FakeSpotify {
             cards: Vec::new(),
             reads: AtomicUsize::new(0),
             asked_cards: Mutex::new(Vec::new()),
+            failing: Vec::new(),
+            failing_searches: Mutex::new(Vec::new()),
         }
+    }
+
+    fn failing(mut self, call: Call) -> Self {
+        self.failing.push(call);
+        self
+    }
+
+    fn failing_search(self, needle: &str) -> Self {
+        self.failing_searches
+            .lock()
+            .expect("failing searches")
+            .push(needle.to_owned());
+        self
+    }
+
+    fn fails(&self, call: Call) -> bool {
+        self.failing.contains(&call)
     }
 
     fn with_head(mut self, head: Vec<TrackEntry>) -> Self {
@@ -73,19 +106,30 @@ impl FakeSpotify {
 }
 
 impl Spotify for FakeSpotify {
-    fn seed_titles(&self, _artist: &DiscoveryArtist) -> impl Future<Output = Vec<String>> + Send {
+    fn seed_titles(
+        &self,
+        _artist: &DiscoveryArtist,
+    ) -> impl Future<Output = Result<Vec<String>, ReadFailed>> + Send {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let titles = self.titles.clone();
-        async move { titles }
+        let fails = self.fails(Call::Titles);
+        async move { if fails { Err(ReadFailed) } else { Ok(titles) } }
     }
 
-    fn playlist_head(&self, _uri: &str) -> impl Future<Output = Vec<TrackEntry>> + Send {
+    fn playlist_head(
+        &self,
+        _uri: &str,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, ReadFailed>> + Send {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let head = self.head.clone();
-        async move { head }
+        let fails = self.fails(Call::Head);
+        async move { if fails { Err(ReadFailed) } else { Ok(head) } }
     }
 
-    fn search(&self, query: &str) -> impl Future<Output = Vec<TrackEntry>> + Send {
+    fn search(
+        &self,
+        query: &str,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, ReadFailed>> + Send {
         self.reads.fetch_add(1, Ordering::Relaxed);
         let hits = self
             .searches
@@ -95,14 +139,25 @@ impl Spotify for FakeSpotify {
             .find(|(needle, _)| query.contains(needle.as_str()))
             .map(|(_, hits)| hits.clone())
             .unwrap_or_default();
-        async move { hits }
+        let fails = self.fails(Call::Search)
+            || self
+                .failing_searches
+                .lock()
+                .expect("failing searches")
+                .iter()
+                .any(|needle| query.contains(needle.as_str()));
+        async move { if fails { Err(ReadFailed) } else { Ok(hits) } }
     }
 
-    fn cards(&self, uris: &[String]) -> impl Future<Output = Vec<DiscoveryCard>> + Send {
+    fn cards(
+        &self,
+        uris: &[String],
+    ) -> impl Future<Output = Result<Vec<DiscoveryCard>, ReadFailed>> + Send {
         self.reads.fetch_add(1, Ordering::Relaxed);
         self.asked_cards.lock().expect("cards").push(uris.to_vec());
         let cards = self.cards.clone();
-        async move { cards }
+        let fails = self.fails(Call::Cards);
+        async move { if fails { Err(ReadFailed) } else { Ok(cards) } }
     }
 }
 
@@ -372,9 +427,12 @@ async fn a_429_blocks_the_next_lookup() {
 }
 
 #[tokio::test]
-async fn an_error_body_is_not_an_empty_list() {
+async fn a_quota_error_body_is_unreachable() {
     let fetch = FakeFetch::new();
-    fetch.ok("search/artist", QUOTA_ERROR.as_bytes().to_vec());
+    fetch.ok(
+        "search/artist",
+        br#"{"error":{"type":"Exception","code":4}}"#.to_vec(),
+    );
     let spotify = FakeSpotify::new(&["Signal Fire", "Night Watch"]);
     let outside = outside(&fetch, true);
 
@@ -382,6 +440,119 @@ async fn an_error_body_is_not_an_empty_list() {
 
     assert_eq!(outcome, DiscoveryOutcome::Unreachable);
     assert_eq!(fetch.count(), 1);
+}
+
+#[tokio::test]
+async fn a_no_data_error_body_rejects_the_seed() {
+    let fetch = FakeFetch::new();
+    fetch.ok("search/artist", QUOTA_ERROR.as_bytes().to_vec());
+    let spotify = FakeSpotify::new(&["Signal Fire", "Night Watch"]);
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    assert_eq!(outcome, DiscoveryOutcome::Rejected);
+    assert_eq!(
+        fetch.count(),
+        1,
+        "a record the service does not hold costs one read, not a pause"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_seed_title_read_is_unreachable() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).failing(Call::Titles);
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    assert_eq!(outcome, DiscoveryOutcome::Unreachable);
+    assert_eq!(fetch.count(), 0, "the row never reaches the outside");
+}
+
+#[tokio::test]
+async fn a_failed_playlist_head_is_unreachable() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).failing(Call::Head);
+    let outside = outside(&fetch, true);
+    let seed = DiscoverySeed {
+        kind: DiscoveryKind::Playlist,
+        uri: "spotify:playlist:mix".to_owned(),
+        name: "Mix".to_owned(),
+        anchor: None,
+    };
+
+    let (_, outcome) = lookup(&spotify, &outside, seed).await;
+
+    assert_eq!(outcome, DiscoveryOutcome::Unreachable);
+    assert_eq!(fetch.count(), 0, "no anchor means no outside read");
+}
+
+#[tokio::test]
+async fn a_failed_neighbour_search_is_unreachable() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).failing(Call::Search);
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    assert_eq!(outcome, DiscoveryOutcome::Unreachable);
+}
+
+#[tokio::test]
+async fn a_failed_card_read_is_unreachable() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).failing(Call::Cards);
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    assert_eq!(outcome, DiscoveryOutcome::Unreachable);
+    assert_eq!(
+        spotify.asked_cards().len(),
+        1,
+        "the cards were asked for, and the failure is not an empty row"
+    );
+}
+
+#[tokio::test]
+async fn one_failed_search_leaves_the_other_neighbours() {
+    let fetch = FakeFetch::new();
+    fetch.ok("search/artist", SEARCH.as_bytes().to_vec());
+    fetch.ok("1001/top", TOP.as_bytes().to_vec());
+    fetch.ok("1001/related", RELATED.as_bytes().to_vec());
+    fetch.ok("1001/albums", ALBUMS.as_bytes().to_vec());
+    fetch.ok("/genre", GENRE.as_bytes().to_vec());
+    fetch.ok("2002/top", one_title("Window"));
+    fetch.ok("2003/top", one_title("Plains"));
+    fetch.ok("2004/top", one_title("Fracture"));
+    let spotify = FakeSpotify::new(&["Signal Fire", "Night Watch"])
+        .with_search(
+            "Seefeel Plains",
+            vec![hit("Plains", "Seefeel", "spotify:artist:seefeel")],
+        )
+        .with_search(
+            "Clark Fracture",
+            vec![hit("Fracture", "Clark", "spotify:artist:clark")],
+        )
+        .with_cards(vec![
+            card("spotify:artist:seefeel", "Seefeel"),
+            card("spotify:artist:clark", "Clark"),
+        ])
+        .failing_search("Aphex Twin Window");
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    match outcome {
+        DiscoveryOutcome::Neighbours { cards, .. } => assert_eq!(cards.len(), 2),
+        other => panic!("expected the two reachable neighbours, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -512,6 +683,59 @@ async fn a_playlist_with_no_recurrence_is_rejected_without_a_fetch() {
     assert_eq!(seed.anchor, None);
     assert_eq!(fetch.count(), 0);
     assert_eq!(spotify.reads(), 1);
+}
+
+#[tokio::test]
+async fn a_playlist_anchor_skips_a_compilation_credit() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    let head = vec![
+        hit("One", "Various Artists", "spotify:artist:various"),
+        hit("Two", "Various Artists", "spotify:artist:various"),
+        hit("Three", "Various Artists", "spotify:artist:various"),
+        hit("Four", "Other", "spotify:artist:other"),
+        hit("Five", "Other", "spotify:artist:other"),
+    ];
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).with_head(head);
+    let outside = outside(&fetch, true);
+    let seed = DiscoverySeed {
+        kind: DiscoveryKind::Playlist,
+        uri: "spotify:playlist:mix".to_owned(),
+        name: "Mix".to_owned(),
+        anchor: None,
+    };
+
+    let (seed, _) = lookup(&spotify, &outside, seed).await;
+
+    assert_eq!(
+        seed.anchor,
+        Some(artist("Other")),
+        "a compilation is no artist to reach any further"
+    );
+}
+
+#[tokio::test]
+async fn a_playlist_of_only_compilations_is_rejected() {
+    let fetch = FakeFetch::new();
+    route_happy(&fetch);
+    let head = vec![
+        hit("One", "Various Artists", "spotify:artist:various"),
+        hit("Two", "Various Artists", "spotify:artist:various"),
+    ];
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]).with_head(head);
+    let outside = outside(&fetch, true);
+    let seed = DiscoverySeed {
+        kind: DiscoveryKind::Playlist,
+        uri: "spotify:playlist:mix".to_owned(),
+        name: "Mix".to_owned(),
+        anchor: None,
+    };
+
+    let (seed, outcome) = lookup(&spotify, &outside, seed).await;
+
+    assert_eq!(seed.anchor, None);
+    assert_eq!(outcome, DiscoveryOutcome::Rejected);
+    assert_eq!(fetch.count(), 0, "no anchor, no outside read");
 }
 
 #[tokio::test]

@@ -192,6 +192,24 @@ fn on_exit_after_a_settled_write_sends_nothing_more() {
 }
 
 #[test]
+fn a_preferences_file_we_cannot_read_leaves_discovery_off() {
+    assert!(
+        !loaded_discovery(&Loaded::Refused(
+            "line 2: bad value for `discovery`".to_owned()
+        )),
+        "a typo must not send the user's artists to the outside"
+    );
+    assert!(!loaded_discovery(&Loaded::Unreadable));
+
+    assert!(
+        loaded_discovery(&Loaded::Absent),
+        "no file is the default, and the default is on"
+    );
+    assert!(loaded_discovery(&found("volume=40\n")));
+    assert!(!loaded_discovery(&found("discovery=false\n")));
+}
+
+#[test]
 fn an_off_discovery_setting_is_written_back_off() {
     let (log, sink) = recording();
     let written = Prefs::parse("volume=40\ndiscovery=false\n").expect("valid prefs");

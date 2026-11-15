@@ -4,15 +4,17 @@
 //! seed's anchor is identified by title overlap rather than by name, because
 //! the service returns same-name noise. A neighbour is only accepted when its
 //! title and credited artist both match, and the genre read comes after the
-//! cards so a missing genre never costs a row its artists.
+//! cards so a missing genre never costs a row its artists. A Spotify read that
+//! failed is unreachable, never a seed the service rejected.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::future::Future;
 
+use takofy_core::ReadFailed;
 use takofy_model::TrackEntry;
 use takofy_model::home::{
-    DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed,
+    DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed, VARIOUS_ARTISTS,
 };
 
 use super::verify::{confirm_hit, normalise, overlaps};
@@ -30,11 +32,27 @@ const CARDS_MAX: usize = 6;
 const SEED_TITLES_MAX: usize = 10;
 
 /// The Spotify reads a lookup needs, faked in tests.
+///
+/// An `Err` is a read that did not answer, which is never the same as a read
+/// that answered nothing: a dead session must not look like a seed the service
+/// refused.
 pub(crate) trait Spotify: Send + Sync {
-    fn seed_titles(&self, artist: &DiscoveryArtist) -> impl Future<Output = Vec<String>> + Send;
-    fn playlist_head(&self, uri: &str) -> impl Future<Output = Vec<TrackEntry>> + Send;
-    fn search(&self, query: &str) -> impl Future<Output = Vec<TrackEntry>> + Send;
-    fn cards(&self, uris: &[String]) -> impl Future<Output = Vec<DiscoveryCard>> + Send;
+    fn seed_titles(
+        &self,
+        artist: &DiscoveryArtist,
+    ) -> impl Future<Output = Result<Vec<String>, ReadFailed>> + Send;
+    fn playlist_head(
+        &self,
+        uri: &str,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, ReadFailed>> + Send;
+    fn search(
+        &self,
+        query: &str,
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, ReadFailed>> + Send;
+    fn cards(
+        &self,
+        uris: &[String],
+    ) -> impl Future<Output = Result<Vec<DiscoveryCard>, ReadFailed>> + Send;
 }
 
 /// Looks one seed up outside and returns the seed with its resolved anchor.
@@ -50,12 +68,18 @@ where
     if !outside.is_open() {
         return (seed, DiscoveryOutcome::Off);
     }
-    let Some(anchor) = anchor_for(spotify, &seed).await else {
-        return (seed, DiscoveryOutcome::Rejected);
+    let anchor = match anchor_for(spotify, &seed).await {
+        Ok(Some(anchor)) => anchor,
+        Ok(None) => return (seed, DiscoveryOutcome::Rejected),
+        // Before the verify and related steps: a Spotify read that did not
+        // answer is the outside being unreachable, never a seed it rejected.
+        Err(ReadFailed) => return (seed, DiscoveryOutcome::Unreachable),
     };
     seed.anchor = Some(anchor.clone());
 
-    let mut seed_titles = spotify.seed_titles(&anchor).await;
+    let Ok(mut seed_titles) = spotify.seed_titles(&anchor).await else {
+        return (seed, DiscoveryOutcome::Unreachable);
+    };
     seed_titles.truncate(SEED_TITLES_MAX);
     if seed_titles.is_empty() {
         return (seed, DiscoveryOutcome::Rejected);
@@ -88,7 +112,10 @@ where
     let cards = if resolved.uris.is_empty() {
         Vec::new()
     } else {
-        spotify.cards(&resolved.uris).await
+        match spotify.cards(&resolved.uris).await {
+            Ok(cards) => cards,
+            Err(ReadFailed) => return (seed, DiscoveryOutcome::Unreachable),
+        }
     };
     let genre = genre_for(outside, &seed, candidate.id).await;
     (seed, DiscoveryOutcome::Neighbours { cards, genre })
@@ -100,13 +127,16 @@ struct Resolved {
     failed: usize,
 }
 
-async fn anchor_for<S: Spotify>(spotify: &S, seed: &DiscoverySeed) -> Option<DiscoveryArtist> {
+async fn anchor_for<S: Spotify>(
+    spotify: &S,
+    seed: &DiscoverySeed,
+) -> Result<Option<DiscoveryArtist>, ReadFailed> {
     match seed.kind {
         DiscoveryKind::Playlist => {
-            let head = spotify.playlist_head(&seed.uri).await;
-            recurring_anchor(&head)
+            let head = spotify.playlist_head(&seed.uri).await?;
+            Ok(recurring_anchor(&head))
         }
-        DiscoveryKind::Artist | DiscoveryKind::Album => seed.anchor.clone(),
+        DiscoveryKind::Artist | DiscoveryKind::Album => Ok(seed.anchor.clone()),
     }
 }
 
@@ -121,7 +151,7 @@ fn recurring_anchor(head: &[TrackEntry]) -> Option<DiscoveryArtist> {
         let Some(uri) = entry.artist_uris.first() else {
             continue;
         };
-        if name.trim().is_empty() || uri.is_empty() {
+        if name.trim().is_empty() || name == VARIOUS_ARTISTS || uri.is_empty() {
             continue;
         }
         if let Some((_, count)) = counts.iter_mut().find(|(artist, _)| artist.uri == *uri) {
@@ -154,7 +184,11 @@ async fn identify<F: Fetch + Sync>(
     seed_titles: &[String],
 ) -> Result<Option<wire::ArtistHit>, OutsideError> {
     let path = format!("/search/artist?q={}&limit=5", encode(&anchor.name));
-    let body = outside.get(&path).await?;
+    let body = match outside.get(&path).await {
+        Ok(body) => body,
+        Err(OutsideError::Absent) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let candidates = wire::search_artists(&body).map_err(|_| OutsideError::Failed)?;
     let mut failed = false;
     for candidate in candidates.into_iter().take(VERIFY_MAX) {
@@ -163,6 +197,7 @@ async fn identify<F: Fetch + Sync>(
             Ok(body) => body,
             Err(OutsideError::Off) => return Err(OutsideError::Off),
             Err(OutsideError::Backoff) => return Err(OutsideError::Backoff),
+            Err(OutsideError::Absent) => continue,
             Err(OutsideError::Failed) => {
                 failed = true;
                 continue;
@@ -214,6 +249,7 @@ where
             Ok(body) => body,
             Err(OutsideError::Off) => return Err(OutsideError::Off),
             Err(OutsideError::Backoff) => return Err(OutsideError::Backoff),
+            Err(OutsideError::Absent) => continue,
             Err(OutsideError::Failed) => {
                 failed += 1;
                 continue;
@@ -230,7 +266,13 @@ where
             continue;
         };
         let query = format!("{} {}", neighbour.name, title);
-        let hits = spotify.search(&query).await;
+        let hits = match spotify.search(&query).await {
+            Ok(hits) => hits,
+            Err(ReadFailed) => {
+                failed += 1;
+                continue;
+            }
+        };
         let Some((entry, index)) = hits.iter().find_map(|entry| {
             confirm_hit(entry, &title, &neighbour.name).map(|index| (entry, index))
         }) else {
@@ -285,6 +327,9 @@ async fn genre_for<F: Fetch + Sync>(
 fn outcome_of(error: OutsideError) -> DiscoveryOutcome {
     match error {
         OutsideError::Off => DiscoveryOutcome::Off,
+        // A record the service does not hold says nothing about this seed: the
+        // row moves on to the next one instead of waiting for an open.
+        OutsideError::Absent => DiscoveryOutcome::Rejected,
         OutsideError::Backoff | OutsideError::Failed => DiscoveryOutcome::Unreachable,
     }
 }

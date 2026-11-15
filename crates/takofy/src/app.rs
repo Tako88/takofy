@@ -507,11 +507,14 @@ fn local_day() -> Day {
 
 /// The discovery setting the preferences file held.
 ///
-/// A file that did not parse leaves the setting at its default, which is on.
+/// A file we cannot read fails closed: the setting sends the user's followed
+/// artists to a third party, so a typo must not turn it on. An absent file is
+/// the default, which is on.
 pub(crate) fn loaded_discovery(loaded: &Loaded) -> bool {
     match loaded {
         Loaded::Found(prefs) => prefs.discovery(),
-        Loaded::Absent | Loaded::Refused(_) | Loaded::Unreadable => Prefs::default().discovery(),
+        Loaded::Absent => Prefs::default().discovery(),
+        Loaded::Refused(_) | Loaded::Unreadable => false,
     }
 }
 

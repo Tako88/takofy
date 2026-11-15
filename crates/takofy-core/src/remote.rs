@@ -41,7 +41,7 @@ use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, Walker, page_from_proto, parse_page_json,
 };
 use crate::cover::{covers_in_group, covers_in_images};
-use crate::discovery;
+use crate::discovery::{self, ReadFailed};
 use crate::followed::{self, FollowedError, ShowCard};
 use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
@@ -1280,17 +1280,18 @@ const DISCOVERY_ALBUM_CHUNK: usize = 60;
 /// artist's top list, and its own entry wins over the empty one.
 ///
 /// The cards keep the caller's order, and an artist the wire did not answer is
-/// dropped rather than drawn empty.
+/// dropped rather than drawn empty. An `Err` is the artist request itself
+/// failing, which is no cards at all rather than a row without neighbours.
 pub(crate) async fn read_discovery_cards(
     session: &Session,
     labels: &LabelCache,
     uris: &[String],
     country: &str,
-) -> Vec<DiscoveryCard> {
+) -> Result<Vec<DiscoveryCard>, ReadFailed> {
     let distinct = distinct_uris(uris);
     let wanted = &distinct[..distinct.len().min(DISCOVERY_CARDS_MAX)];
     if wanted.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let Some((artists, tally)) = request_parsed(
@@ -1305,7 +1306,7 @@ pub(crate) async fn read_discovery_cards(
             "the card read asked for {} artists and the request failed",
             wanted.len()
         );
-        return Vec::new();
+        return Err(ReadFailed);
     };
     if let Some(summary) = tally.summary() {
         log::warn!("{summary}");
@@ -1381,7 +1382,7 @@ pub(crate) async fn read_discovery_cards(
             wanted.len()
         );
     }
-    cards
+    Ok(cards)
 }
 
 /// The seed artist's own top-track titles, in the wire's own order.
@@ -1394,47 +1395,50 @@ pub(crate) async fn read_top_titles(
     session: &Session,
     labels: &LabelCache,
     artist_uri: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, ReadFailed> {
     let Ok(id) = SpotifyUri::from_uri(artist_uri) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     if !matches!(id, SpotifyUri::Artist { .. }) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let Ok(artist) = Artist::get(session, &id).await else {
+    let artist = Artist::get(session, &id).await.map_err(|_| {
         log::warn!("a seed artist could not be read for its top tracks");
-        return Vec::new();
-    };
+        ReadFailed
+    })?;
     let country = session.country();
     let positions = top_track_positions(&artist, &country);
     if positions.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let labelled: HashMap<String, TrackEntry> = label_tracks(session, positions, labels)
         .await
         .into_iter()
         .map(|entry| (entry.uri.clone(), entry))
         .collect();
-    discovery::top_titles_of(&artist, &country, &labelled)
+    Ok(discovery::top_titles_of(&artist, &country, &labelled))
 }
 
 /// The first page of a playlist's tracks, labelled in the playlist's order.
 ///
 /// Two requests at most: the context resolve, then one batched label read. A
-/// page that cannot be read is empty rather than an error: the caller refuses the seed on
-/// an empty page, so a failure is not a different answer.
+/// page that cannot be read is an error: an empty page is a playlist with
+/// nothing in it, which refuses the seed for a different reason than a session
+/// that could not answer.
 pub(crate) async fn read_playlist_head(
     session: &Session,
     labels: &LabelCache,
     playlist_uri: &str,
-) -> Vec<TrackEntry> {
+) -> Result<Vec<TrackEntry>, ReadFailed> {
     let mut walker = Walker::new(RemoteContext { session }, playlist_uri);
     match walker.next_page().await {
-        Ok(Some(page)) => label_tracks(session, page.tracks, labels).await,
-        Ok(None) => Vec::new(),
-        Err(error) => {
-            log::warn!("a playlist's first page could not be read: {error}");
-            Vec::new()
+        Ok(Some(page)) => Ok(label_tracks(session, page.tracks, labels).await),
+        Ok(None) => Ok(Vec::new()),
+        Err(_) => {
+            // The context error can carry the address it resolved, so it is not
+            // logged.
+            log::warn!("a playlist's first page could not be read");
+            Err(ReadFailed)
         }
     }
 }

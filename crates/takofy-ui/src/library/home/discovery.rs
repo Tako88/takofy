@@ -13,9 +13,8 @@
 
 use takofy_model::home::HomeAsk;
 
-use crate::home::discovery::fresh::{self, Owned};
-use crate::home::discovery::hidden::Hidden;
-use crate::home::discovery::{Band, RowView};
+use crate::home::discovery::Band;
+use crate::home::discovery::fresh::Owned;
 use crate::library::{Library, Load};
 use crate::message::Command;
 
@@ -103,28 +102,9 @@ pub(in crate::library) fn band(library: &Library) -> Band<'_> {
         Inputs::Waiting => Band::Waiting,
         Inputs::Ready => {
             let owned = owned_of(library);
-            match library.home.discovery.band() {
-                Band::Rows(rows) => Band::Rows(
-                    rows.into_iter()
-                        .map(|row| kept(row, &owned, &library.hidden))
-                        .collect(),
-                ),
-                other => other,
-            }
+            library.home.discovery.band(&owned, &library.hidden)
         }
     }
-}
-
-/// One row's cards, without the artists the library holds, the row's own seed,
-/// or anyone the user hid.
-fn kept<'a>(row: RowView<'a>, owned: &Owned, hidden: &Hidden) -> RowView<'a> {
-    let anchor = row.seed.anchor.as_ref();
-    let cards = row
-        .cards
-        .into_iter()
-        .filter(|card| fresh::keeps(card, anchor, owned, hidden))
-        .collect();
-    RowView { cards, ..row }
 }
 
 /// The artists the library already holds.

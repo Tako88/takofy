@@ -57,7 +57,8 @@ pub(crate) fn confirm_hit(
     wanted_title: &str,
     wanted_name: &str,
 ) -> Option<usize> {
-    if normalise(&entry.title) != normalise(wanted_title) {
+    let title = normalise(wanted_title);
+    if title.is_empty() || normalise(&entry.title) != title {
         return None;
     }
     let wanted = normalise(wanted_name);
@@ -76,7 +77,7 @@ fn strip_trailing_group(text: &str) -> Option<&str> {
     let open = match close {
         ')' => '(',
         ']' => '[',
-        '{' => '{',
+        '}' => '{',
         _ => return None,
     };
     let mut depth = 0usize;

@@ -224,6 +224,25 @@ fn a_hide_is_idempotent_and_bumps_the_revision_once() {
 }
 
 #[test]
+fn the_set_revision_moves_only_when_the_artists_do() {
+    let mut set = Hidden::default();
+    set.set_positions(Day::from_days(4), [1, 2, 3]);
+
+    assert_eq!(
+        set.set_revision(),
+        0,
+        "where the rows start is not the set's business"
+    );
+    assert!(set.hide("spotify:artist:a"));
+    let once = set.set_revision();
+    assert_eq!(once, 1);
+    set.set_positions(Day::from_days(4), [0, 0, 0]);
+    assert_eq!(set.set_revision(), once, "a moved row is not a set change");
+    assert!(set.unhide("spotify:artist:a"));
+    assert_eq!(set.set_revision(), once + 1);
+}
+
+#[test]
 fn a_hide_that_is_not_an_artist_address_is_refused_by_the_set() {
     let mut set = Hidden::default();
 

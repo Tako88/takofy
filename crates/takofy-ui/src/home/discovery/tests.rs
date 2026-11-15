@@ -165,7 +165,7 @@ fn the_saved_positions_start_the_rows() {
 }
 
 #[test]
-fn a_saved_position_past_the_pools_end_starts_on_its_last_seed() {
+fn a_saved_position_at_or_past_the_pools_end_starts_the_row_gone() {
     let mut state = State::default();
     state.latch(today());
     state.open();
@@ -174,13 +174,41 @@ fn a_saved_position_past_the_pools_end_starts_on_its_last_seed() {
         &playlists(2),
         &artists(2),
         &albums(2),
-        Some([99, 99, 99]),
+        Some([2, 99, 2]),
     );
 
+    assert!(matches!(state.rows[0].read, Read::Gone));
+    assert!(
+        matches!(state.rows[1].read, Read::Gone),
+        "a position the pool cannot hold is a row that was spent"
+    );
+    assert_eq!(state.next_ask(), None, "a spent row is not asked");
+}
+
+#[test]
+fn a_spent_row_stays_spent_across_a_restart_on_the_same_day() {
+    let day = today();
+    let mut state = playlists_only(day, 2);
+    for _ in 0..2 {
+        let seed = state.next_ask().expect("the row has two seeds");
+        state.land(&answer(seed, DiscoveryOutcome::Rejected));
+    }
+    assert!(matches!(state.rows[0].read, Read::Gone));
+    let saved = state.positions();
+
+    let mut restarted = State::default();
+    restarted.latch(day);
+    restarted.open();
+    restarted.choose(day, &playlists(2), &[], &[], Some(saved));
+
+    assert!(
+        matches!(restarted.rows[0].read, Read::Gone),
+        "the day's row is spent, not refilled by a clamp"
+    );
     assert_eq!(
-        state.positions(),
-        [1, 1, 1],
-        "the pool bounds what it starts on"
+        restarted.next_ask(),
+        None,
+        "a restart does not re-ask a spent row"
     );
 }
 
@@ -242,7 +270,10 @@ fn a_stale_answer_is_dropped() {
         "the row keeps waiting for the answer to the seed it asked"
     );
     assert!(
-        matches!(state.band(), Band::Rows(_)),
+        matches!(
+            state.band(&fresh::Owned::default(), &hidden::Hidden::default()),
+            Band::Rows(_)
+        ),
         "and the band keeps loading"
     );
 }
@@ -417,6 +448,72 @@ fn reroll_moves_forward_within_the_pool_and_waits_out_the_cooldown() {
 }
 
 #[test]
+fn a_re_roll_with_no_ask_left_is_refused() {
+    let mut state = playlists_only(today(), 3);
+    let seed = state.next_ask().expect("the first row asks");
+    state.land(&answer(seed, neighbours(&[0])));
+    state.asks_left = 0;
+
+    assert!(
+        !state.reroll(DiscoveryKind::Playlist, NOW),
+        "a re-roll that nothing could ask would leave the row loading"
+    );
+    assert!(
+        matches!(state.rows[0].read, Read::Landed { .. }),
+        "the row keeps the cards it has"
+    );
+    assert_eq!(state.positions()[0], 0, "and stays where it is");
+}
+
+#[test]
+fn two_rows_over_one_neighbourhood_draw_it_once() {
+    let mut state = chosen(today(), 4);
+    for _ in 0..2 {
+        let seed = state.next_ask().expect("each row asks once");
+        state.land(&answer(seed, neighbours(&[0, 1])));
+    }
+
+    let Band::Rows(rows) = state.band(&fresh::Owned::default(), &hidden::Hidden::default()) else {
+        panic!("the row with cards draws");
+    };
+    assert_eq!(
+        rows.iter().filter(|row| row.read == RowRead::Ready).count(),
+        1
+    );
+    assert_eq!(rows[0].seed.kind, DiscoveryKind::Playlist);
+    assert_eq!(rows[0].cards.len(), 2);
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.seed.kind == DiscoveryKind::Artist),
+        "a ready row with nothing the first one did not show is not drawn"
+    );
+}
+
+#[test]
+fn a_row_whose_cards_all_appeared_in_an_earlier_row_spends_its_re_seed() {
+    let mut state = chosen(today(), 4);
+    for _ in 0..2 {
+        let seed = state.next_ask().expect("each row asks once");
+        state.land(&answer(seed, neighbours(&[0, 1])));
+    }
+
+    let counts = state.fresh_counts(&fresh::Owned::default(), &hidden::Hidden::default());
+    assert_eq!(
+        counts,
+        [2, 0, 0],
+        "the second row offers nothing the first did not"
+    );
+
+    state.settle(counts);
+    assert!(
+        matches!(state.rows[1].read, Read::Idle),
+        "the empty row moves on to its next seed"
+    );
+    assert_eq!(state.positions()[1], 1);
+}
+
+#[test]
 fn an_ask_goes_out_once() {
     let mut state = chosen(today(), 4);
     let mut asked = Vec::new();
@@ -444,7 +541,7 @@ fn an_ask_goes_out_once() {
 fn the_band_loads_every_row_that_has_a_seed() {
     let state = chosen(today(), 4);
 
-    let Band::Rows(rows) = state.band() else {
+    let Band::Rows(rows) = state.band(&fresh::Owned::default(), &hidden::Hidden::default()) else {
         panic!("three seeded rows draw");
     };
 
@@ -470,7 +567,7 @@ fn the_band_keeps_one_card_per_artist_across_rows() {
         ));
     }
 
-    let Band::Rows(rows) = state.band() else {
+    let Band::Rows(rows) = state.band(&fresh::Owned::default(), &hidden::Hidden::default()) else {
         panic!("three landed rows draw");
     };
 
@@ -508,18 +605,25 @@ fn an_unreachable_row_draws_as_unreachable() {
         state.land(&answer(seed, DiscoveryOutcome::Unreachable));
     }
 
-    assert_eq!(state.band(), Band::Unreachable);
+    assert_eq!(
+        state.band(&fresh::Owned::default(), &hidden::Hidden::default()),
+        Band::Unreachable
+    );
 }
 
 #[test]
 fn no_row_that_is_here_draws_as_absent() {
     let mut state = State::default();
 
-    assert_eq!(state.band(), Band::Absent, "no day, no pool, no band");
+    assert_eq!(
+        state.band(&fresh::Owned::default(), &hidden::Hidden::default()),
+        Band::Absent,
+        "no day, no pool, no band"
+    );
 
     state = chosen(today(), 0);
     assert_eq!(
-        state.band(),
+        state.band(&fresh::Owned::default(), &hidden::Hidden::default()),
         Band::Absent,
         "a library with nothing to seed from"
     );

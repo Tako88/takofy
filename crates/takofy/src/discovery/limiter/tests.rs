@@ -22,6 +22,32 @@ fn forty_go_and_the_next_waits_for_the_window() {
 }
 
 #[test]
+fn a_burst_across_the_boundary_cannot_double_the_ceiling() {
+    let base = Instant::now();
+    let late = base + Duration::from_millis(4_900);
+    let almost = base + Duration::from_millis(5_000);
+    let mut limiter = Limiter::new();
+    for _ in 0..LIMIT {
+        assert_eq!(limiter.admit(late), Decision::Go);
+    }
+    assert_eq!(
+        limiter.admit(almost),
+        Decision::Wait(Duration::from_millis(4_900)),
+        "the second burst waits for the first one's oldest call to expire"
+    );
+
+    let expired = late + WINDOW;
+    for _ in 0..LIMIT {
+        assert_eq!(
+            limiter.admit(expired),
+            Decision::Go,
+            "the second burst goes only once the first has left the window"
+        );
+    }
+    assert_eq!(limiter.admit(expired), Decision::Wait(WINDOW));
+}
+
+#[test]
 fn the_window_slides() {
     let base = Instant::now();
     let mut limiter = Limiter::new();
@@ -89,6 +115,26 @@ fn an_expired_pause_goes_again() {
     let mut limiter = Limiter::new();
     limiter.backoff(base, None);
     assert_eq!(limiter.admit(after(base, 2)), Decision::Go);
+}
+
+#[test]
+fn a_short_pause_never_shortens_a_longer_one() {
+    let base = Instant::now();
+    let mut limiter = Limiter::new();
+    limiter.backoff(base, Some(Duration::from_secs(20)));
+    limiter.backoff(base, None);
+    assert_eq!(
+        limiter.paused_until(),
+        Some(after(base, 20)),
+        "the later of the two pauses is the one that holds"
+    );
+
+    limiter.backoff(base, Some(Duration::from_secs(25)));
+    assert_eq!(
+        limiter.paused_until(),
+        Some(after(base, 25)),
+        "a longer pause still replaces a shorter one"
+    );
 }
 
 #[test]

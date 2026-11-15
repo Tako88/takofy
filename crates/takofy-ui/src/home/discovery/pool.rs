@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use takofy_model::home::{Day, DiscoveryArtist, DiscoveryKind, DiscoverySeed};
+use takofy_model::home::{Day, DiscoveryArtist, DiscoveryKind, DiscoverySeed, VARIOUS_ARTISTS};
 use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 
 use crate::shuffle;
@@ -18,9 +18,6 @@ pub const EDGE: usize = 8;
 
 /// How many candidates a kind keeps from its drawn edge set.
 pub const PER_KIND: usize = 4;
-
-/// The credit a compilation carries, which is no artist to reach any further.
-const VARIOUS: &str = "Various Artists";
 
 /// The day's pool, one list per row in the page's kind order.
 pub fn day_pool(
@@ -91,7 +88,7 @@ fn album_seeds(albums: &[SavedAlbum]) -> Vec<DiscoverySeed> {
         let Some(name) = entry.artist_names.first() else {
             continue;
         };
-        if name == VARIOUS || !seen.insert(uri.as_str()) {
+        if name == VARIOUS_ARTISTS || !seen.insert(uri.as_str()) {
             continue;
         }
         seeds.push(DiscoverySeed {

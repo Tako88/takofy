@@ -4,6 +4,7 @@
 //! three rows' worst case stays inside it. A failure pauses the outside, and a
 //! pause longer than the lookup may wait is refused rather than slept through.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -28,8 +29,7 @@ pub(crate) enum Decision {
 /// The sliding window and the failure pause.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Limiter {
-    window_start: Option<Instant>,
-    admitted: usize,
+    admitted: VecDeque<Instant>,
     pause_until: Option<Instant>,
     step: Option<Duration>,
 }
@@ -52,23 +52,23 @@ impl Limiter {
             }
             self.pause_until = None;
         }
-        let start = match self.window_start {
-            Some(start) if now.saturating_duration_since(start) < WINDOW => start,
-            _ => {
-                self.window_start = Some(now);
-                self.admitted = 0;
-                now
+        while let Some(&oldest) = self.admitted.front() {
+            if now.saturating_duration_since(oldest) < WINDOW {
+                break;
             }
-        };
-        if self.admitted >= LIMIT {
-            let wait = (start + WINDOW).saturating_duration_since(now);
+            self.admitted.pop_front();
+        }
+        if let Some(&oldest) = self.admitted.front()
+            && self.admitted.len() >= LIMIT
+        {
+            let wait = (oldest + WINDOW).saturating_duration_since(now);
             return if wait > MAX_WAIT {
                 Decision::Refuse
             } else {
                 Decision::Wait(wait)
             };
         }
-        self.admitted += 1;
+        self.admitted.push_back(now);
         Decision::Go
     }
 
@@ -88,7 +88,8 @@ impl Limiter {
                 next
             }
         };
-        self.pause_until = Some(now + pause);
+        let until = now + pause;
+        self.pause_until = Some(self.pause_until.map_or(until, |held| held.max(until)));
     }
 
     /// Ends a failure chain after a request answered.

@@ -333,7 +333,11 @@ async fn the_discovery_handle_can_be_cloned_into_a_row_task() {
     let elsewhere = tokio::spawn(async move { reads.top_titles("not-an-artist").await });
 
     assert!(
-        elsewhere.await.expect("a joined task").is_empty(),
+        elsewhere
+            .await
+            .expect("a joined task")
+            .expect("a URI that names no artist is no read, not a failure")
+            .is_empty(),
         "a handle outlives the engine without a URI it can read"
     );
 }

@@ -84,6 +84,27 @@ fn remaster_and_punctuation_variants_are_accepted() {
 }
 
 #[test]
+fn a_brace_group_is_stripped_like_any_other_bracket() {
+    assert_eq!(normalise("Signal Fire {Live}"), "signalfire");
+    assert_eq!(
+        normalise("Signal Fire {unclosed"),
+        "signalfireunclosed",
+        "an unclosed group is part of the title"
+    );
+}
+
+#[test]
+fn a_title_that_normalises_to_nothing_matches_nothing() {
+    let entry = track("(Intro)", &["Vela"], &["spotify:artist:vela"]);
+    assert_eq!(normalise("(Intro)"), "");
+    assert_eq!(
+        confirm_hit(&entry, "(Intro)", "Vela"),
+        None,
+        "two titles that both normalise to nothing are no evidence"
+    );
+}
+
+#[test]
 fn diacritics_are_not_folded() {
     assert_ne!(normalise("Björk"), normalise("Bjork"));
 }
