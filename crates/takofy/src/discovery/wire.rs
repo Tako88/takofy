@@ -16,6 +16,11 @@ pub(crate) struct WireError;
 pub(crate) struct ArtistHit {
     pub id: i64,
     pub name: String,
+    /// How many followers Deezer reports, or `0` when it says nothing.
+    ///
+    /// The related list is ordered by similarity, so this is the only signal in
+    /// the answer that says how well known each neighbour is.
+    pub fans: u64,
 }
 
 /// One album from an artist's release list.
@@ -135,7 +140,8 @@ fn artists(body: &[u8]) -> Result<Vec<ArtistHit>, WireError> {
         .filter_map(|entry| {
             let id = entry.get("id")?.as_i64()?;
             let name = entry.get("name")?.as_str()?.trim().to_owned();
-            (!name.is_empty()).then_some(ArtistHit { id, name })
+            let fans = entry.get("nb_fan").and_then(Value::as_u64).unwrap_or(0);
+            (!name.is_empty()).then_some(ArtistHit { id, name, fans })
         })
         .collect())
 }

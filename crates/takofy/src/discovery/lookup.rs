@@ -221,6 +221,18 @@ async fn identify<F: Fetch + Sync>(
     }
 }
 
+/// The related list ordered so the least-followed neighbours come first.
+///
+/// Deezer orders this list by similarity, and the closest peers are the ones
+/// everybody already knows, so walking it as it arrives puts the household names
+/// in every row. The follower count is in the same answer — nothing extra is
+/// asked for — and a stable sort keeps Deezer's own order between equal counts.
+fn deep_cuts(related: &[wire::ArtistHit]) -> Vec<&wire::ArtistHit> {
+    let mut ordered: Vec<&wire::ArtistHit> = related.iter().collect();
+    ordered.sort_by_key(|hit| hit.fans);
+    ordered
+}
+
 async fn neighbours<S, F>(
     spotify: &S,
     outside: &Outside<F>,
@@ -236,7 +248,7 @@ where
     let mut seen_ids: HashSet<i64> = HashSet::new();
     let mut attempted = 0usize;
     let mut failed = 0usize;
-    for neighbour in related {
+    for neighbour in deep_cuts(related) {
         if uris.len() >= CARDS_MAX || attempted >= RESOLVE_MAX {
             break;
         }

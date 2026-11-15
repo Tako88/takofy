@@ -12,9 +12,9 @@ use takofy_model::home::{
     DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed,
 };
 
-use super::{Spotify, lookup};
+use super::{Spotify, deep_cuts, lookup};
 use crate::discovery::test_support::FakeFetch;
-use crate::discovery::{FetchError, Outside};
+use crate::discovery::{FetchError, Outside, wire};
 use takofy_core::ReadFailed;
 
 const SEARCH: &str = include_str!("../fixtures/search_artist.json");
@@ -822,11 +822,12 @@ async fn a_429_during_a_neighbour_stops_the_lookup() {
     fetch.ok("search/artist", SEARCH.as_bytes().to_vec());
     fetch.ok("1001/top", TOP.as_bytes().to_vec());
     fetch.ok("1001/related", RELATED.as_bytes().to_vec());
+    // The least-followed neighbour is walked first, so the 429 lands on it.
     fetch.push(
-        "2002/top",
+        "2003/top",
         Err(FetchError::Status(429, Some(Duration::from_secs(60)))),
     );
-    fetch.ok("2003/top", one_title("Plains"));
+    fetch.ok("2002/top", one_title("Window"));
     fetch.ok("2004/top", one_title("Fracture"));
     let spotify = FakeSpotify::new(&["Signal Fire", "Night Watch"]);
     let outside = outside(&fetch, true);
@@ -883,4 +884,46 @@ async fn the_call_count_stays_within_the_stated_worst_case() {
     // table: the row's stated worst case.
     assert_eq!(fetch.count(), 15);
     assert!(spotify.asked_cards().is_empty());
+}
+
+#[test]
+fn the_least_followed_neighbours_come_first_and_ties_keep_their_order() {
+    let hits = [
+        wire::ArtistHit {
+            id: 1,
+            name: "Household".to_owned(),
+            fans: 900_000,
+        },
+        wire::ArtistHit {
+            id: 2,
+            name: "Tie A".to_owned(),
+            fans: 40,
+        },
+        wire::ArtistHit {
+            id: 3,
+            name: "Deep cut".to_owned(),
+            fans: 12,
+        },
+        wire::ArtistHit {
+            id: 4,
+            name: "Tie B".to_owned(),
+            fans: 40,
+        },
+        wire::ArtistHit {
+            id: 5,
+            name: "Unknown".to_owned(),
+            fans: 0,
+        },
+    ];
+
+    let ordered: Vec<&str> = deep_cuts(&hits)
+        .iter()
+        .map(|hit| hit.name.as_str())
+        .collect();
+
+    assert_eq!(
+        ordered,
+        vec!["Unknown", "Deep cut", "Tie A", "Tie B", "Household"],
+        "the deep cuts lead, equal counts keep Deezer's own order"
+    );
 }

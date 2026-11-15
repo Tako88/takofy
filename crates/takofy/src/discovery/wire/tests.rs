@@ -23,11 +23,13 @@ fn the_search_body_names_its_artists() {
         Ok(vec![
             ArtistHit {
                 id: 1001,
-                name: "Vela".to_owned()
+                name: "Vela".to_owned(),
+                fans: 67_570
             },
             ArtistHit {
                 id: 1002,
-                name: "Vela".to_owned()
+                name: "Vela".to_owned(),
+                fans: 55
             },
         ])
     );
@@ -40,15 +42,18 @@ fn the_related_body_names_its_artists() {
         Ok(vec![
             ArtistHit {
                 id: 2002,
-                name: "Aphex Twin".to_owned()
+                name: "Aphex Twin".to_owned(),
+                fans: 980_000
             },
             ArtistHit {
                 id: 2003,
-                name: "Seefeel".to_owned()
+                name: "Seefeel".to_owned(),
+                fans: 160_000
             },
             ArtistHit {
                 id: 2004,
-                name: "Clark".to_owned()
+                name: "Clark".to_owned(),
+                fans: 240_000
             },
         ])
     );
@@ -175,7 +180,8 @@ fn entries_with_a_missing_or_blank_field_are_skipped() {
         search_artists(body.as_bytes()),
         Ok(vec![ArtistHit {
             id: 1,
-            name: "Kept".to_owned()
+            name: "Kept".to_owned(),
+            fans: 0
         }])
     );
 }
