@@ -36,6 +36,7 @@
     '<symbol id="i-heart-filled" viewBox="0 0 24 24"><path d="M20.4 5.9a5.05 5.05 0 0 0-7.1 0L12 7.2l-1.3-1.3a5.05 5.05 0 1 0-7.1 7.2l8.4 8.4 8.4-8.4a5.05 5.05 0 0 0 0-7.2z" fill="currentColor" stroke="none"/></symbol>',
     '<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/></symbol>',
     '<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.4v13.2M5.4 12h13.2" fill="none" stroke="currentColor"/></symbol>',
+    '<symbol id="i-again" viewBox="0 0 24 24"><path d="M19.4 12a7.4 7.4 0 1 1-2.2-5.3" fill="none" stroke="currentColor"/><path d="M19.7 4.4v4.4h-4.4" fill="none" stroke="currentColor"/></symbol>',
     '<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.6v11.6M7.6 10.6 12 15l4.4-4.4M4.6 19.6h14.8" fill="none" stroke="currentColor"/></symbol>',
     '<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6 18 18M18 6 6 18" fill="none" stroke="currentColor"/></symbol>',
     '<symbol id="i-check" viewBox="0 0 24 24"><path d="M4.8 12.6 9.6 17.4 19.2 6.8" fill="none" stroke="currentColor" stroke-width="2"/></symbol>',

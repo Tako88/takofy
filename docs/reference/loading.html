@@ -76,13 +76,13 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Loading states</h1>
-        <p class="page-head__note">Concept · 7 states · no spinners</p>
+        <p class="page-head__note">Concept · 8 states · no spinners</p>
       </div>
 
       <p class="states__intro">
         Nothing in this client spins. When the catalogue is late, the interface keeps the shape of
         what is coming, counts what it already holds, and reports it in the same mono voice it uses
-        for a bitrate. Seven states are documented here; the first and the fifth animate on this page.
+        for a bitrate. Eight states are documented here; the first and the fifth animate on this page.
       </p>
 
       <!-- ============ 01 · Library grid ============ -->
@@ -579,10 +579,113 @@
         </p>
       </section>
 
-      <!-- ============ 07 · Home on day one ============ -->
+      <!-- ============ 07 · Discovery controls ============ -->
+      <section class="section" aria-labelledby="state-disc-controls">
+        <div class="section__head">
+          <h2 class="section__title" id="state-disc-controls"><span class="states__no">07</span>The card's two corners, and the head's two buttons</h2>
+          <p class="label states__meta">play · follow · menu · re-draw</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Controls shown, as on hover</span>
+            <span class="label">and the write in flight</span>
+          </div>
+
+          <div class="states__pair">
+            <div class="card card--artist card--centred is-open">
+              <div class="card__art">
+                <img src="img/artists/sorne.jpg" alt="" loading="lazy" />
+                <div class="card__library">
+                  <button class="card__tile" type="button" aria-label="Follow Sorne">
+                    <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+                  </button>
+                  <button class="card__tile" type="button" aria-label="More options for Sorne" aria-haspopup="menu" aria-expanded="false">
+                    <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
+                  </button>
+                </div>
+                <button class="card__play" type="button" data-track="Low Beam" data-artist="Sorne" data-art="img/artists/sorne.jpg" data-duration="214" aria-label="Play Sorne">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Sorne</a>
+              </div>
+            </div>
+
+            <div class="card card--artist card--centred is-open">
+              <div class="card__art">
+                <img src="img/artists/tidewater-choir.jpg" alt="" loading="lazy" />
+                <div class="card__library">
+                  <button class="card__tile" type="button" aria-label="Follow Tidewater Choir" aria-busy="true">
+                    <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+                  </button>
+                  <button class="card__tile" type="button" aria-label="More options for Tidewater Choir" aria-haspopup="menu" aria-expanded="false">
+                    <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
+                  </button>
+                </div>
+                <button class="card__play" type="button" data-track="Salt Rite" data-artist="Tidewater Choir" data-art="img/artists/tidewater-choir.jpg" data-duration="271" aria-label="Play Tidewater Choir">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Tidewater Choir</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <h3 class="row-head__seed">Windows Down</h3>
+              <p class="row-head__source">From your playlist · Alternative</p>
+            </div>
+            <div class="row-head__controls">
+              <p class="row-head__ledger">4 artists</p>
+              <button class="row-head__action row-head__action--quiet" type="button" aria-label="Draw another playlist">
+                <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+              </button>
+              <button class="row-head__action" type="button" aria-label="Play this row">
+                <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <h3 class="row-head__seed">Deep Focus</h3>
+              <p class="row-head__source">From your playlist · Electro</p>
+            </div>
+            <div class="row-head__controls">
+              <p class="row-head__ledger">3 artists</p>
+              <button class="row-head__action row-head__action--quiet" type="button" aria-label="Draw another playlist" disabled>
+                <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+              </button>
+              <button class="row-head__action" type="button" aria-label="Play this row">
+                <svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Two corners, two kinds of action. Sound is always bottom-right and always green, and it plays
+          the one track the card names — then the queue carries on. Keeping is always top-right and
+          always bone: the plus follows the artist, the three dots open the same menu every other object
+          in the app opens, trimmed to what a stranger can honestly carry (go to artist, copy link, and
+          as the last, hairline-banded row, “Hide Tidewater Choir from discovery”). Because a write can
+          fail, the card leaves when the follow confirms, not when it is pressed; until then the tile
+          holds the pressed, dimmed look second from left — no spinner, because nothing in this client
+          spins. In the head, the count sits with the two things that act on the whole row: re-draw, then
+          play. Re-draw wears the hairline and bone on hover — it changes what you are looking at, it
+          does not make a sound — and when the day's seeds for that kind are spent it goes inert without
+          a word of explanation.
+        </p>
+      </section>
+
+      <!-- ============ 08 · Home on day one ============ -->
       <section class="section" aria-labelledby="state-day-one">
         <div class="section__head">
-          <h2 class="section__title" id="state-day-one"><span class="states__no">07</span>Home, day one</h2>
+          <h2 class="section__title" id="state-day-one"><span class="states__no">08</span>Home, day one</h2>
           <p class="label states__meta">0 shelves · two ways out</p>
         </div>
 
