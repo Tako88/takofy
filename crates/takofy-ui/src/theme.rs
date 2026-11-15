@@ -259,8 +259,12 @@ pub mod extent {
     /// The library grid's minimum tile width: the reference's `11rem`, which is
     /// wider than the release grid's `9rem`.
     pub const MEDIA_MIN_W: f32 = 176.0;
-    /// A card's play tile, 2 rem.
+    /// A card's play tile, 2 rem, and the smallest the picture's corner tiles
+    /// get.
     pub const CARD_PLAY: f32 = 32.0;
+    /// A corner tile's ceiling, 3 rem: past it the tile stops reading as a
+    /// control on a picture and starts competing with it.
+    pub const CARD_PLAY_MAX: f32 = 48.0;
     /// A release block's art, 7 rem.
     pub const RELEASE_ART: f32 = 112.0;
     /// A release block's own play tile, 2.5 rem, which is the reference's
@@ -477,6 +481,18 @@ pub mod icon {
             side: 22.0,
             stroke: 1.6,
         };
+
+        /// The glyph a plate of `side` points carries.
+        ///
+        /// A tile that grows with its picture needs a glyph that grows with it;
+        /// the stroke stays where `SM` puts it, so the icon thickens only in
+        /// proportion.
+        pub fn of_tile(side: f32) -> Self {
+            Self {
+                side: side * 0.375,
+                stroke: 1.8,
+            }
+        }
 
         /// The width this size draws, in points.
         pub fn stroke_pts(self) -> f32 {

@@ -12,7 +12,6 @@ use crate::cover::{Cover, want_px};
 use crate::icon::Icon;
 use crate::layout::discovery;
 use crate::menu::Door;
-use crate::theme::icon::Size;
 use crate::theme::{Tokens, radius, space, stroke, text, tracking};
 use crate::view::playlist::root::MediaDraw;
 use takofy_model::home::DiscoveryCard;
@@ -100,6 +99,8 @@ pub(super) fn show(
     // The corner controls belong to the picture's box, as they do in the
     // reference, so a narrow card cannot put the play on its own title.
     let art = card.art;
+    let tile = discovery::tile(art);
+    let glyph = crate::theme::icon::Size::of_tile(tile);
 
     let live = !carry::carrying(ui.ctx());
     let mut pressed_play = false;
@@ -113,7 +114,7 @@ pub(super) fn show(
             key,
             follow_rect,
             Icon::Plus,
-            Size::SM,
+            glyph,
             &format!("Follow {}", card.data.artist.name),
             live && !draw.library.follow_pending(&card.data.artist.uri),
         );
@@ -128,7 +129,7 @@ pub(super) fn show(
             key,
             discovery::more(art),
             Icon::More,
-            Size::SM,
+            glyph,
             &format!("More options for {}", card.data.artist.name),
             live,
             menu_open,
@@ -145,7 +146,7 @@ pub(super) fn show(
             key,
             discovery::play(art),
             Icon::Play,
-            Size::SM,
+            glyph,
             &format!("Play {}", card.data.artist.name),
             live,
         );

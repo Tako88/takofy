@@ -488,7 +488,7 @@ fn a_card_play_queues_only_its_first_track() {
 }
 
 #[test]
-fn the_cards_corner_controls_live_in_the_picture_not_the_words() {
+fn the_cards_corner_controls_live_in_the_picture_not_the_card() {
     let ctx = context();
     let seed = seed(DiscoveryKind::Playlist, SEED, "Windows Down");
     let cards = vec![card(0, 1)];
@@ -529,9 +529,14 @@ fn the_cards_corner_controls_live_in_the_picture_not_the_words() {
         );
     }
     assert!(
-        play.bottom() <= name.top(),
-        "the play sits on the artist's own name: {play:?} against {name:?}"
+        art.bottom() <= name.top(),
+        "the picture ends above the words: {art:?} against {name:?}"
     );
+    assert!(
+        (play.top() - follow.top()).abs() < 0.01,
+        "one row of corners"
+    );
+    assert!(play.right() < follow.left() && follow.right() < more.left());
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::*;
-use crate::theme::space;
+use crate::theme::{extent, space};
 
 const EXTRA: f32 = 40.0;
 
@@ -63,26 +63,44 @@ fn a_split_puts_the_tracks_beside_the_card() {
 }
 
 #[test]
-fn the_corner_tiles_sit_on_the_cards_own_corners() {
-    let card = Rect::from_min_size(pos2(10.0, 20.0), vec2(226.0, 274.0));
-    let follow = follow(card);
-    let more = more(card);
-    let play = play(card);
+fn the_three_corner_tiles_share_one_row_on_the_pictures_corner() {
+    let art = Rect::from_min_size(pos2(10.0, 20.0), vec2(226.0, 226.0));
+    let (leftmost, middle, rightmost) = (play(art), follow(art), more(art));
 
-    for tile in [follow, more, play] {
-        assert!(card.contains_rect(tile), "{tile:?} stays inside {card:?}");
+    for tile in [leftmost, middle, rightmost] {
+        assert!(art.contains_rect(tile), "{tile:?} stays inside {art:?}");
+        assert!((tile.top() - art.top() - space::S2).abs() < 0.01, "one row");
     }
-    // The corner control keeps one padding step from the edge it hangs on.
-    assert!((card.right() - space::S2 - more.right()).abs() < 0.01);
-    assert!((card.right() - space::S2 - play.right()).abs() < 0.01);
-    assert!((more.top() - card.top() - space::S2).abs() < 0.01);
-    assert!((card.bottom() - space::S2 - play.bottom()).abs() < 0.01);
+    assert!((art.right() - space::S2 - rightmost.right()).abs() < 0.01);
+    assert!(leftmost.right() < middle.left(), "the play is the leftmost");
+    assert!(middle.right() < rightmost.left());
+    assert!(!overlaps(leftmost, middle));
+    assert!(!overlaps(middle, rightmost));
 
-    assert!(!overlaps(follow, play));
-    assert!(!overlaps(more, play));
-    assert!(!overlaps(follow, more));
-    assert!(more.center().y < card.center().y, "the menu sits high");
-    assert!(play.center().y > card.center().y, "the play sits low");
+    for size in [vec2(160.0, 160.0), vec2(226.0, 226.0), vec2(340.0, 340.0)] {
+        let art = Rect::from_min_size(pos2(0.0, 0.0), size);
+        let row = Rect::from_min_max(play(art).min, more(art).max);
+        assert!(
+            art.contains_rect(row),
+            "the row fits the picture at {size:?}"
+        );
+    }
+}
+
+#[test]
+fn a_wider_picture_gets_a_bigger_tile_until_the_ceiling() {
+    let at = |width: f32| tile(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, width)));
+    assert!(
+        (at(120.0) - extent::CARD_PLAY).abs() < 0.01,
+        "a small card keeps the floor"
+    );
+    assert!(at(226.0) > at(120.0), "the tile grows with the picture");
+    assert!(at(340.0) > at(226.0));
+    assert!(
+        (at(340.0) - extent::CARD_PLAY_MAX).abs() < 0.01,
+        "and stops at the ceiling"
+    );
+    assert!((at(600.0) - extent::CARD_PLAY_MAX).abs() < 0.01);
 }
 
 #[test]

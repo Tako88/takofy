@@ -75,39 +75,42 @@ pub fn card_art(card: Rect) -> Rect {
     Rect::from_min_size(inner.min, Vec2::splat(inner.width()))
 }
 
+/// How much of the picture a corner tile takes.
+///
+/// A fixed tile looks right on a card the size the reference draws and turns
+/// into a chip on a card twice that, because the picture grows and the tile does
+/// not. Sixteen percent keeps the proportion the design was judged at.
+const TILE_OF_ART: f32 = 0.16;
+
 /// One corner control, `space-2` in from the picture's own corner.
 ///
-/// The controls live in the picture's box, as the reference's `.card__play` and
-/// `.card__library` do inside `.card__art`: the picture is what they act on, and
-/// the box below it carries the words, so a control pinned to the card's corner
-/// would sit on the title once the card is narrow enough.
-fn corner(art: Rect, size: f32, across: f32, down: f32) -> Rect {
-    let x = if across > 0.0 {
-        art.right() - space::S2 - size
-    } else {
-        art.left() + space::S2
-    };
-    let y = if down > 0.0 {
-        art.bottom() - space::S2 - size
-    } else {
-        art.top() + space::S2
-    };
-    Rect::from_min_size(pos2(x, y), Vec2::splat(size))
+/// All three sit on one line at the picture's top right, play first, so the row
+/// is the same shape at every size: a control anchored to a curve has to be
+/// re-judged for each card width, and one of them always ends up looking wrong.
+fn corner(art: Rect, size: f32, steps_left: f32) -> Rect {
+    let right = art.right() - space::S2 - steps_left * (size + space::S1);
+    let top = art.top() + space::S2;
+    Rect::from_min_size(pos2(right - size, top), Vec2::splat(size))
 }
 
-/// The `⋯` tile on the picture's upper right.
+/// The size of the corner tiles a picture of this width carries.
+pub fn tile(art: Rect) -> f32 {
+    (art.width() * TILE_OF_ART).clamp(extent::CARD_PLAY, extent::CARD_PLAY_MAX)
+}
+
+/// The `⋯` tile, outermost on the picture's upper right.
 pub fn more(art: Rect) -> Rect {
-    corner(art, extent::CARD_PLAY, 1.0, -1.0)
+    corner(art, tile(art), 0.0)
 }
 
-/// The Follow tile beside the `⋯`, one step to its left.
+/// The Follow tile, one step in from the `⋯`.
 pub fn follow(art: Rect) -> Rect {
-    more(art).translate(vec2(-(extent::CARD_PLAY + space::S1), 0.0))
+    corner(art, tile(art), 1.0)
 }
 
-/// The play tile on the picture's lower right.
+/// The play tile, innermost of the three: it is the one the eye looks for last.
 pub fn play(art: Rect) -> Rect {
-    corner(art, extent::CARD_PLAY, 1.0, 1.0)
+    corner(art, tile(art), 2.0)
 }
 
 #[cfg(test)]
