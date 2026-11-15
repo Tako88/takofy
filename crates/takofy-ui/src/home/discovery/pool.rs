@@ -19,10 +19,10 @@ pub const EDGE: usize = 12;
 /// How many candidates a kind keeps from the drawn edge set.
 ///
 /// A row's pool is what the `↻` walks, so its size is how many times a day one
-/// row can be re-seeded before it runs out. Eight is enough to keep pressing
-/// without spending an outside lookup on nothing, and small enough that the
-/// pool still comes from the same edges of the library either way.
-pub const PER_KIND: usize = 8;
+/// row can be re-seeded before it runs out. Twelve spends the whole edge set of a
+/// small library and half of a large one's, which is what a person actually does
+/// with a band they are digging through: eight ran out in a sitting.
+pub const PER_KIND: usize = 12;
 
 /// The day's pool, one list per row in the page's kind order.
 pub fn day_pool(
