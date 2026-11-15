@@ -44,6 +44,9 @@ fn run(
     art: &mut Art,
 ) -> (Option<Command>, egui::FullOutput) {
     let tokens = Tokens::DARK;
+    // This file draws the dated shelf; a discovery band waiting for a day would
+    // sit over it and move every card this test clicks.
+    library.set_discovery_enabled(false);
     let mut transport = Transport::default();
     let mut queue = Queue::default();
     let mut command = None;
@@ -104,9 +107,16 @@ fn painted(output: &egui::FullOutput) -> Vec<&str> {
 }
 
 /// The rect the shelf's `index`-th card takes, solved the way the page solves
-/// it: the page head, then the shelf's own head, then the grid.
+/// it: the page head, the off band's switch row, then the shelf's own head, then
+/// the grid.
 fn card_rect_for(ctx: &Context, index: usize) -> Rect {
     let tokens = Tokens::DARK;
+    let library = Library::default();
+    let mut art = Art::default();
+    let mut select = None;
+    let mut open = None;
+    let mut play = None;
+    let mut out = Pressed::default();
     let mut found = None;
     let mut output = ctx.run_ui(input(Vec::new()), |ui| {
         egui::ScrollArea::vertical()
@@ -114,6 +124,27 @@ fn card_rect_for(ctx: &Context, index: usize) -> Rect {
             .show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     page_head::show(ui, greeting(LOCAL_HOUR), "", &tokens);
+                    let mut draw = MediaDraw {
+                        art: &mut art,
+                        now: Instant::now(),
+                        tokens: &tokens,
+                        library: &library,
+                        select: &mut select,
+                        open: &mut open,
+                        play: &mut play,
+                    };
+                    let drew = super::super::discovery::show(
+                        ui,
+                        &crate::home::discovery::Band::Off,
+                        NOW_MS,
+                        &tokens,
+                        Table::Full,
+                        &mut draw,
+                        &mut out,
+                    );
+                    if drew {
+                        section::divide(ui, &tokens);
+                    }
                     section::head(ui, HOME_SHELF_TITLE, "", &tokens);
                     found = Some(super::super::grid::solve(ui).card_rect(index));
                 });

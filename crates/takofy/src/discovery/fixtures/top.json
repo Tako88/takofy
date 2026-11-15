@@ -1,0 +1,63 @@
+{
+  "_synthetic": "Synthetic fixture: shaped after Deezer's artist top list, not a real payload. Every name, id and URL below is invented.",
+  "data": [
+    {
+      "id": 2001,
+      "readable": true,
+      "title": "Signal Fire",
+      "title_short": "Signal Fire",
+      "title_version": "",
+      "link": "https://example.invalid/track/2001",
+      "duration": 214,
+      "rank": 500000,
+      "explicit_lyrics": false,
+      "preview": "https://example.invalid/preview/2001.mp3",
+      "artist": {
+        "id": 1001,
+        "name": "Vela",
+        "link": "https://example.invalid/artist/1001",
+        "picture": "https://example.invalid/1001.jpg",
+        "tracklist": "https://example.invalid/1001/top",
+        "type": "artist"
+      },
+      "album": {
+        "id": 3001,
+        "title": "Night Watch",
+        "link": "https://example.invalid/album/3001",
+        "cover": "https://example.invalid/3001.jpg",
+        "type": "album"
+      },
+      "type": "track"
+    },
+    {
+      "id": 2002,
+      "readable": true,
+      "title": "Night Watch",
+      "title_short": "Night Watch",
+      "title_version": "",
+      "link": "https://example.invalid/track/2002",
+      "duration": 188,
+      "rank": 420000,
+      "explicit_lyrics": false,
+      "preview": "https://example.invalid/preview/2002.mp3",
+      "artist": {
+        "id": 1001,
+        "name": "Vela",
+        "link": "https://example.invalid/artist/1001",
+        "picture": "https://example.invalid/1001.jpg",
+        "tracklist": "https://example.invalid/1001/top",
+        "type": "artist"
+      },
+      "album": {
+        "id": 3001,
+        "title": "Night Watch",
+        "link": "https://example.invalid/album/3001",
+        "cover": "https://example.invalid/3001.jpg",
+        "type": "album"
+      },
+      "type": "track"
+    }
+  ],
+  "next": "https://example.invalid/artist/1001/top?limit=10&index=10",
+  "total": 2
+}

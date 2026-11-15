@@ -9,8 +9,9 @@ use librespot::core::{Session, SessionConfig};
 use crate::album::AlbumError;
 use crate::artist::ArtistError;
 use crate::connect::{ClusterView, ConnectError, Steer};
-use crate::context::{ContextError, Page, PageSource, Walker, resolve_uris};
+use crate::context::{ContextError, PageSource, Walker, resolve_uris};
 use crate::credentials::AccessToken;
+use crate::discovery::ReadFailed;
 use crate::followed::FollowedError;
 use crate::hold;
 use crate::latest::Latest;
@@ -21,19 +22,19 @@ use crate::presence::Presence;
 use crate::registry::{Registry, Verdict};
 use crate::remote::{
     LabelCache, ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks,
-    read_album, read_artist, read_episodes, read_followed_artists, read_followed_shows,
-    read_liked_tracks, read_lyrics, read_playlist, read_playlist_state, read_portraits,
-    read_related, read_release_tracks, read_saved_albums, read_saved_state, read_show, write_add,
-    write_create, write_follow, write_like, write_move, write_remove, write_rename,
+    read_album, read_artist, read_discovery_cards, read_episodes, read_followed_artists,
+    read_followed_shows, read_liked_tracks, read_lyrics, read_new_releases, read_playlist,
+    read_playlist_head, read_playlist_state, read_portraits, read_related, read_release_tracks,
+    read_saved_albums, read_saved_state, read_search_labelled, read_show, read_top_titles,
+    write_add, write_create, write_follow, write_like, write_move, write_remove, write_rename,
     write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootEntry, RootlistError, Walked, fetch_all};
-use crate::search::search_uri;
 use crate::show::ShowError;
 use crate::station::{StationError, read_neighbours, read_radio, read_radio_more, read_station};
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
-use takofy_model::home::{Station, StationSeed};
+use takofy_model::home::{ArtistReleases, Day, DiscoveryCard, Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
     LikedTrack, Move, PlaylistAccess, PlaylistEntry, PlaylistHead, Removal, Report, RequestId,
@@ -65,6 +66,10 @@ pub enum EngineError {
     Playlist(#[from] PlaylistError),
     #[error(transparent)]
     Connect(#[from] ConnectError),
+    /// The release read did not answer, which is no shelf rather than an empty
+    /// one.
+    #[error("the release read did not answer")]
+    Releases,
 }
 
 /// Answers one incoming order while something else holds the engine.
@@ -563,13 +568,20 @@ impl Engine {
     /// paging, so this never walks. A blank query asks for nothing and answers
     /// nothing without a request.
     pub async fn search(&self, query: &str) -> Result<Vec<TrackEntry>, EngineError> {
-        let source = RemoteContext {
-            session: &self.session,
-        };
-        let Some(page) = search_page(source, query).await? else {
-            return Ok(Vec::new());
-        };
-        Ok(label_tracks(&self.session, page.tracks, &self.labels).await)
+        Ok(read_search_labelled(&self.session, &self.labels, query).await?)
+    }
+
+    /// Discovery's reads, detached from the engine.
+    ///
+    /// The lookup answers outside the barrier's read batch, so it needs a handle
+    /// that outlives a borrow of the engine: a session clone and a label cache of
+    /// its own. Clone the handle per row rather than calling this per ask, so the
+    /// rows share one cache.
+    pub fn discovery_reads(&self) -> DiscoveryReads {
+        DiscoveryReads {
+            session: self.session.clone(),
+            labels: Arc::new(LabelCache::new()),
+        }
     }
 
     /// One album, its tracks labelled.
@@ -630,6 +642,21 @@ impl Engine {
     /// shows and their episodes stay in the order they were read.
     pub async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, EngineError> {
         Ok(read_episodes(&self.session, shows).await?)
+    }
+
+    /// The newest releases of `artists`, from `since` onwards, as the release
+    /// shelf draws them.
+    ///
+    /// An artist the batch did not answer is left out rather than answered empty,
+    /// and only a read where the artist request itself failed is an error.
+    pub async fn new_releases(
+        &self,
+        artists: &[String],
+        since: Day,
+    ) -> Result<Vec<ArtistReleases>, EngineError> {
+        read_new_releases(&self.session, artists, since)
+            .await
+            .map_err(|_| EngineError::Releases)
     }
 
     /// One station read from its seed, its rows labelled.
@@ -718,18 +745,6 @@ pub struct PlaylistPage {
     pub head: Option<PlaylistHead>,
 }
 
-/// The first page one search query answers, through any page source.
-///
-/// Split out of [`Engine::search`] so the URI the walker resolves can be
-/// asserted without a session. A blank query resolves nothing, and a search
-/// answers at most one page.
-async fn search_page<S: PageSource>(source: S, query: &str) -> Result<Option<Page>, ContextError> {
-    let Some(uri) = search_uri(query) else {
-        return Ok(None);
-    };
-    Walker::new(source, uri).next_page().await
-}
-
 /// Walks a context inside the budget a transfer can afford.
 async fn resolve_within<S: PageSource>(
     source: S,
@@ -739,6 +754,48 @@ async fn resolve_within<S: PageSource>(
     match tokio::time::timeout(budget, resolve_uris(source, uri)).await {
         Ok(result) => result,
         Err(_) => Err(ContextError::TimedOut),
+    }
+}
+
+/// Discovery's reads, on a handle that outlives a borrow of the engine.
+///
+/// The lookup runs outside the barrier's read batch, so it cannot hold the
+/// engine for the length of an outside request. The handle owns a session clone
+/// and its own label cache, and every method is a plain read: nothing here waits
+/// for a watch or for the engine.
+#[derive(Clone)]
+pub struct DiscoveryReads {
+    session: Session,
+    labels: Arc<LabelCache>,
+}
+
+impl DiscoveryReads {
+    /// The cards for `uris`, in the order given.
+    ///
+    /// One batched request per stage: the artists, the dates of their releases,
+    /// and the names of their top tracks. A request that did not answer is an
+    /// error, so a caller can tell it from a row with no neighbours.
+    pub async fn cards(&self, uris: &[String]) -> Result<Vec<DiscoveryCard>, ReadFailed> {
+        let country = self.session.country();
+        read_discovery_cards(&self.session, &self.labels, uris, &country).await
+    }
+
+    /// The seed artist's own top-track titles, at most ten.
+    pub async fn top_titles(&self, artist_uri: &str) -> Result<Vec<String>, ReadFailed> {
+        read_top_titles(&self.session, &self.labels, artist_uri).await
+    }
+
+    /// A playlist's first page, labelled in the playlist's own order.
+    pub async fn playlist_head(&self, playlist_uri: &str) -> Result<Vec<TrackEntry>, ReadFailed> {
+        read_playlist_head(&self.session, &self.labels, playlist_uri).await
+    }
+
+    /// One search query's first page, labelled in the wire's own order.
+    ///
+    /// A failed resolve is an error rather than an empty page, so the caller can
+    /// tell "nothing matched" from "the request did not answer".
+    pub async fn search(&self, query: &str) -> Result<Vec<TrackEntry>, ContextError> {
+        read_search_labelled(&self.session, &self.labels, query).await
     }
 }
 

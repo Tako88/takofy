@@ -3,8 +3,9 @@
 use takofy_model::{CoverOrigin, Revision};
 
 use crate::cover_refresh::first_track_uri;
+use crate::message::Command;
 
-use super::{Library, Load, restore};
+use super::{Library, Load};
 
 impl Library {
     /// Ends the page write for `playlist` and holds `revision` for the next one.
@@ -96,6 +97,13 @@ impl Library {
     /// read can fix. An answer that agrees changes nothing, so a page's opening
     /// probe costs nothing.
     pub(super) fn settle_follow(&mut self, artist: &str, followed: bool) {
+        // Recorded before the list is consulted, because the card's tile reads
+        // it whether or not the followed list is ready to answer.
+        if followed {
+            self.home.discovery.note_follow(artist);
+        } else {
+            self.home.discovery.note_unfollow(artist);
+        }
         let Load::Ready(artists) = &self.followed_artists else {
             return;
         };
@@ -107,13 +115,10 @@ impl Library {
                 }
             }
             // A row the list does not hold needs its name and portrait, which
-            // only the read brings.
+            // only the read brings. The rows already on screen stay while that
+            // read is in flight, so nothing drawn from the list loses its place.
             (true, false) => {
-                restore::reset(
-                    &mut self.followed_artists,
-                    &mut self.sources.artists,
-                    Load::Idle,
-                );
+                self.artists_stale = true;
             }
             _ => {}
         }
@@ -129,6 +134,29 @@ impl Library {
         {
             entry.tracks = entry.tracks.map(|count| count.saturating_sub(gone));
         }
+    }
+
+    /// The follow or unfollow write a view asked for, if it may go out.
+    ///
+    /// One write per artist at a time: the artist page's button holds the artist
+    /// it names, and a card's tile holds it until its own answer lands.
+    pub fn ask_follow(&mut self, artist: &str, followed: bool) -> Option<Command> {
+        if self.follow.artist() == Some(artist) && self.follow.pending() {
+            return None;
+        }
+        if self.follow_writes.contains_key(artist) {
+            return None;
+        }
+        self.follow_writes.insert(artist.to_owned(), followed);
+        Some(Command::SetFollow {
+            artist: artist.to_owned(),
+            followed,
+        })
+    }
+
+    /// Whether a follow write is in flight for `artist`.
+    pub fn follow_pending(&self, artist: &str) -> bool {
+        self.follow_writes.contains_key(artist)
     }
 
     /// Whether a write for this playlist is in flight.

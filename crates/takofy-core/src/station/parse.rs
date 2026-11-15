@@ -79,6 +79,7 @@ fn related_of(answer: &json::Json) -> Vec<FollowedArtist> {
                     .and_then(json::text)
                     .and_then(cover_of),
                 releases: None,
+                followed_at: None,
             })
         })
         .collect()

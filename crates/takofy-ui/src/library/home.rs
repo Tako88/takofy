@@ -1,14 +1,15 @@
 //! Home's view of the library: what each shelf's reads are doing, and the
 //! shelves that follow from them.
 //!
-//! The dated shelf lives in [`dated`]; the four built shelves are one module
-//! each. Both layers read state only: no page and no clock, so a constructed
+//! The dated shelf lives in [`dated`]; the built shelves are one module each. Both layers read state only: no page and no clock, so a constructed
 //! `Library` can reach every state at once.
 
 mod because;
 mod counted;
 mod dated;
+pub(super) mod discovery;
 mod episodes;
+mod releases;
 mod stations;
 
 use std::time::{Duration, Instant};
@@ -47,13 +48,14 @@ pub(super) fn prerequisite<T>(load: &Load<T>) -> Phase {
 }
 
 impl Library {
-    /// Home's five shelves for one frame, borrowed from the library.
+    /// Home's shelves for one frame, borrowed from the library.
     pub fn home_sections(&self, fit: Fit) -> Sections<'_> {
         Sections {
             dated: self.home_shelf(fit.columns),
             stations: self.stations_section(),
             because: self.because_section(),
             counted: self.counted_section(),
+            releases: self.releases_section(),
             episodes: self.episodes_section(),
         }
     }
@@ -84,6 +86,9 @@ impl Library {
             self.hold_spent = false;
             return Vec::new();
         }
+        // One build of the owned set serves every ask this frame and the draw
+        // that follows it.
+        self.refresh_owned();
         let mut asks: Vec<Command> = self.home_labels_request().into_iter().collect();
         if self.home_intake().settled() || self.hold_spent {
             asks.extend(self.home_requests());
@@ -136,10 +141,14 @@ impl Library {
             .or_else(|| self.because_ask())
             .or_else(|| self.counted_ask())
             .or_else(|| self.episodes_ask())
+            .or_else(|| self.releases_ask())
             // Faces and lengths are what the shelves decorate with, so they are
             // asked for last: no shelf waits on one to say what it holds.
             .or_else(|| self.stations_lengths_ask())
             .or_else(|| self.counted_portrait_ask())
+            // Discovery is looked up outside, which is the one read no shelf
+            // waits on: it goes last so a slow lookup delays nothing above it.
+            .or_else(|| self.discovery_ask())
     }
 
     /// Every built ask this open still owes.

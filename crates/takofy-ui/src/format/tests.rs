@@ -173,6 +173,37 @@ fn release_count_label_counts_releases() {
     assert_eq!(release_count_label(1), "1 release");
     assert_eq!(release_count_label(0), "0 releases");
     assert_eq!(release_count_label(3), "3 releases");
+    assert_eq!(
+        release_count_label(22),
+        "22 releases",
+        "the release shelf's aside is the same count its discography writes"
+    );
+}
+
+/// A release date in the parts the shelf draws it from.
+fn release_date(year: u16, month: Option<u8>, day: Option<u8>) -> ReleaseDate {
+    ReleaseDate { year, month, day }
+}
+
+#[test]
+fn a_release_sub_names_the_artist_then_the_day() {
+    assert_eq!(
+        release_sub("Vela Moreno", &release_date(2025, Some(10), Some(14))),
+        "Vela Moreno · 14 Oct"
+    );
+}
+
+#[test]
+fn a_year_only_release_sub_is_the_year() {
+    assert_eq!(
+        release_sub("Fen & Farrow", &release_date(1996, None, None)),
+        "Fen & Farrow · 1996"
+    );
+    assert_eq!(
+        release_sub("Fen & Farrow", &release_date(1996, Some(3), None)),
+        "Fen & Farrow · 1996",
+        "a month without a day says nothing the year does not"
+    );
 }
 
 #[test]
@@ -958,4 +989,104 @@ fn the_copy_note_is_no_write_notice() {
     for write in writes {
         assert_ne!(copy_note(), sidebar_notice(write), "{write:?}");
     }
+}
+
+#[test]
+fn a_discovery_row_names_what_it_was_seeded_from() {
+    for (kind, source) in [
+        (DiscoveryKind::Playlist, "From your playlist"),
+        (DiscoveryKind::Artist, "From an artist you follow"),
+        (DiscoveryKind::Album, "From an album you saved"),
+    ] {
+        assert_eq!(
+            discovery_source(kind, None),
+            source,
+            "a row with no genre is its source alone"
+        );
+    }
+}
+
+#[test]
+fn a_discovery_row_adds_the_genre_it_votes_for() {
+    for (kind, source) in [
+        (DiscoveryKind::Playlist, "From your playlist"),
+        (DiscoveryKind::Artist, "From an artist you follow"),
+        (DiscoveryKind::Album, "From an album you saved"),
+    ] {
+        assert_eq!(
+            discovery_source(kind, Some("dubstep")),
+            format!("{source} · dubstep"),
+            "a genre follows the source after the separator"
+        );
+    }
+}
+
+#[test]
+fn the_discovery_switch_names_the_setting_it_turns() {
+    assert_eq!(discovery_switch_label(true), "Turn discovery off");
+    assert_eq!(
+        discovery_switch_label(false),
+        "Discovery is off · turn it back on"
+    );
+}
+
+#[test]
+fn a_blank_discovery_genre_is_no_genre() {
+    for kind in [
+        DiscoveryKind::Playlist,
+        DiscoveryKind::Artist,
+        DiscoveryKind::Album,
+    ] {
+        assert_eq!(
+            discovery_source(kind, Some("")),
+            discovery_source(kind, None),
+            "an empty genre left a separator"
+        );
+        assert_eq!(
+            discovery_source(kind, Some("  ")),
+            discovery_source(kind, None),
+            "a blank genre left a separator"
+        );
+    }
+}
+
+#[test]
+fn a_discovery_source_never_ends_in_a_dangling_separator() {
+    for kind in [
+        DiscoveryKind::Playlist,
+        DiscoveryKind::Artist,
+        DiscoveryKind::Album,
+    ] {
+        for genre in [None, Some(""), Some("  ")] {
+            let source = discovery_source(kind, genre);
+            assert!(
+                !source.ends_with(" · "),
+                "{kind:?} with {genre:?} ends in a separator: {source}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_discovery_row_with_no_genre_drops_the_separator() {
+    let source = discovery_source(DiscoveryKind::Artist, None);
+
+    assert!(
+        !source.contains('·'),
+        "a missing genre leaves no dangling separator: {source}"
+    );
+}
+
+#[test]
+fn a_ledger_counts_artists_and_tracks_when_the_body_is_a_split() {
+    assert_eq!(discovery_ledger(1, None), "1 artist");
+    assert_eq!(discovery_ledger(4, None), "4 artists");
+    assert_eq!(discovery_ledger(1, Some(3)), "1 artist · 3 tracks");
+    assert_eq!(discovery_ledger(1, Some(2)), "1 artist · 2 tracks");
+}
+
+#[test]
+fn a_card_names_its_latest_year_only_when_one_is_dated() {
+    assert_eq!(discovery_sub(Some(2024)), "Latest 2024");
+    assert_eq!(discovery_sub(None), "");
 }

@@ -613,6 +613,7 @@ fn a_root_rows_refused_removal_is_a_dead_press() {
             named: true,
             portrait: None,
             releases: None,
+            followed_at: None,
         }]));
     library_list(&mut window, RootKind::Artists);
     open_root_menu(&mut window, &mut transport, &mut queue, "Vela Moreno");

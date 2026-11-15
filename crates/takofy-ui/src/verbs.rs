@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use takofy_model::TrackEntry;
-use takofy_model::home::{SeedKind, StationSeed};
+use takofy_model::home::{DiscoveryCard, SeedKind, StationSeed};
 use takofy_model::uri::{UriKind, parse};
 
 use crate::likes::Standing;
@@ -42,6 +42,10 @@ pub enum Outcome {
     Save(LibraryItem),
     /// An artist is followed or unfollowed.
     Follow { artist: String, followed: bool },
+    /// An artist stops appearing in discovery, now and in later days.
+    Hide(String),
+    /// A hidden artist is offered in discovery again.
+    Show(String),
     /// The sidebar row's name field opens.
     Rename(LibraryItem),
 }
@@ -109,6 +113,7 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
             kind: Kind::Destructive,
             key: Some("Del"),
             submenu: false,
+            live: true,
             verb: Verb::RemoveFromLibrary,
         });
     }
@@ -175,20 +180,78 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
             artist: row.uri.clone(),
             followed: verb == Verb::Follow,
         }),
+        Verb::HideFromDiscovery => Some(Outcome::Hide(row.uri.clone())),
+        Verb::ShowInDiscovery => Some(Outcome::Show(row.uri.clone())),
         _ => None,
+    }
+}
+
+/// The request a discovery card posts for its own menu.
+///
+/// A card is a stranger: the three verbs are keep them, put one of their tracks
+/// somewhere, or stop them appearing. Follow goes through `Library::ask_follow`,
+/// which holds one write per artist, Add to
+/// playlist acts on the card's first track, which is the one its play names,
+/// and Hide is the destructive row.
+pub fn discovery_request(card: &DiscoveryCard, door: Door) -> Request {
+    let name = card.artist.name.clone();
+    let mut items = vec![Item {
+        label: format!("Follow {name}"),
+        kind: Kind::Plain,
+        key: None,
+        submenu: false,
+        live: true,
+        verb: Verb::Follow,
+    }];
+    if card.tracks.first().is_some_and(TrackEntry::is_track) {
+        items.push(Item {
+            label: "Add to playlist".to_owned(),
+            kind: Kind::Plain,
+            key: None,
+            submenu: true,
+            live: true,
+            verb: Verb::AddToPlaylist,
+        });
+    }
+    items.push(Item {
+        label: format!("Hide {name} from discovery"),
+        kind: Kind::Destructive,
+        key: None,
+        submenu: false,
+        live: true,
+        verb: Verb::HideFromDiscovery,
+    });
+    Request {
+        door,
+        items,
+        playlists: Vec::new(),
+        targets: card.tracks.first().cloned().into_iter().collect(),
+        rows: Vec::new(),
+        listing: Listing::Band(LibraryItem {
+            kind: SidebarKind::Artists,
+            uri: card.artist.uri.clone(),
+            name,
+        }),
+        // A card only exists on Home, and a menu opened on one closes as soon as
+        // the page under it changes. Naming the card's own destination here
+        // instead would close the menu on the frame after it opened.
+        page: Some(Page::Home),
     }
 }
 
 /// The request an artist's band posts for its own menu.
 ///
 /// An artist's library entry is its follow, so the menu's rows are that write,
-/// the radio and the link; nothing else in the vocabulary acts on an artist.
+/// the radio and the link; a hidden artist also offers its way back into
+/// discovery, last because it is the rarer direction.
 pub fn artist_request(
     artist: LibraryItem,
     door: Door,
     unfollowed: bool,
+    hidden: bool,
     page: Option<Page>,
 ) -> Request {
+    let name = artist.name.clone();
     let mut items = vec![item(
         if unfollowed {
             Verb::Follow
@@ -202,6 +265,12 @@ pub fn artist_request(
     }
     if spotify_link(&artist.uri).is_some() {
         items.push(item(Verb::CopyLink, "Copy link".to_owned()));
+    }
+    if hidden {
+        items.push(item(
+            Verb::ShowInDiscovery,
+            format!("Show {name} in discovery"),
+        ));
     }
     Request {
         door,
@@ -291,6 +360,7 @@ pub fn track_items(
             kind: Kind::Plain,
             key: None,
             submenu: true,
+            live: true,
             verb: Verb::AddToPlaylist,
         });
     }
@@ -308,6 +378,7 @@ pub fn track_items(
             kind: Kind::Destructive,
             key: Some("Del"),
             submenu: false,
+            live: true,
             verb: Verb::Remove,
         });
     }
@@ -357,7 +428,9 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
         | Verb::Rename
         | Verb::SaveToLibrary
         | Verb::Follow
-        | Verb::Unfollow => None,
+        | Verb::Unfollow
+        | Verb::HideFromDiscovery
+        | Verb::ShowInDiscovery => None,
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
     }
@@ -417,6 +490,7 @@ fn item(verb: Verb, label: String) -> Item {
         kind: Kind::Plain,
         key: None,
         submenu: false,
+        live: true,
         verb,
     }
 }

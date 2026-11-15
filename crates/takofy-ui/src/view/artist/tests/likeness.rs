@@ -78,6 +78,7 @@ fn the_likeness_row_draws_its_cards_and_a_press_opens_the_artist() {
             named: true,
             portrait: None,
             releases: None,
+            followed_at: None,
         }],
     });
     let mut transport = Transport::default();
@@ -148,6 +149,7 @@ fn the_likeness_row_is_absent_without_cards_and_survives_an_empty_discography() 
             named: true,
             portrait: None,
             releases: None,
+            followed_at: None,
         }],
     });
     let (_, output) = frame(

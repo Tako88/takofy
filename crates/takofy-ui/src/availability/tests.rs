@@ -27,6 +27,13 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::HeroPlay
                 | Control::CardPlay
                 | Control::StationPlay
+                | Control::DiscoveryCard
+                | Control::DiscoveryMore
+                | Control::DiscoveryPlay
+                | Control::DiscoveryReroll
+                | Control::DiscoveryRowPlay
+                | Control::DiscoveryFollow
+                | Control::DiscoverySwitch
                 | Control::HeroMore
                 | Control::HeroLike
                 | Control::HeroShuffle

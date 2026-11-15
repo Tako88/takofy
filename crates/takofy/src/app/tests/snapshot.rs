@@ -51,6 +51,7 @@ fn artist(uri: &str) -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 
@@ -105,6 +106,9 @@ fn launched(
         PrefsSync::off(),
         cached,
         snapshots,
+        Arc::new(AtomicBool::new(true)),
+        crate::hidden_file::Loaded::Absent,
+        HiddenSync::off(),
     );
     (app, received)
 }

@@ -32,6 +32,7 @@ fn item(index: usize) -> Item {
         kind: Kind::Plain,
         key: None,
         submenu: false,
+        live: true,
         verb: verbs[index % verbs.len()],
     }
 }
@@ -63,6 +64,7 @@ fn add_item() -> Item {
         kind: Kind::Plain,
         key: None,
         submenu: true,
+        live: true,
         verb: Verb::AddToPlaylist,
     }
 }
@@ -86,6 +88,7 @@ fn destructive_item(label: &str) -> Item {
         kind: Kind::Destructive,
         key: Some("Del"),
         submenu: false,
+        live: true,
         verb: Verb::Remove,
     }
 }
@@ -769,4 +772,92 @@ fn a_later_track_menu_forgets_the_library_item() {
     assert!(menu.open(request(Device::Pointer, 2), Gate::default()));
 
     assert_eq!(menu.library_item(), None, "the last row's item leaked");
+}
+
+fn live_item(index: usize, live: bool) -> Item {
+    Item {
+        live,
+        ..item(index)
+    }
+}
+
+fn request_live(device: Device, lives: &[bool]) -> Request {
+    Request {
+        items: lives
+            .iter()
+            .enumerate()
+            .map(|(index, live)| live_item(index, *live))
+            .collect(),
+        ..request(device, 0)
+    }
+}
+
+fn opened_live(device: Device, lives: &[bool]) -> Menu {
+    let mut menu = Menu::default();
+    assert!(menu.open(request_live(device, lives), Gate::default()));
+    menu
+}
+
+#[test]
+fn a_keyboard_open_lights_the_first_live_row_or_none() {
+    let menu = opened_live(Device::Keyboard, &[false, false, true, true]);
+    assert_eq!(menu.lit(), Some(2), "the inert rows are skipped");
+
+    let menu = opened_live(Device::Keyboard, &[false, false]);
+    assert_eq!(menu.lit(), None, "nothing live means nothing lit");
+
+    let menu = opened_live(Device::Pointer, &[true, true]);
+    assert_eq!(menu.lit(), None, "the pointer opens with nothing lit");
+}
+
+#[test]
+fn step_skips_inert_rows_and_stays_put_at_the_ends() {
+    let mut menu = opened_live(Device::Keyboard, &[true, false, true, false, true]);
+
+    menu.step(Step::Down);
+    assert_eq!(menu.lit(), Some(2));
+    menu.step(Step::Down);
+    assert_eq!(menu.lit(), Some(4));
+    menu.step(Step::Down);
+    assert_eq!(menu.lit(), Some(4), "the last live row is the end");
+    menu.step(Step::Up);
+    assert_eq!(menu.lit(), Some(2));
+    menu.step(Step::Up);
+    assert_eq!(menu.lit(), Some(0));
+    menu.step(Step::Up);
+    assert_eq!(menu.lit(), Some(0), "the first live row is the end");
+    menu.step(Step::Last);
+    assert_eq!(menu.lit(), Some(4));
+    menu.step(Step::First);
+    assert_eq!(menu.lit(), Some(0));
+}
+
+#[test]
+fn the_pointer_never_lights_an_inert_row() {
+    let mut menu = opened_live(Device::Keyboard, &[false, true]);
+    menu.pointer_over(Some(0));
+
+    assert_eq!(menu.tier(0, Some(0)), Tier::None);
+    assert_eq!(menu.tier(1, Some(1)), Tier::Pointer);
+}
+
+#[test]
+fn choosing_an_inert_row_is_refused_and_leaves_the_menu_open() {
+    let mut menu = opened_live(Device::Keyboard, &[false, true]);
+    assert_eq!(menu.choose(0), None);
+    assert!(menu.is_open(), "the menu stays up");
+
+    let mut menu = Menu::default();
+    let mut request = request_live(Device::Keyboard, &[true]);
+    request.items.push(Item {
+        kind: Kind::Destructive,
+        live: false,
+        ..destructive_item("Remove")
+    });
+    assert!(menu.open(request, Gate::default()));
+    assert_eq!(menu.choose_destructive(), None);
+    assert!(
+        menu.is_open(),
+        "Del on an inert destructive row does nothing"
+    );
 }

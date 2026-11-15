@@ -1380,6 +1380,7 @@ pub(super) fn removable_rows(window: &mut Window) {
             named: true,
             portrait: None,
             releases: None,
+            followed_at: None,
         }]));
     window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
         saved_at: None,

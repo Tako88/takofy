@@ -448,6 +448,24 @@ pub struct TrackEntry {
 }
 
 impl TrackEntry {
+    /// An entry that names only its URI, for a playable position the labels did
+    /// not reach. It is drawn as unnamed and is never the title a row prints.
+    pub fn unnamed(uri: &str) -> Self {
+        Self {
+            uri: uri.to_owned(),
+            title: uri.to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            artist_names: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: false,
+            cover: None,
+        }
+    }
+
     /// Whether this entry is a track a playlist can hold.
     ///
     /// An episode and a local file are rows too, but neither may be added to a
@@ -630,6 +648,8 @@ pub struct FollowedArtist {
     pub portrait: Option<CoverSet>,
     /// How many current releases the artist has, when they could be read.
     pub releases: Option<u32>,
+    /// When the follow was made, `None` when the wire gave no usable date.
+    pub followed_at: Option<SavedAt>,
 }
 
 /// One artist's portrait, as a search menu's artist row draws it.

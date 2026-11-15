@@ -68,3 +68,19 @@ fn ui_does_not_link_an_image_decoder() {
         );
     }
 }
+
+/// A view is handed its rows; the fetching happens in the binary. An HTTP
+/// client in the window's tree would be a second place the network is reached
+/// from.
+#[test]
+fn ui_does_not_link_an_http_client() {
+    for name in package_names() {
+        assert!(
+            !matches!(
+                name.as_str(),
+                "reqwest" | "hyper" | "hyper-util" | "http" | "ureq"
+            ),
+            "takofy-ui must not fetch (found {name})"
+        );
+    }
+}

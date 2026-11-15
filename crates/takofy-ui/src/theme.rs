@@ -259,8 +259,12 @@ pub mod extent {
     /// The library grid's minimum tile width: the reference's `11rem`, which is
     /// wider than the release grid's `9rem`.
     pub const MEDIA_MIN_W: f32 = 176.0;
-    /// A card's play tile, 2 rem.
+    /// A card's play tile, 2 rem, and the smallest the picture's corner tiles
+    /// get.
     pub const CARD_PLAY: f32 = 32.0;
+    /// A corner tile's ceiling, 3 rem: past it the tile stops reading as a
+    /// control on a picture and starts competing with it.
+    pub const CARD_PLAY_MAX: f32 = 48.0;
     /// A release block's art, 7 rem.
     pub const RELEASE_ART: f32 = 112.0;
     /// A release block's own play tile, 2.5 rem, which is the reference's
@@ -276,6 +280,20 @@ pub mod extent {
     pub const BUTTON_PAD_Y: f32 = 5.6;
     /// The gap from the bottom of a link's line box to its underline.
     pub const LINK_UNDERLINE_INSET: f32 = 2.0;
+}
+
+/// The discovery band's own values.
+///
+/// A lone face is the one card that does not stretch with the rail: over a wide
+/// rule it would stop being a card and start being a banner. `PAIR_ART_SHARE` is
+/// the share of a pair card's width its picture takes — not a share of the page,
+/// so no existing scale holds it; it is a single value because a pair is the one
+/// body that turns its cards on their side.
+pub mod discovery {
+    /// A lone face's width, 12 rem.
+    pub const FACE_W: f32 = 192.0;
+    /// The share of a pair card the picture takes, the reference's `47%`.
+    pub const PAIR_ART_SHARE: f32 = 0.47;
 }
 
 /// How the free space in a row of columns is shared, in the reference's
@@ -463,6 +481,18 @@ pub mod icon {
             side: 22.0,
             stroke: 1.6,
         };
+
+        /// The glyph a plate of `side` points carries.
+        ///
+        /// A tile that grows with its picture needs a glyph that grows with it;
+        /// the stroke stays where `SM` puts it, so the icon thickens only in
+        /// proportion.
+        pub fn of_tile(side: f32) -> Self {
+            Self {
+                side: side * 0.375,
+                stroke: 1.8,
+            }
+        }
 
         /// The width this size draws, in points.
         pub fn stroke_pts(self) -> f32 {

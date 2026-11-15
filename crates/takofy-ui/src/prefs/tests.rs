@@ -16,18 +16,21 @@ fn prefs_round_trip() {
     for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
         for mute in [false, true] {
             for shuffle in [false, true] {
-                for level in [0, 1, volume::MAX] {
-                    let prefs = Prefs {
-                        volume: level,
-                        muted: mute && level > 0,
-                        shuffle,
-                        repeat,
-                    };
-                    assert_eq!(
-                        Prefs::parse(&prefs.render()),
-                        Ok(prefs.clone()),
-                        "a rendered file must parse back to the value it came from"
-                    );
+                for discovery in [false, true] {
+                    for level in [0, 1, volume::MAX] {
+                        let prefs = Prefs {
+                            volume: level,
+                            muted: mute && level > 0,
+                            shuffle,
+                            repeat,
+                            discovery,
+                        };
+                        assert_eq!(
+                            Prefs::parse(&prefs.render()),
+                            Ok(prefs.clone()),
+                            "a rendered file must parse back to the value it came from"
+                        );
+                    }
                 }
             }
         }
@@ -38,8 +41,77 @@ fn prefs_round_trip() {
 fn default_prefs_render_the_documented_file() {
     assert_eq!(
         Prefs::default().render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\n",
-        "the file is four fixed lines in a fixed order with a trailing newline"
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\n",
+        "the file is five fixed lines in a fixed order with a trailing newline"
+    );
+}
+
+#[test]
+fn a_discovery_off_round_trips() {
+    let off = Prefs::default().with_discovery(false);
+
+    assert_eq!(
+        off.render(),
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=false\n",
+        "the fifth value is written last"
+    );
+    assert_eq!(
+        Prefs::parse(&off.render()),
+        Ok(off),
+        "an off setting is a value like any other"
+    );
+}
+
+#[test]
+fn a_file_without_the_discovery_key_reads_it_on() {
+    assert_eq!(
+        Prefs::parse("volume=80\nmute=false\nshuffle=false\nrepeat=off\n"),
+        Ok(prefs(80)),
+        "a file written before the key existed keeps the documented default"
+    );
+    assert!(
+        prefs(80).discovery(),
+        "the default is the setting on, so a missing line adds nothing rather than removing it"
+    );
+}
+
+#[test]
+fn a_bad_discovery_value_refuses_the_whole_file() {
+    let refusal = Prefs::parse("volume=80\ndiscovery=maybe\n")
+        .expect_err("a value outside the table is refused");
+
+    assert_eq!(refusal.line, 2, "the refused line is named");
+    assert_eq!(
+        refusal.reason,
+        Reason::BadValue(Key::Discovery),
+        "the key at fault is named"
+    );
+    assert_eq!(
+        refusal.to_string(),
+        "line 2: bad value for `discovery`",
+        "the message names the line and the key, and nothing else"
+    );
+    assert!(
+        !refusal.to_string().contains("maybe"),
+        "the text the user wrote is never quoted back"
+    );
+}
+
+#[test]
+fn a_duplicate_discovery_key_is_refused() {
+    let refusal = Prefs::parse("discovery=true\ndiscovery=false\n")
+        .expect_err("two values for one key have no honest winner");
+
+    assert_eq!(refusal.line, 2, "the second line is the duplicate");
+    assert_eq!(refusal.reason, Reason::Duplicate(Key::Discovery));
+}
+
+#[test]
+fn a_later_version_key_is_ignored_with_whatever_it_holds() {
+    assert_eq!(
+        Prefs::parse("band=on\ndiscovery_source=radio\nvolume=80\n"),
+        Ok(prefs(80)),
+        "a key this version does not know is skipped before its value is read, so a file written by a later version still loads"
     );
 }
 
@@ -64,7 +136,7 @@ fn a_partial_file_keeps_the_other_defaults() {
     assert_eq!(
         parsed,
         Ok(prefs(80)),
-        "a file naming one key leaves the other three at their defaults"
+        "a file naming one key leaves the other four at their defaults"
     );
 }
 
@@ -266,6 +338,14 @@ fn each_reason_has_its_own_message() {
             Reason::Duplicate(Key::Shuffle),
             "line 3: `shuffle` appears twice",
         ),
+        (
+            Reason::BadValue(Key::Discovery),
+            "line 3: bad value for `discovery`",
+        ),
+        (
+            Reason::Duplicate(Key::Discovery),
+            "line 3: `discovery` appears twice",
+        ),
     ] {
         assert_eq!(
             refusal(3, reason).to_string(),
@@ -369,8 +449,29 @@ fn prefs_of_reads_a_volume_and_a_queue() {
             muted: true,
             shuffle: true,
             repeat: Repeat::One,
+            discovery: true,
         },
         "the file records the level behind the lid and the queue's modes"
+    );
+}
+
+#[test]
+fn prefs_of_leaves_the_discovery_setting_on() {
+    let saved = Prefs::of(&Volume::muted_at(50), &Queue::seeded(1));
+
+    assert!(
+        saved.discovery(),
+        "the player has no part in the setting, so recording it alone keeps the default"
+    );
+    assert!(
+        !saved.clone().with_discovery(false).discovery(),
+        "the setting is carried beside what the player holds"
+    );
+    let off = saved.with_discovery(false);
+    assert_eq!(
+        Prefs::parse(&off.render()),
+        Ok(off.clone()),
+        "what `with_discovery` records is what `parse` reads back"
     );
 }
 
@@ -381,6 +482,7 @@ fn prefs_volume_and_seed_queue_reproduce_the_saved_state() {
         muted: true,
         shuffle: true,
         repeat: Repeat::All,
+        discovery: true,
     };
 
     let volume = saved.volume();

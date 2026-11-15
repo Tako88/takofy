@@ -312,6 +312,7 @@ fn a_destructive_row_is_full_ink_with_a_hairline_above_it() {
             kind: Kind::Plain,
             key: None,
             submenu: false,
+            live: true,
             verb: Verb::AddToQueue,
         },
         Item {
@@ -319,6 +320,7 @@ fn a_destructive_row_is_full_ink_with_a_hairline_above_it() {
             kind: Kind::Destructive,
             key: None,
             submenu: false,
+            live: true,
             verb: Verb::CopyLink,
         },
     ];
@@ -362,6 +364,7 @@ fn a_key_hint_draws_only_when_the_item_has_one() {
         kind: Kind::Destructive,
         key: Some("Del"),
         submenu: false,
+        live: true,
         verb: Verb::CopyLink,
     }];
     let mut menu = opened_with(Device::Pointer, hinted);
@@ -377,6 +380,7 @@ fn a_key_hint_draws_only_when_the_item_has_one() {
         kind: Kind::Destructive,
         key: None,
         submenu: false,
+        live: true,
         verb: Verb::CopyLink,
     }];
     let mut menu = opened_with(Device::Pointer, bare);
@@ -396,6 +400,7 @@ fn a_chevron_draws_only_for_a_submenu_item() {
         kind: Kind::Plain,
         key: None,
         submenu: true,
+        live: true,
         verb: Verb::AddToQueue,
     }];
     let mut menu = opened_with(Device::Pointer, submenu);
@@ -423,6 +428,7 @@ fn a_chevron_draws_only_for_a_submenu_item() {
         kind: Kind::Plain,
         key: None,
         submenu: false,
+        live: true,
         verb: Verb::AddToQueue,
     }];
     let mut menu = opened_with(Device::Pointer, plain);
@@ -442,6 +448,7 @@ fn a_long_label_elides_on_one_line() {
         kind: Kind::Plain,
         key: None,
         submenu: false,
+        live: true,
         verb: Verb::AddToQueue,
     }];
     let mut menu = opened_with(Device::Pointer, long);

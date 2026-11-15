@@ -357,6 +357,7 @@ pub(super) fn with_fans(releases: Vec<Release>) -> Library {
             named: true,
             portrait: None,
             releases: None,
+            followed_at: None,
         }],
     });
     library

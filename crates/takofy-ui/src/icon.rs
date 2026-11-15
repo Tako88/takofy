@@ -64,6 +64,7 @@ pub enum Icon {
     More,
     Close,
     Plus,
+    Minus,
     Volume,
     VolumeLow,
     VolumeMute,
@@ -74,10 +75,11 @@ pub enum Icon {
     Clock,
     Grid,
     List,
+    Again,
 }
 
 impl Icon {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 31] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -97,6 +99,7 @@ impl Icon {
         Self::More,
         Self::Close,
         Self::Plus,
+        Self::Minus,
         Self::Volume,
         Self::VolumeLow,
         Self::VolumeMute,
@@ -107,6 +110,7 @@ impl Icon {
         Self::Clock,
         Self::Grid,
         Self::List,
+        Self::Again,
     ];
 
     /// The flattened geometry.

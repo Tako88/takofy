@@ -527,7 +527,9 @@ fn draw_rows(ui: &mut Ui, menu: &Menu, rect: Rect, id: Id, tokens: &Tokens) -> O
     for (index, item) in menu.items().iter().enumerate() {
         let row = geometry::row_rect(rect, index);
         let hit = ui.interact(row, id.with(("row", index)), Sense::CLICK);
-        hit.widget_info(|| WidgetInfo::labeled(egui::Role::MenuItem, true, item.label.clone()));
+        hit.widget_info(|| {
+            WidgetInfo::labeled(egui::Role::MenuItem, item.live, item.label.clone())
+        });
 
         let corners = row_corners(index == 0, index + 1 == count);
         let tier = menu.tier(index, pointer);
@@ -545,7 +547,7 @@ fn draw_rows(ui: &mut Ui, menu: &Menu, rect: Rect, id: Id, tokens: &Tokens) -> O
         }
         paint_row(ui, tokens, item, row, tier);
 
-        if hit.hovered() {
+        if hit.hovered() && item.live {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if clicked_on(ui, &hit, row) {
@@ -742,7 +744,9 @@ fn paint_row(ui: &Ui, tokens: &Tokens, item: &Item, row: Rect, tier: Tier) {
 
     // Commands rest one tier below the ink, so the destructive one can be the
     // only row written in full bone without a colour the palette does not have.
-    let color = if lit || item.kind == Kind::Destructive {
+    let color = if !item.live {
+        tokens.palette.text_disabled
+    } else if lit || item.kind == Kind::Destructive {
         tokens.palette.text
     } else {
         tokens.palette.text_muted
@@ -769,7 +773,9 @@ fn paint_row(ui: &Ui, tokens: &Tokens, item: &Item, row: Rect, tier: Tier) {
     // A hint only exists for a key that is really bound, and on a lit row it
     // steps up one tier with the label.
     if let (Some(key), Some(slot)) = (item.key, parts.key) {
-        let key_color = if lit {
+        let key_color = if !item.live {
+            tokens.palette.text_disabled
+        } else if lit {
             tokens.palette.text_muted
         } else {
             tokens.palette.text_subtle
@@ -790,7 +796,9 @@ fn paint_row(ui: &Ui, tokens: &Tokens, item: &Item, row: Rect, tier: Tier) {
     }
 
     if let Some(slot) = parts.chevron {
-        let color = if lit {
+        let color = if !item.live {
+            tokens.palette.text_disabled
+        } else if lit {
             tokens.palette.text_muted
         } else {
             tokens.palette.text_subtle

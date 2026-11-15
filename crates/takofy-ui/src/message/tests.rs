@@ -389,6 +389,13 @@ fn cases() -> Vec<(bool, Update)> {
         (false, Update::Home(HomeAnswer::Episodes(Vec::new()))),
         (
             false,
+            Update::Home(HomeAnswer::Releases {
+                asked: Vec::new(),
+                found: Vec::new(),
+            }),
+        ),
+        (
+            false,
             Update::Radio {
                 seed: "spotify:track:a".to_owned(),
                 rows: Vec::new(),

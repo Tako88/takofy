@@ -89,7 +89,9 @@ pub fn artist_view(
     let writing = library.write_in_flight();
     // The sidebar's removal of this artist is already in flight; a follow write
     // now would land in order with it and leave the row and the label apart.
-    let removal_pending = library.saved_pending(&uri, false);
+    let removal_pending = library.saved_pending(&uri, false) || library.follow_pending(&uri);
+    // Read before the page borrows the library for the draw.
+    let hidden = library.hidden().contains(&uri);
 
     let mut command = None;
     let mut retry = false;
@@ -233,6 +235,7 @@ pub fn artist_view(
                                 item,
                                 door,
                                 page.follow.confirmed() != Some(true),
+                                hidden,
                                 Some(here.clone()),
                             ),
                         );

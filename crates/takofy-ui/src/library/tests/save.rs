@@ -153,7 +153,10 @@ fn a_followed_artist_re_arms_the_artist_read() {
         artist: "spotify:artist:new".to_owned(),
         followed: true,
     });
-    assert_eq!(library.followed_artists, Load::Idle);
+    assert!(
+        matches!(library.followed_artists, Load::Ready(_)),
+        "the rows stay while the read that names the new artist is in flight"
+    );
 }
 
 /// The page's own press has to reach the list the sidebar draws; the page's
@@ -259,10 +262,9 @@ fn a_probe_that_disagrees_asks_for_the_list() {
         followed: true,
     });
 
-    assert_eq!(
-        library.followed_artists,
-        Load::Idle,
-        "the server says followed and the list does not hold it"
+    assert!(
+        matches!(library.followed_artists, Load::Ready(_)),
+        "the server says followed and the list does not hold it, so it is re-read"
     );
 }
 
@@ -296,7 +298,10 @@ fn a_menu_follow_with_nothing_pending_asks_for_the_list() {
         followed: true,
     });
 
-    assert_eq!(library.followed_artists, Load::Idle);
+    assert!(
+        matches!(library.followed_artists, Load::Ready(_)),
+        "the rows stay while the list is re-read for the artist's name"
+    );
 }
 
 #[test]

@@ -83,11 +83,25 @@ pub enum Control {
     /// A station's own play. It is keyed by the station's uri, so one control
     /// serves every station of the band.
     StationPlay,
+    /// A discovery card's artist link, which opens the artist's page.
+    DiscoveryCard,
+    /// A discovery card's `⋯`, opening its three-verb menu.
+    DiscoveryMore,
+    /// A discovery card's own play: the first track it names.
+    DiscoveryPlay,
+    /// A discovery row's re-roll.
+    DiscoveryReroll,
+    /// A discovery row's play: every track it draws, in order.
+    DiscoveryRowPlay,
+    /// A discovery card's Follow tile. Acts through `Library::ask_follow`.
+    DiscoveryFollow,
+    /// The row that turns the discovery band off and back on.
+    DiscoverySwitch,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 60] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -139,6 +153,13 @@ impl Control {
         Self::EpisodeOrder,
         Self::CardPlay,
         Self::StationPlay,
+        Self::DiscoveryCard,
+        Self::DiscoveryMore,
+        Self::DiscoveryPlay,
+        Self::DiscoveryReroll,
+        Self::DiscoveryRowPlay,
+        Self::DiscoveryFollow,
+        Self::DiscoverySwitch,
         Self::HomeSearch,
         Self::Authorize,
     ];
@@ -214,6 +235,15 @@ pub fn availability(control: Control) -> Availability {
         // A station's rows are loaded state, so its play is a want and not a
         // read.
         Control::StationPlay => Availability::Ready,
+        // A discovery row draws loaded state, and its presses are wants and
+        // writes over it.
+        Control::DiscoveryCard => Availability::Ready, // #90
+        Control::DiscoveryMore => Availability::Ready, // #90
+        Control::DiscoveryPlay => Availability::Ready, // #90
+        Control::DiscoveryReroll => Availability::Ready, // #90
+        Control::DiscoveryRowPlay => Availability::Ready, // #90
+        Control::DiscoveryFollow => Availability::Ready, // #90
+        Control::DiscoverySwitch => Availability::Ready, // #90
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome

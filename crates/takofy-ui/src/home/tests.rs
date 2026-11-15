@@ -96,26 +96,39 @@ fn a_sent_uri_is_asked_but_not_yet_answered() {
     assert!(home.answered("spotify:track:a"), "the reply landed");
 }
 
-/// The four shelves below the dated one, each in one presence.
-const ABSENT: [Presence; 4] = [Presence::Absent; 4];
-const ONE_READY: [Presence; 4] = [
+/// The five shelves below the dated one, each in one presence.
+const ABSENT: [Presence; 5] = [Presence::Absent; 5];
+const ONE_READY: [Presence; 5] = [
     Presence::Ready,
     Presence::Absent,
     Presence::Absent,
     Presence::Absent,
+    Presence::Absent,
 ];
-const ONE_WAITING: [Presence; 4] = [
+const ONE_WAITING: [Presence; 5] = [
     Presence::Absent,
     Presence::Waiting,
     Presence::Absent,
     Presence::Absent,
+    Presence::Absent,
 ];
-const ONE_FAILED: [Presence; 4] = [
+const ONE_FAILED: [Presence; 5] = [
     Presence::Absent,
     Presence::Absent,
     Presence::Failed,
     Presence::Absent,
+    Presence::Absent,
 ];
+
+/// Where the release shelf sits in `others`.
+const RELEASES: usize = 3;
+
+/// The five shelves with only the release shelf in `presence`.
+fn release_shelf(presence: Presence) -> [Presence; 5] {
+    let mut others = ABSENT;
+    others[RELEASES] = presence;
+    others
+}
 
 #[test]
 fn the_dated_shelf_draws_while_it_waits_and_when_it_has_cards() {
@@ -160,7 +173,48 @@ fn the_quiet_shelf_draws_only_when_nothing_else_has_content() {
 }
 
 #[test]
-fn the_day_one_invite_draws_only_beside_four_absent_shelves() {
+fn the_quiet_shelf_yields_to_the_release_shelf() {
+    assert!(
+        !dated_draws(&Shelf::Quiet, release_shelf(Presence::Ready)),
+        "a shelf with releases said there was nothing recent"
+    );
+    assert!(
+        !dated_draws(&Shelf::Quiet, release_shelf(Presence::Waiting)),
+        "a shelf still coming will have content"
+    );
+}
+
+#[test]
+fn the_day_one_invite_yields_to_the_release_shelf() {
+    assert!(
+        !dated_draws(&Shelf::DayOne, release_shelf(Presence::Ready)),
+        "a followed artist released, so the invite would lie"
+    );
+    assert!(
+        !dated_draws(&Shelf::DayOne, release_shelf(Presence::Waiting)),
+        "a shelf still coming will have content"
+    );
+}
+
+#[test]
+fn an_absent_release_shelf_changes_nothing() {
+    assert_eq!(release_shelf(Presence::Absent), ABSENT);
+    for shelf in [
+        Shelf::Quiet,
+        Shelf::DayOne,
+        Shelf::Waiting,
+        Shelf::Cards(Vec::new()),
+    ] {
+        assert_eq!(
+            dated_draws(&shelf, release_shelf(Presence::Absent)),
+            dated_draws(&shelf, ABSENT),
+            "the absent shelf moved the dated shelf's decision"
+        );
+    }
+}
+
+#[test]
+fn the_day_one_invite_draws_only_beside_five_absent_shelves() {
     assert!(dated_draws(&Shelf::DayOne, ABSENT));
     assert!(!dated_draws(&Shelf::DayOne, ONE_READY));
     assert!(!dated_draws(&Shelf::DayOne, ONE_WAITING));
@@ -172,6 +226,7 @@ fn the_day_one_invite_draws_only_beside_four_absent_shelves() {
         !dated_draws(
             &Shelf::DayOne,
             [
+                Presence::Absent,
                 Presence::Absent,
                 Presence::Absent,
                 Presence::Absent,

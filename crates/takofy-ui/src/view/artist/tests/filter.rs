@@ -30,6 +30,7 @@ fn a_page_with_no_band_leaves_the_bar_inset_alone() {
                 named: true,
                 portrait: None,
                 releases: None,
+                followed_at: None,
             })
             .collect(),
     });

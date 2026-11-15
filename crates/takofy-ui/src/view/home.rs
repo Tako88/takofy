@@ -1,4 +1,4 @@
-//! Home: the greeting, and the five shelves under it.
+//! Home: the greeting, and the shelves under it.
 //!
 //! The page draws what the library decided and asks for nothing of its own: a
 //! press is returned as the command or the want that follows from it. The
@@ -15,6 +15,7 @@ use crate::format::{
     HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_EPISODES_TITLE, HOME_STATIONS_TITLE,
 };
 use crate::home::{Fit, Presence, Section, Shelf, Slot, dated_draws, greeting};
+use crate::layout::Table;
 use crate::library::Library;
 use crate::message::Command;
 use crate::route::Page;
@@ -28,11 +29,13 @@ use super::{page_head, section};
 mod because;
 mod counted;
 mod dated;
+mod discovery;
 mod door;
 mod episodes;
 mod foot;
 mod frame;
 mod grid;
+mod releases;
 mod stations;
 
 /// The shelves below the dated one, in the page's order.
@@ -56,6 +59,17 @@ pub(super) struct Pressed {
     pub(super) station: Option<(String, Vec<TrackEntry>)>,
     /// The episodes a row's toggle pressed: the shelf from that row onwards.
     pub(super) episode: Option<Vec<TrackEntry>>,
+    /// The discovery tracks pressed: a card's first track, a split row's tracks
+    /// from that row onward, or a row's whole visible set.
+    pub(super) discovery: Option<Vec<TrackEntry>>,
+    /// The discovery row whose re-roll was pressed.
+    pub(super) reroll: Option<takofy_model::home::DiscoveryKind>,
+    /// The artist whose card's Follow tile was pressed.
+    pub(super) follow: Option<String>,
+    /// The artist whose card's tile was pressed to take that follow back.
+    pub(super) unfollow: Option<String>,
+    /// The setting the discovery switch was pressed to.
+    pub(super) switch: Option<bool>,
     /// The day-one door asked the topbar's field for the keyboard.
     pub(super) focus_search: bool,
     /// The shelf whose foot door was pressed.
@@ -76,8 +90,13 @@ pub(super) enum Door {
 }
 
 /// Draws Home and returns the command its controls asked for.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the page, its table, the state it draws and the frame's clocks"
+)]
 pub(super) fn home_view(
     ui: &mut Ui,
+    table: Table,
     library: &mut Library,
     art: &mut Art,
     now: Instant,
@@ -106,6 +125,7 @@ pub(super) fn home_view(
                     columns: grid::columns(ui),
                 };
                 let shelves = library.home_sections(fit);
+                let discovery = library.discovery_band();
                 let mut draw = MediaDraw {
                     art,
                     now,
@@ -116,10 +136,30 @@ pub(super) fn home_view(
                     play: &mut play,
                 };
 
-                // The dated shelf is the page's first band, so only a band that
-                // follows another takes the rule above it.
+                // Discovery draws before the dated shelf and takes no slot: a
+                // band that is absent leaves no head and no room, and the rule
+                // between it and the shelf only appears when it drew.
                 let mut drawn = false;
+                if discovery::show(ui, &discovery, now_ms, tokens, table, &mut draw, &mut out) {
+                    drawn = true;
+                }
+                // What the artists you follow released, directly under the band
+                // that finds them. It is not a slot, so it draws here rather than
+                // in the loop below.
+                if matches!(
+                    shelves.releases.presence(),
+                    Presence::Waiting | Presence::Ready
+                ) {
+                    if drawn {
+                        section::divide(ui, tokens);
+                    }
+                    releases::show(ui, &shelves.releases, tokens, &mut draw);
+                    drawn = true;
+                }
                 if dated_draws(&shelves.dated, shelves.others()) {
+                    if drawn {
+                        section::divide(ui, tokens);
+                    }
                     dated::show(ui, &shelves.dated, now_ms, &mut draw, &mut out);
                     drawn = true;
                 }
@@ -242,6 +282,32 @@ pub(super) fn home_view(
     if let Some(rows) = out.episode.take()
         && library.want_play_rows(None, rows)
     {
+        ui.ctx().request_repaint();
+    }
+    // Discovery's tracks have no page context either. The play lands before the
+    // re-roll, because a re-roll turns the row idle and must not eat a play the
+    // user made in the same frame.
+    if let Some(rows) = out.discovery.take()
+        && library.want_play_rows(None, rows)
+    {
+        ui.ctx().request_repaint();
+    }
+    if let Some(kind) = out.reroll.take()
+        && library.reroll_discovery(kind, now_ms)
+    {
+        ui.ctx().request_repaint();
+    }
+    if let Some(artist) = out.follow.take() {
+        return library.ask_follow(&artist, true);
+    }
+    if let Some(artist) = out.unfollow.take() {
+        return library.ask_follow(&artist, false);
+    }
+    if let Some(enabled) = out.switch.take() {
+        // The binary hands the setting to the gate and the preferences file
+        // before it asks, so the next frame is the one that starts or stops the
+        // reads.
+        library.set_discovery_enabled(enabled);
         ui.ctx().request_repaint();
     }
     if out.focus_search {

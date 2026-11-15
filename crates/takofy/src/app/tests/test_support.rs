@@ -53,9 +53,13 @@ pub(super) fn test_window_restored(
     let (commands, received) = tokio::sync::mpsc::unbounded_channel();
     let (transport, queue) = TakofyApp::restored_state(&loaded);
     let mut library = Library::default();
+    // A launch applies the file's setting, so a test's `Prefs::of` writes back
+    // what the window would write.
+    library.set_discovery_enabled(loaded_discovery(&loaded));
     if let Cached::Found(snapshot) = cached {
         library.restore(snapshot);
     }
+    let gate = Arc::new(AtomicBool::new(library.discovery_enabled()));
     let app = TakofyApp {
         state: SignIn::default(),
         library,
@@ -73,6 +77,8 @@ pub(super) fn test_window_restored(
         since: None,
         prefs,
         snapshots,
+        gate,
+        hidden: HiddenSync::off(),
     };
     (app, received)
 }

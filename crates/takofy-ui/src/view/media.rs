@@ -201,6 +201,7 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Opti
             media.uri,
             tile_play_rect(rect),
             Icon::Play,
+            Size::MD,
             &format!("Play {}", media.name),
             !carry::carrying(ui.ctx()),
         );
@@ -409,6 +410,7 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
             media.uri,
             row_play_rect(rect),
             Icon::Play,
+            Size::MD,
             &format!("Play {}", media.name),
             live,
         );
@@ -444,7 +446,12 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
 /// A repeated press while the menu is already open posts the same door again,
 /// re-anchoring the menu rather than closing it. The track row's door does the
 /// same, so the two lists answer the key alike.
-fn key_door(ui: &Ui, row: &egui::Response, more: &controls::Slot, anchor: Rect) -> Option<Door> {
+pub(in crate::view) fn key_door(
+    ui: &Ui,
+    row: &egui::Response,
+    more: &controls::Slot,
+    anchor: Rect,
+) -> Option<Door> {
     let (row_focused, more_focused) = (row.has_focus(), more.response.has_focus());
     if !row_focused && !more_focused {
         return None;

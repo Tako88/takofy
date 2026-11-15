@@ -2,11 +2,14 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 
 use super::super::*;
-use super::announce::{EpisodesScript, SHOW, followed_artist, show_detail};
+use super::announce::{EpisodesScript, ReleasesScript, SHOW, followed_artist, show_detail};
 use super::reads::{PortraitScript, portrait};
 use super::test_support::*;
 use takofy_model::TrackEntry;
-use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, StationSeed};
+use takofy_model::home::{
+    ArtistReleases, Day, DiscoveryAnswer, DiscoveryKind, DiscoveryOutcome, DiscoverySeed,
+    HomeAnswer, HomeAsk, NewRelease, ReleaseDate, SeedKind, StationSeed,
+};
 
 #[test]
 fn a_label_saved_read_answers_with_the_asked_and_named_tracks() {
@@ -261,6 +264,97 @@ fn an_episodes_failure_is_failure_load() {
     );
 }
 
+/// One dated release, as the shelf holds it.
+fn new_release(uri: &str) -> NewRelease {
+    NewRelease {
+        artist: "Vela Moreno".to_owned(),
+        uri: uri.to_owned(),
+        name: "Slow Tide".to_owned(),
+        date: ReleaseDate {
+            year: 2025,
+            month: Some(10),
+            day: Some(14),
+        },
+        day: Day::from_days(20_000),
+        cover: None,
+    }
+}
+
+#[test]
+fn a_releases_ask_answers_every_artist_in_one_read() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let found = vec![
+        ArtistReleases {
+            artist: ARTIST.to_owned(),
+            releases: vec![new_release("spotify:album:r")],
+        },
+        ArtistReleases {
+            artist: SECOND_ARTIST.to_owned(),
+            releases: Vec::new(),
+        },
+    ];
+    *shared.releases_script.lock().expect("lock") = ReleasesScript::Ready(found.clone());
+
+    let artists = vec![ARTIST.to_owned(), SECOND_ARTIST.to_owned()];
+    let ask = HomeAsk::Releases {
+        artists: artists.clone(),
+        since: Day::from_days(19_970),
+    };
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end.commands.send(Command::LoadHome(ask)).expect("home");
+        ui_end.updates.recv().expect("releases")
+    });
+
+    assert_eq!(
+        update,
+        Update::Home(HomeAnswer::Releases {
+            asked: artists.clone(),
+            found,
+        })
+    );
+    assert_eq!(
+        shared.release_shelf_asked.lock().expect("lock").clone(),
+        vec![(artists, Day::from_days(19_970))],
+        "one read names every artist and the day it asks from"
+    );
+}
+
+#[test]
+fn a_releases_failure_is_failure_load() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.releases_script.lock().expect("lock") = ReleasesScript::Fail;
+
+    let ask = HomeAsk::Releases {
+        artists: vec![ARTIST.to_owned()],
+        since: Day::from_days(19_970),
+    };
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::LoadHome(ask.clone()))
+            .expect("home");
+        ui_end.updates.recv().expect("failure")
+    });
+
+    assert_eq!(
+        update,
+        Update::HomeFailed {
+            ask,
+            failure: Failure::Load,
+        }
+    );
+}
+
 #[test]
 fn a_stop_during_an_episodes_read_shuts_down() {
     let store = Arc::new(MemoryStore::seeded("stored"));
@@ -488,5 +582,37 @@ fn station_failure_is_failure_load() {
             ask,
             failure: Failure::Load,
         }
+    );
+}
+
+#[test]
+fn a_discovery_ask_is_answered_unreachable_and_never_failed() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+
+    let seed = DiscoverySeed {
+        kind: DiscoveryKind::Artist,
+        uri: ARTIST.to_owned(),
+        name: "A".to_owned(),
+        anchor: None,
+    };
+    let ask = HomeAsk::Discovery { seed: seed.clone() };
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end.commands.send(Command::LoadHome(ask)).expect("home");
+        let update = ui_end.updates.recv().expect("discovery");
+        expect_no_update(&ui_end);
+        update
+    });
+
+    assert_eq!(
+        update,
+        Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+            seed,
+            outcome: DiscoveryOutcome::Unreachable,
+        })),
+        "the guard answers one unreachable outcome and nothing else"
     );
 }

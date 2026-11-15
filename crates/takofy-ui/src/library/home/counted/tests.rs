@@ -83,6 +83,7 @@ fn followed(uri: &str, portrait: Option<CoverSet>) -> FollowedArtist {
         named: true,
         portrait,
         releases: None,
+        followed_at: None,
     }
 }
 

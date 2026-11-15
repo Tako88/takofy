@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::time::Instant;
 
+use takofy_model::home::{Day, DiscoveryKind};
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow,
     PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead, SavedAlbum, ShowDetail, TrackEntry,
@@ -23,6 +24,9 @@ use crate::cover_refresh::CoverRefresh;
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::home::Home;
+use crate::home::discovery::Band;
+use crate::home::discovery::Reroll;
+use crate::home::discovery::hidden::Hidden;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
@@ -150,6 +154,19 @@ pub struct ArtistPage<'a> {
     pub likes: &'a Likes,
 }
 
+/// A flag that starts on.
+///
+/// Its own type because the library's `Default` is derived, and a field that
+/// begins `true` cannot say so through a derive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Enabled(bool);
+
+impl Default for Enabled {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// The sidebar's playlists and the tracks the current page has loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
@@ -175,6 +192,13 @@ pub struct Library {
     pub saved_albums: Load<Vec<SavedAlbum>>,
     /// The liked-songs set, and the one write in flight against it.
     pub likes: Likes,
+    /// Whether Discovery's rows may be looked up, which is on until the user
+    /// says otherwise.
+    discovery_enabled: Enabled,
+    /// The artists the user never wants offered, and where a day's rows stand.
+    hidden: Hidden,
+    /// The offset the local day is measured with, in seconds east of UTC.
+    utc_offset: i32,
     /// The Home page's seed, and the labels the liked cards need.
     pub home: Home,
     /// When this Home visit started waiting for the dated feeds.
@@ -204,6 +228,25 @@ pub struct Library {
     pub artist: Load<ArtistDetail>,
     /// The artist page's Follow state.
     pub follow: Follow,
+    /// The follow writes in flight, keyed by artist and valued by what was
+    /// asked for.
+    ///
+    /// A card's tile and a menu on the artist can name the same artist, and two
+    /// writes would land in order and leave the two apart. The page's own button
+    /// is guarded by [`Follow`] instead.
+    follow_writes: HashMap<String, bool>,
+    /// The artists the library already holds, built once a frame and shared by
+    /// the asks and the draw.
+    ///
+    /// The band needs it on both paths, and it walks every saved album's credits,
+    /// so building it twice cost the drawing thread real time on a large library.
+    owned: home::discovery::OwnedCache,
+    /// Whether a follow landed and the list that holds it wants re-reading.
+    ///
+    /// The rows stay on screen while that read is in flight: dropping a live
+    /// list to `Idle` for one round trip takes every shelf drawn from it with
+    /// it, and the page jumps under the click that caused it.
+    artists_stale: bool,
     /// The artist page's discography filter. Unlike `follow`, going home does
     /// not reset it: home then Back reloads the same artist, so the choice is
     /// kept, and opening a different artist is what resets it.
@@ -1050,6 +1093,7 @@ impl Library {
             Update::FollowedArtists(artists) => {
                 self.followed_artists = Load::Ready(artists.clone());
                 self.sources.artists = Source::Live;
+                self.follow_writes.clear();
             }
             Update::FollowedArtistsFailed(failure) => {
                 fail_list(
@@ -1122,10 +1166,14 @@ impl Library {
                 if !followed {
                     self.end_saved(artist, false);
                 }
+                if self.follow_writes.get(artist) == Some(followed) {
+                    self.follow_writes.remove(artist);
+                }
                 self.settle_follow(artist, *followed);
             }
             Update::FollowFailed { artist, .. } => {
                 self.follow.apply(update);
+                self.follow_writes.remove(artist);
                 if self.saved_pending(artist, false) {
                     self.sidebar_pending = None;
                     self.sidebar_notice = Some(SidebarWrite::Remove);
@@ -1947,6 +1995,74 @@ impl Library {
                 .and_then(|show| show.episodes),
             Load::Idle | Load::Loading | Load::Failed(_) => None,
         }
+    }
+
+    /// Whether Discovery's rows may be looked up.
+    pub fn discovery_enabled(&self) -> bool {
+        self.discovery_enabled.0
+    }
+
+    /// Turns Discovery's rows on or off.
+    ///
+    /// Turning them off stops the reads rather than dropping what has been read:
+    /// the rows stay as they were, so turning them back on in the same visit
+    /// draws them again.
+    pub fn set_discovery_enabled(&mut self, enabled: bool) {
+        self.discovery_enabled = Enabled(enabled);
+    }
+
+    /// Names the day the page is open on, which the rows and the release shelf
+    /// keep until the next day.
+    pub fn set_local_day(&mut self, day: Day) {
+        self.home.discovery.latch(day);
+        self.home.releases.latch(day);
+    }
+
+    /// Names the offset the local day is measured with, in seconds east of UTC.
+    ///
+    /// Only the follow dates need it: a release's day comes from the answer, and
+    /// an instant has to be turned into a local day the same way the binary
+    /// names one.
+    pub fn set_utc_offset(&mut self, secs: i32) {
+        self.utc_offset = secs;
+    }
+
+    /// Restores the hidden artists and where a day's rows stand.
+    pub fn restore_hidden(&mut self, hidden: Hidden) {
+        self.hidden = hidden;
+    }
+
+    /// The artists the user never wants offered again, and the stored positions.
+    pub fn hidden(&self) -> &Hidden {
+        &self.hidden
+    }
+
+    /// Hides `artist` from every row, now and in later days.
+    pub fn hide_artist(&mut self, artist: &str) {
+        self.hidden.hide(artist);
+    }
+
+    /// Offers `artist` again, after a hide.
+    pub fn unhide_artist(&mut self, artist: &str) {
+        self.hidden.unhide(artist);
+    }
+
+    /// Moves `kind`'s row on to its next seed, at most once per cooldown.
+    ///
+    /// Whether it moved: a row with no seed left, one asked again too soon, or
+    /// an open with no ask left to spend stays where it is.
+    pub fn reroll_discovery(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
+        self.home.discovery.reroll(kind, now_ms)
+    }
+
+    /// Whether `kind`'s row can re-roll now, and when it can next.
+    pub fn reroll_state_discovery(&self, kind: DiscoveryKind, now_ms: u64) -> Reroll {
+        self.home.discovery.reroll_state(kind, now_ms)
+    }
+
+    /// What Discovery's section draws this frame.
+    pub fn discovery_band(&self) -> Band<'_> {
+        home::discovery::band(self)
     }
 }
 

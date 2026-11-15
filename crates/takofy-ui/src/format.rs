@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::home::SeedKind;
+use takofy_model::home::{DiscoveryKind, ReleaseDate, SeedKind};
 use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
@@ -262,6 +262,47 @@ pub const HOME_DAY_ONE_BODY: &str =
 /// The day-one page's door into the catalogue.
 pub const HOME_DAY_ONE_DOOR: &str = "Search the catalogue";
 
+/// The discovery band's title, in the reference's own words.
+pub const HOME_DISCOVERY_TITLE: &str = "Just outside your library";
+
+/// The aside beside the discovery band's title: where the names come from.
+pub const HOME_DISCOVERY_ASIDE: &str = "Deezer · nothing here is yours";
+
+/// The switch row at the band's foot, when the band is drawing.
+pub const HOME_DISCOVERY_SWITCH_ON: &str = "Turn discovery off";
+
+/// The same row when the band is off: the setting is its only remaining copy.
+pub const HOME_DISCOVERY_SWITCH_OFF: &str = "Discovery is off · turn it back on";
+
+/// The word the discovery switch turns on its setting.
+pub fn discovery_switch_label(enabled: bool) -> &'static str {
+    if enabled {
+        HOME_DISCOVERY_SWITCH_ON
+    } else {
+        HOME_DISCOVERY_SWITCH_OFF
+    }
+}
+
+/// The discovery row's ledger: what the body draws, said as a count.
+///
+/// A split also names how many tracks it draws, because the mini-rows are what
+/// the row has to offer; every other body counts only its artists.
+pub fn discovery_ledger(artists: usize, tracks: Option<usize>) -> String {
+    let artists = count_noun(artists, "artist");
+    match tracks {
+        Some(tracks) => format!("{artists} · {}", count_noun(tracks, "track")),
+        None => artists,
+    }
+}
+
+/// A card's line under its name: the newest release year, when one is dated.
+pub fn discovery_sub(latest_year: Option<u16>) -> String {
+    match latest_year {
+        Some(year) => format!("Latest {year}"),
+        None => String::new(),
+    }
+}
+
 /// The stations shelf's title, which names the seeds rather than a count.
 pub const HOME_STATIONS_TITLE: &str = "Stations built from your library";
 
@@ -278,6 +319,20 @@ pub fn station_source(kind: SeedKind) -> &'static str {
     }
 }
 
+/// A discovery row's source line: what it was seeded from, and the genre its
+/// neighbours voted for when they named one.
+pub fn discovery_source(kind: DiscoveryKind, genre: Option<&str>) -> String {
+    let source = match kind {
+        DiscoveryKind::Playlist => "From your playlist",
+        DiscoveryKind::Artist => "From an artist you follow",
+        DiscoveryKind::Album => "From an album you saved",
+    };
+    match genre.map(str::trim).filter(|genre| !genre.is_empty()) {
+        Some(genre) => format!("{source} · {genre}"),
+        None => source.to_owned(),
+    }
+}
+
 /// The related shelf's title, before it names the artist it follows.
 pub const HOME_BECAUSE_TITLE: &str = "Because you follow";
 
@@ -286,6 +341,37 @@ pub const HOME_COUNTED_TITLE: &str = "The artists you have the most of";
 
 /// The episodes shelf's title.
 pub const HOME_EPISODES_TITLE: &str = "New from the shows you follow";
+
+/// The release shelf's title.
+pub const HOME_RELEASES_TITLE: &str = "New from the artists you follow";
+
+/// The month names a release's date prints, in the wire's own numbering.
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A release card's line under the title: who made it, then the day it came out.
+///
+/// Only a whole date prints its day. A month without one says nothing the year
+/// does not, so a partial date prints the year alone.
+pub fn release_sub(artist: &str, date: &ReleaseDate) -> String {
+    let artist = artist.trim();
+    let when = match (date.month, date.day) {
+        (Some(month), Some(day)) => match usize::from(month)
+            .checked_sub(1)
+            .and_then(|index| MONTHS.get(index))
+        {
+            Some(name) => format!("{day} {name}"),
+            None => date.year.to_string(),
+        },
+        _ => date.year.to_string(),
+    };
+    if artist.is_empty() {
+        when
+    } else {
+        format!("{artist} · {when}")
+    }
+}
 
 /// The dated shelf's foot: the door into the whole library.
 pub const HOME_DOOR_SAVED: &str = "Show all saved";

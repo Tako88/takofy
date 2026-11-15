@@ -18,6 +18,7 @@ use crate::view::text as recipe;
 #[derive(Clone, Copy)]
 pub(super) enum Target<'a> {
     Album(&'a str),
+    Playlist(&'a str),
     Credit(&'a str),
 }
 
@@ -26,6 +27,7 @@ impl Target<'_> {
     fn page(self) -> Page {
         match self {
             Self::Album(uri) => Page::Album(uri.to_owned()),
+            Self::Playlist(uri) => Page::Playlist(uri.to_owned()),
             Self::Credit(uri) => Page::credit(uri),
         }
     }
@@ -34,6 +36,7 @@ impl Target<'_> {
     fn kind(self) -> &'static str {
         match self {
             Self::Album(_) => "album",
+            Self::Playlist(_) => "playlist",
             Self::Credit(uri) if credit_is_show(uri) => "show",
             Self::Credit(_) => "artist",
         }

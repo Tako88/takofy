@@ -1,0 +1,40 @@
+{
+  "_synthetic": "Synthetic fixture: shaped after Deezer's related-artist list, not a real payload. Every name, id and URL below is invented.",
+  "data": [
+    {
+      "id": 2002,
+      "name": "Aphex Twin",
+      "link": "https://example.invalid/artist/2002",
+      "picture": "https://example.invalid/2002.jpg",
+      "nb_album": 12,
+      "nb_fan": 980000,
+      "radio": true,
+      "tracklist": "https://example.invalid/2002/top",
+      "type": "artist"
+    },
+    {
+      "id": 2003,
+      "name": "Seefeel",
+      "link": "https://example.invalid/artist/2003",
+      "picture": "https://example.invalid/2003.jpg",
+      "nb_album": 6,
+      "nb_fan": 160000,
+      "radio": false,
+      "tracklist": "https://example.invalid/2003/top",
+      "type": "artist"
+    },
+    {
+      "id": 2004,
+      "name": "Clark",
+      "link": "https://example.invalid/artist/2004",
+      "picture": "https://example.invalid/2004.jpg",
+      "nb_album": 9,
+      "nb_fan": 240000,
+      "radio": false,
+      "tracklist": "https://example.invalid/2004/top",
+      "type": "artist"
+    }
+  ],
+  "next": "https://example.invalid/artist/1001/related?limit=10&index=10",
+  "total": 3
+}

@@ -14,8 +14,8 @@ use protobuf::well_known_types::any::Any;
 use takofy_model::{CoverSet, CoverUrl, LikedTrack, SavedAlbum, SavedAt};
 
 use super::{
-    ArtistCard, album_dated, artist_card, artist_entries, artist_order, liked_tracks,
-    saved_album_entries, stamp_albums, track_dated,
+    ArtistCard, album_dated, artist_card, artist_dated, artist_entries, liked_tracks,
+    saved_album_entries, stamp_albums, stamp_artists, track_dated,
 };
 use crate::collection::Item;
 use crate::followed::Dated;
@@ -56,16 +56,21 @@ fn item(uri: &str, added_at: Option<i64>, removed: bool) -> Item {
 }
 
 #[test]
-fn artist_order_drops_removed_and_non_artist_items_and_orders_newest_first() {
+fn artist_dated_drops_removed_and_non_artist_items_and_orders_newest_first() {
     assert_eq!(
-        artist_order(vec![
+        artist_dated(vec![
             item(&track_uri(9), Some(500), false), // a liked song
             item(&artist_uri(1), Some(100), false),
             item(&artist_uri(2), Some(300), true), // a removed artist
             item(&artist_uri(3), None, false),
+            item(&artist_uri(4), Some(700), false),
             item(&artist_uri(1), Some(2_000), false), // a duplicate
         ]),
-        vec![artist_uri(1), artist_uri(3)],
+        vec![
+            dated(artist_uri(4), Some(700)),
+            dated(artist_uri(1), Some(100)),
+            dated(artist_uri(3), None),
+        ],
         "a liked song and a removed artist are not saved artists, and the first duplicate's date sorts"
     );
 }
@@ -191,8 +196,37 @@ fn an_album_no_date_names_keeps_no_date() {
 }
 
 #[test]
+fn stamp_artists_matches_by_uri_not_by_position() {
+    let artists = artist_entries(
+        &[artist_uri(1), artist_uri(2), artist_uri(3)],
+        &HashMap::new(),
+    );
+    let stamped = stamp_artists(
+        artists,
+        &[
+            dated(artist_uri(3), Some(300)),
+            dated(artist_uri(2), Some(0)),
+            dated(artist_uri(1), Some(100)),
+        ],
+    );
+    let dates: Vec<_> = stamped.iter().map(|artist| artist.followed_at).collect();
+    assert_eq!(
+        dates,
+        vec![SavedAt::from_secs(100), None, SavedAt::from_secs(300),],
+        "a zero date is no date, and each artist takes the date named for its own URI"
+    );
+}
+
+#[test]
+fn an_artist_no_date_names_keeps_no_date() {
+    let artists = artist_entries(&[artist_uri(1)], &HashMap::new());
+    let stamped = stamp_artists(artists, &[dated(artist_uri(9), Some(900))]);
+    assert_eq!(stamped[0].followed_at, None);
+}
+
+#[test]
 fn an_empty_item_list_gives_an_empty_order() {
-    assert!(artist_order(Vec::new()).is_empty());
+    assert!(artist_dated(Vec::new()).is_empty());
     assert!(album_dated(Vec::new()).is_empty());
     assert!(track_dated(Vec::new()).is_empty());
 }
@@ -268,6 +302,7 @@ fn a_missing_card_falls_back_to_the_uri_unnamed_and_uncounted() {
     assert!(!entry.named);
     assert_eq!(entry.portrait, None);
     assert_eq!(entry.releases, None);
+    assert_eq!(entry.followed_at, None);
 }
 
 #[test]
@@ -287,6 +322,7 @@ fn a_carded_artist_reads_named_with_its_portrait_and_count() {
     assert_eq!(entry.name, "Vela");
     assert_eq!(entry.releases, Some(7));
     assert!(entry.portrait.is_some());
+    assert_eq!(entry.followed_at, None);
 }
 
 /// One disc with the given track gid bytes.

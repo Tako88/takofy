@@ -1,0 +1,35 @@
+{
+  "_synthetic": "Synthetic fixture: shaped after Deezer's artist search, not a real payload. Every name, id and URL below is invented.",
+  "data": [
+    {
+      "id": 1001,
+      "name": "Vela",
+      "link": "https://example.invalid/artist/1001",
+      "nb_fan": 67570,
+      "picture": "https://example.invalid/1001.jpg",
+      "picture_small": "https://example.invalid/1001-small.jpg",
+      "picture_medium": "https://example.invalid/1001-medium.jpg",
+      "picture_big": "https://example.invalid/1001-big.jpg",
+      "picture_xl": "https://example.invalid/1001-xl.jpg",
+      "radio": true,
+      "tracklist": "https://example.invalid/1001/top",
+      "type": "artist"
+    },
+    {
+      "id": 1002,
+      "name": "Vela",
+      "link": "https://example.invalid/artist/1002",
+      "nb_fan": 55,
+      "picture": "https://example.invalid/1002.jpg",
+      "picture_small": "https://example.invalid/1002-small.jpg",
+      "picture_medium": "https://example.invalid/1002-medium.jpg",
+      "picture_big": "https://example.invalid/1002-big.jpg",
+      "picture_xl": "https://example.invalid/1002-xl.jpg",
+      "radio": false,
+      "tracklist": "https://example.invalid/1002/top",
+      "type": "artist"
+    }
+  ],
+  "next": "https://example.invalid/search/artist?q=Vela&index=5",
+  "total": 2
+}

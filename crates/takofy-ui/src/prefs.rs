@@ -1,4 +1,4 @@
-//! The four values that survive a restart, the file that holds them, and the
+//! The five values that survive a restart, the file that holds them, and the
 //! rule for when that file is written.
 //!
 //! The file is a hand-parsed `key=value` list, so a later version can add a key
@@ -28,11 +28,18 @@ enum Key {
     Mute,
     Shuffle,
     Repeat,
+    Discovery,
 }
 
 impl Key {
     /// Every key, in the order the file lists them.
-    const ALL: [Key; 4] = [Key::Volume, Key::Mute, Key::Shuffle, Key::Repeat];
+    const ALL: [Key; 5] = [
+        Key::Volume,
+        Key::Mute,
+        Key::Shuffle,
+        Key::Repeat,
+        Key::Discovery,
+    ];
 
     /// The spelling in the file, which is also the spelling a reader matches.
     fn name(self) -> &'static str {
@@ -41,6 +48,7 @@ impl Key {
             Key::Mute => "mute",
             Key::Shuffle => "shuffle",
             Key::Repeat => "repeat",
+            Key::Discovery => "discovery",
         }
     }
 
@@ -87,13 +95,14 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// Volume, mute, shuffle and repeat, as the file holds them.
+/// Volume, mute, shuffle, repeat and discovery, as the file holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prefs {
     volume: u16,
     muted: bool,
     shuffle: bool,
     repeat: Repeat,
+    discovery: bool,
 }
 
 impl Default for Prefs {
@@ -103,6 +112,7 @@ impl Default for Prefs {
             muted: false,
             shuffle: false,
             repeat: Repeat::Off,
+            discovery: true,
         }
     }
 }
@@ -115,7 +125,20 @@ impl Prefs {
             muted: volume.muted() && volume.level() > 0,
             shuffle: queue.shuffle(),
             repeat: queue.repeat(),
+            ..Self::default()
         }
+    }
+
+    /// The same values with the discovery setting the app holds, which the
+    /// player knows nothing about.
+    pub fn with_discovery(mut self, discovery: bool) -> Self {
+        self.discovery = discovery;
+        self
+    }
+
+    /// Whether the discovery rows may be read.
+    pub fn discovery(&self) -> bool {
+        self.discovery
     }
 
     /// The slider this file remembers, owing the player the level it should
@@ -129,14 +152,15 @@ impl Prefs {
         queue.restore_modes(self.repeat, self.shuffle);
     }
 
-    /// The file's four lines, in a fixed order.
+    /// The file's five lines, in a fixed order.
     pub fn render(&self) -> String {
         format!(
-            "volume={}\nmute={}\nshuffle={}\nrepeat={}\n",
+            "volume={}\nmute={}\nshuffle={}\nrepeat={}\ndiscovery={}\n",
             self.volume,
             self.muted,
             self.shuffle,
-            self.repeat.key()
+            self.repeat.key(),
+            self.discovery
         )
     }
 
@@ -190,6 +214,7 @@ impl Prefs {
             Setting::Mute(muted) => self.muted = muted,
             Setting::Shuffle(shuffle) => self.shuffle = shuffle,
             Setting::Repeat(repeat) => self.repeat = repeat,
+            Setting::Discovery(discovery) => self.discovery = discovery,
         }
     }
 }
@@ -200,6 +225,7 @@ enum Setting {
     Mute(bool),
     Shuffle(bool),
     Repeat(Repeat),
+    Discovery(bool),
 }
 
 /// The value `text` holds for `key`, or `None` when it is outside the table.
@@ -209,6 +235,7 @@ fn read_value(key: Key, text: &str) -> Option<Setting> {
         Key::Mute => flag(text).map(Setting::Mute),
         Key::Shuffle => flag(text).map(Setting::Shuffle),
         Key::Repeat => Repeat::from_key(text).map(Setting::Repeat),
+        Key::Discovery => flag(text).map(Setting::Discovery),
     }
 }
 

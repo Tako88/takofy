@@ -329,3 +329,27 @@ fn a_track_in_two_stations_draws_two_distinct_rows() {
         "two stations showing one track must draw two rows"
     );
 }
+
+#[test]
+fn the_head_keeps_its_places() {
+    // The shared head is extracted from this painter, so these are the places
+    // the unmodified painter put the play and the first row at two widths. Only
+    // what a press reads is pinned: the play's centre and the first row's.
+    let ctx = context();
+    let narrow = Rect::from_min_max(Pos2::new(0.0, 40.0), Pos2::new(320.0, 200.0));
+    for (rect, play_x, row_y) in [(CELL, 395.0, 114.0), (narrow, 295.0, 114.0)] {
+        let (play, rows) = places(&ctx, rect);
+        assert!(
+            (play.x - play_x).abs() < 0.01,
+            "the play keeps the head's far end at {}: {}",
+            rect.width(),
+            play.x
+        );
+        assert!(
+            (rows[0].y - row_y).abs() < 0.01,
+            "the first row keeps its place at {}: {}",
+            rect.width(),
+            rows[0].y
+        );
+    }
+}

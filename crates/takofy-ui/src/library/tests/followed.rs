@@ -669,3 +669,119 @@ fn reload_saved_albums_clears_the_stale_state_and_returns_the_command() {
     assert_eq!(ready.reload_saved_albums(), Command::LoadSavedAlbums);
     assert_eq!(ready.saved_albums, Load::Loading);
 }
+
+/// A follow ask is one write per artist: a second press while it is out is
+/// dropped, and the answer is what lets the tile act again.
+#[test]
+fn a_follow_ask_is_guarded_until_its_answer() {
+    let mut library = Library::default();
+    let artist = "spotify:artist:a";
+    let set = Command::SetFollow {
+        artist: artist.to_owned(),
+        followed: true,
+    };
+
+    assert_eq!(library.ask_follow(artist, true), Some(set.clone()));
+    assert!(library.follow_pending(artist));
+    assert!(
+        !library.follow_pending("spotify:artist:b"),
+        "another artist's tile is not held"
+    );
+    assert_eq!(
+        library.ask_follow(artist, true),
+        None,
+        "one write at a time"
+    );
+
+    library.apply(&Update::Followed {
+        artist: artist.to_owned(),
+        followed: true,
+    });
+    assert!(
+        !library.follow_pending(artist),
+        "the answer clears the guard"
+    );
+    assert_eq!(
+        library.ask_follow(artist, false),
+        Some(Command::SetFollow {
+            artist: artist.to_owned(),
+            followed: false,
+        })
+    );
+}
+
+/// A reply that does not carry the value that was asked for is another
+/// writer's, and does not end the wait.
+#[test]
+fn an_answer_for_the_other_direction_keeps_the_guard() {
+    let mut library = Library::default();
+    let artist = "spotify:artist:a";
+    assert!(library.ask_follow(artist, true).is_some());
+
+    library.apply(&Update::Followed {
+        artist: artist.to_owned(),
+        followed: false,
+    });
+
+    assert!(
+        library.follow_pending(artist),
+        "a probe's answer is not this write's"
+    );
+}
+
+#[test]
+fn a_failed_follow_clears_the_guard() {
+    let mut library = Library::default();
+    let artist = "spotify:artist:a";
+    assert!(library.ask_follow(artist, true).is_some());
+
+    library.apply(&Update::FollowFailed {
+        artist: artist.to_owned(),
+        failure: Failure::Save,
+    });
+
+    assert!(!library.follow_pending(artist));
+    assert!(
+        library.ask_follow(artist, true).is_some(),
+        "the tile retries"
+    );
+}
+
+#[test]
+fn a_landed_followed_list_clears_every_guard() {
+    let mut library = Library::default();
+    assert!(library.ask_follow("spotify:artist:a", true).is_some());
+    assert!(library.ask_follow("spotify:artist:b", true).is_some());
+
+    library.apply(&Update::FollowedArtists(vec![followed_artist(
+        "spotify:artist:a",
+    )]));
+
+    assert!(!library.follow_pending("spotify:artist:a"));
+    assert!(
+        !library.follow_pending("spotify:artist:b"),
+        "a landed list is the whole set, so nothing is still owed"
+    );
+}
+
+/// The page's own button holds the same artist: two writes would land in order
+/// and leave the label and the tile apart.
+#[test]
+fn the_page_artists_pending_write_blocks_the_tile() {
+    let mut library = Library::default();
+    let artist = "spotify:artist:a";
+    library.follow.open(artist);
+    assert!(
+        library.follow.pressed().is_some(),
+        "arrange: the page asked"
+    );
+
+    assert_eq!(library.ask_follow(artist, true), None);
+    assert!(!library.follow_pending(artist), "the tile queued nothing");
+
+    library.follow.apply(&Update::Followed {
+        artist: artist.to_owned(),
+        followed: true,
+    });
+    assert!(library.ask_follow(artist, false).is_some());
+}

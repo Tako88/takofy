@@ -21,6 +21,11 @@ log.workspace = true
 tokio.workspace = true
 image.workspace = true
 reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Paused-time tests need the test clock, which the runtime features leave out.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

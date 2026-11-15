@@ -14,10 +14,12 @@ use crate::message::Failure;
 
 pub mod because;
 pub mod counted;
+pub mod discovery;
 pub mod draw;
 pub mod episodes;
 mod greeting;
 mod outlook;
+pub mod releases;
 mod section;
 mod seed;
 pub mod stations;
@@ -74,7 +76,12 @@ pub struct Fit {
     pub columns: usize,
 }
 
-/// Home's five shelves for one frame, borrowed from the library.
+/// Home's shelves for one frame, borrowed from the library.
+///
+/// The release shelf is a member outside [`Slot`]: it needs neither a Retry nor
+/// a share of the budget, and a sixth slot would touch every match on the page's
+/// fixed order. It is still counted where it belongs, in the dated shelf's own
+/// decision, so Quiet and DayOne yield to it.
 #[derive(Debug)]
 pub struct Sections<'a> {
     /// The page's first shelf: what was saved most recently.
@@ -82,6 +89,7 @@ pub struct Sections<'a> {
     pub stations: Section<stations::Band<'a>>,
     pub because: Section<because::Row<'a>>,
     pub counted: Section<counted::Tiles<'a>>,
+    pub releases: Section<releases::List<'a>>,
     pub episodes: Section<episodes::List<'a>>,
 }
 
@@ -97,12 +105,13 @@ impl Sections<'_> {
         }
     }
 
-    /// The four shelves below the dated one, in the page's order.
-    pub fn others(&self) -> [Presence; 4] {
+    /// The shelves below the dated one, in the page's order.
+    pub fn others(&self) -> [Presence; 5] {
         [
             self.presence(Slot::Stations),
             self.presence(Slot::Because),
             self.presence(Slot::Counted),
+            self.releases.presence(),
             self.presence(Slot::Episodes),
         ]
     }
@@ -119,7 +128,7 @@ fn dated_presence(shelf: &Shelf<'_>) -> Presence {
 }
 
 /// Whether the dated shelf draws beside `others`.
-pub fn dated_draws(shelf: &Shelf<'_>, others: [Presence; 4]) -> bool {
+pub fn dated_draws(shelf: &Shelf<'_>, others: [Presence; 5]) -> bool {
     match shelf {
         Shelf::Waiting | Shelf::Cards(_) => true,
         Shelf::Unreadable(_) => true,
@@ -160,6 +169,10 @@ pub struct Home {
     pub counted: counted::State,
     /// The newest episodes of the followed shows.
     pub episodes: episodes::State,
+    /// The newest releases of the followed artists.
+    pub releases: releases::State,
+    /// Discovery's three rows: their pools, and what each has answered.
+    pub discovery: discovery::State,
     /// The reads one open still allows.
     pub budget: Budget,
 }
@@ -174,10 +187,17 @@ impl Home {
         self.because.open(self.seed);
         self.counted.open(self.seed);
         self.episodes.open(self.seed);
+        self.releases.open();
+        self.discovery.open();
     }
 
     /// Folds one answer into the shelf that asked for it.
     pub fn land(&mut self, answer: &HomeAnswer) {
+        // Discovery keeps its own state, which no shelf below holds.
+        if let HomeAnswer::Discovery(_) = answer {
+            self.discovery.land(answer);
+            return;
+        }
         if let HomeAnswer::Labelled { asked, named } = answer {
             // A read any shelf sent still says how long each track it named runs,
             // which is all a station row wants from it.
@@ -192,6 +212,7 @@ impl Home {
         self.stations.land(answer);
         self.because.land(answer);
         self.episodes.land(answer);
+        self.releases.land(answer);
     }
 
     /// Records that the read `ask` named failed.
@@ -202,6 +223,7 @@ impl Home {
         self.stations.fail(ask, failure);
         self.because.fail(ask, failure);
         self.episodes.fail(ask, failure);
+        self.releases.fail(ask, failure);
     }
 
     /// Records the URIs a label read was sent for, so they are not sent again.
@@ -273,6 +295,12 @@ impl Home {
         for slot in Slot::ORDER {
             self.forget_slot(slot);
         }
+        // The releases go with the rest and are read again; the rows go too, and
+        // their open starts again, because a retry reads the lists the pools are
+        // drawn from.
+        self.releases.forget();
+        self.discovery = discovery::State::default();
+        self.discovery.open();
     }
 
     /// The failure that stopped the last label read, if one did.

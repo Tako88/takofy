@@ -741,6 +741,14 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             verbs::Outcome::Unlink(item) => apply_remove_from_library(ui, screen, &item),
             verbs::Outcome::Save(item) => screen.library.save_to_library(&item),
             verbs::Outcome::Follow { artist, followed } => apply_follow(screen, &artist, followed),
+            verbs::Outcome::Hide(artist) => {
+                screen.library.hide_artist(&artist);
+                None
+            }
+            verbs::Outcome::Show(artist) => {
+                screen.library.unhide_artist(&artist);
+                None
+            }
             verbs::Outcome::Rename(item) => {
                 let surface = match screen.menu.listing() {
                     Listing::Band(_) => crate::naming::Surface::Band,
@@ -785,6 +793,8 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
         verbs::Outcome::Unlink(_)
         | verbs::Outcome::Save(_)
         | verbs::Outcome::Follow { .. }
+        | verbs::Outcome::Hide(_)
+        | verbs::Outcome::Show(_)
         | verbs::Outcome::Rename(_) => None,
     }
 }
@@ -913,18 +923,10 @@ fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
 
 /// Follows or unfollows the artist a band's menu named.
 ///
-/// A page that is on it also owns the label, so the page's own state is what the
-/// write is asked through; any other artist is a plain write.
+/// The one write per artist rule is the library's, because a card's tile asks
+/// the same question and the two must not send two writes.
 fn apply_follow(screen: &mut Screen<'_>, artist: &str, followed: bool) -> Option<Command> {
-    // A write already in flight for this artist is not doubled: two would land in
-    // order and leave the label and the row apart.
-    if screen.library.follow.artist() == Some(artist) && screen.library.follow.pending() {
-        return None;
-    }
-    Some(Command::SetFollow {
-        artist: artist.to_owned(),
-        followed,
-    })
+    screen.library.ask_follow(artist, followed)
 }
 
 /// The page this frame's link clicks named, taken from the fields the panel and

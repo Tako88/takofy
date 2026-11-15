@@ -67,7 +67,7 @@ async fn a_short_answer_is_retried_as_split_halves() {
     let probe = Probe::new(&rule);
     let uris = owned(&["a", "b", "c", "d"]);
 
-    let (found, _) = fetch_chunked_with(&uris, |chunk| probe.request(chunk)).await;
+    let (found, _) = fetch_chunked_with(&uris, LABEL_CHUNK, |chunk| probe.request(chunk)).await;
 
     assert_eq!(
         probe.asked(),
@@ -82,6 +82,24 @@ async fn a_short_answer_is_retried_as_split_halves() {
 }
 
 #[tokio::test]
+async fn a_sized_pass_asks_in_requests_of_that_size() {
+    let rule = |chunk: &[String]| Some(names(chunk));
+    let probe = Probe::new(&rule);
+    let uris: Vec<String> = (0..60).map(|at| format!("u{at}")).collect();
+
+    let (found, _) = fetch_chunked_with(&uris, 25, |chunk| probe.request(chunk)).await;
+
+    let mut sizes = probe.asked().iter().map(Vec::len).collect::<Vec<_>>();
+    sizes.sort_unstable();
+    assert_eq!(
+        sizes,
+        vec![10, 25, 25],
+        "the caller's size, not the label pass's"
+    );
+    assert_eq!(found.len(), 60);
+}
+
+#[tokio::test]
 async fn a_refused_chunk_is_not_retried() {
     let rule = |_: &[String]| {
         let mut tally = StatusTally::default();
@@ -91,7 +109,7 @@ async fn a_refused_chunk_is_not_retried() {
     let probe = Probe::new(&rule);
     let uris = owned(&["a", "b"]);
 
-    let (found, tally) = fetch_chunked_with(&uris, |chunk| probe.request(chunk)).await;
+    let (found, tally) = fetch_chunked_with(&uris, LABEL_CHUNK, |chunk| probe.request(chunk)).await;
 
     assert_eq!(
         probe.asked(),
@@ -116,7 +134,7 @@ async fn one_unanswered_uri_is_left_unknown() {
     let probe = Probe::new(&rule);
     let uris = owned(&["a", "b", "c"]);
 
-    let (found, _) = fetch_chunked_with(&uris, |chunk| probe.request(chunk)).await;
+    let (found, _) = fetch_chunked_with(&uris, LABEL_CHUNK, |chunk| probe.request(chunk)).await;
 
     assert_eq!(
         probe.asked(),
@@ -181,7 +199,7 @@ async fn seven_chunks_keep_three_in_flight_and_merge_as_one_pass() {
     let uris: Vec<String> = (0..LABEL_CHUNK * 7).map(|at| format!("u{at}")).collect();
     let probe = Probe::new(&partly_refusing);
 
-    let (found, tally) = fetch_chunked_with(&uris, |chunk| probe.request(chunk)).await;
+    let (found, tally) = fetch_chunked_with(&uris, LABEL_CHUNK, |chunk| probe.request(chunk)).await;
 
     assert_eq!(probe.peak(), CHUNK_FANOUT, "exactly one chunk per permit");
     let (expected, expected_tally) = sequential(&uris, &partly_refusing);

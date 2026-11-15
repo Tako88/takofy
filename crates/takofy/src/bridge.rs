@@ -50,11 +50,13 @@ use startup::{Stage, Startup};
 use wake::{WakeSlot, Worker};
 
 use std::collections::{HashSet, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt as _;
 use takofy_core::Resolution;
 use takofy_core::connect::{ClusterEvent, Steer as CoreSteer};
 use takofy_core::credentials::{AccessToken, CredentialStore};
@@ -62,6 +64,7 @@ use takofy_core::instruction::Instruction;
 use takofy_core::login::{TokenSource, resume};
 use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
+use takofy_model::home::{DiscoveryAnswer, DiscoveryOutcome, DiscoverySeed, HomeAnswer};
 use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, RequestId, Revision};
 use takofy_ui::message::{
     Command, DeviceUpdate, Failure, RemoteUpdate, Steer, TransportUpdate, Update,
@@ -75,9 +78,10 @@ use tokio::task::JoinSet;
 
 use crate::cover::{FETCH_TIMEOUT, MAX_CONCURRENT_COVERS};
 use crate::devices::SentRoster;
+use crate::discovery::{LOOKUP_DEADLINE, MAX_CONCURRENT_LOOKUPS};
 use crate::playhead::ResumePoint;
 use crate::recovery::{Attempt, Change, Pacing, Recovery};
-use crate::session::{Retired, SessionError, SessionHost, stop_or};
+use crate::session::{Discover, Retired, SessionError, SessionHost, stop_or};
 
 /// What the task received from the select, once the borrow on `stop` is gone.
 enum Event {
@@ -207,12 +211,14 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let cover_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS));
         let cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>> = Arc::new(Mutex::new(HashSet::new()));
         let mut cover_tasks = JoinSet::new();
+        let mut lookups = Lookups::new();
         // The walk a reload announced and the labels have not answered yet. It
         // is taken at the next turn of the loop, so a write cannot land between
         // the list and its names.
         let mut pending_labels: Option<Walked> = None;
         loop {
             reap_finished_covers(&mut cover_tasks);
+            reap_finished_lookups(&mut lookups);
             if let Some(walked) = pending_labels.take() {
                 let mut parts = InstantParts::new(
                     connected,
@@ -221,6 +227,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     &mut cover_tasks,
                     Arc::clone(&cover_permits),
                     Arc::clone(&cover_in_flight),
+                    &mut lookups,
                     &mut recovery,
                 );
                 let step = run_reads(
@@ -276,6 +283,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                             &mut cover_tasks,
                             Arc::clone(&cover_permits),
                             Arc::clone(&cover_in_flight),
+                            &mut lookups,
                             &mut recovery,
                         );
                         let step = run_reads(
@@ -302,6 +310,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                             &mut cover_tasks,
                             Arc::clone(&cover_permits),
                             Arc::clone(&cover_in_flight),
+                            &mut lookups,
                             &mut recovery,
                         );
                         match Immediate::claim(command) {
@@ -737,6 +746,9 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         // Cancels every in-flight fetch. A detached decode thread is left to
         // finish and its result is dropped with the oneshot receiver.
         cover_tasks.abort_all();
+        // A lookup in flight answers nobody: its row asked for a window that is
+        // closing, so cancelling it sends no update.
+        lookups.tasks.abort_all();
         // The device goes before the player does, so a forced quit never leaves
         // the account with an entry this client will not answer on.
         if devices.watching {
@@ -834,10 +846,15 @@ struct InstantParts<'a> {
     cover_tasks: &'a mut JoinSet<()>,
     cover_permits: Arc<Semaphore>,
     cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
+    lookups: &'a mut Lookups,
     recovery: &'a mut Recovery,
 }
 
 impl<'a> InstantParts<'a> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the loop state an instant changes, named one per body that reads it"
+    )]
     fn new(
         connected: bool,
         watching: bool,
@@ -845,6 +862,7 @@ impl<'a> InstantParts<'a> {
         cover_tasks: &'a mut JoinSet<()>,
         cover_permits: Arc<Semaphore>,
         cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
+        lookups: &'a mut Lookups,
         recovery: &'a mut Recovery,
     ) -> Self {
         Self {
@@ -854,6 +872,7 @@ impl<'a> InstantParts<'a> {
             cover_tasks,
             cover_permits,
             cover_in_flight,
+            lookups,
             recovery,
         }
     }
@@ -908,7 +927,7 @@ fn serve_instant<H: SessionHost>(
             }
         }
         Immediate::Volume { percent } => host.set_volume(percent),
-        // The arm only spawns: the fetch must not park the task that also
+        // The arms below only spawn: the work must not park the task that also
         // awaits host calls.
         Immediate::Fetch { url } => handle_fetch(
             parts.connected,
@@ -919,6 +938,126 @@ fn serve_instant<H: SessionHost>(
             url,
             notifier.clone(),
         ),
+        Immediate::Discover { seed } => spawn_lookup(host, notifier, parts.lookups, seed),
+    }
+}
+
+/// The lookups the loop has running: their tasks, the cap on how many run at
+/// once, and the seeds already on their way.
+struct Lookups {
+    tasks: JoinSet<()>,
+    permits: Arc<Semaphore>,
+    in_flight: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Lookups {
+    fn new() -> Self {
+        Self {
+            tasks: JoinSet::new(),
+            permits: Arc::new(Semaphore::new(MAX_CONCURRENT_LOOKUPS)),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+}
+
+/// Leaves the in-flight set when the lookup it counted ends, however it ends,
+/// so a row that asks again after a lookup is not deduped away.
+struct RunningSeed {
+    uri: String,
+    claimed: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Drop for RunningSeed {
+    fn drop(&mut self) {
+        if let Ok(mut running) = self.claimed.lock() {
+            running.remove(&self.uri);
+        }
+    }
+}
+
+/// Answers one discovery ask by spawning its lookup, or answers it now when the
+/// host has nothing to look up with. Every ask ends in exactly one update.
+fn spawn_lookup<H: SessionHost>(
+    host: &H,
+    notifier: &Notifier,
+    lookups: &mut Lookups,
+    seed: DiscoverySeed,
+) {
+    let Some(discovery) = host.discovery() else {
+        // A window with no session, or none handed an outside service, cannot
+        // look anything up: the row is told so now rather than left waiting.
+        notifier.send(lookup_answer(seed, DiscoveryOutcome::Unreachable));
+        return;
+    };
+    match lookups.in_flight.lock() {
+        Ok(mut running) => {
+            if !running.insert(seed.uri.clone()) {
+                // The seed is already on its way, and its one answer lands.
+                return;
+            }
+        }
+        Err(_) => {
+            notifier.send(lookup_answer(seed, DiscoveryOutcome::Unreachable));
+            return;
+        }
+    }
+    let claimed = RunningSeed {
+        uri: seed.uri.clone(),
+        claimed: Arc::clone(&lookups.in_flight),
+    };
+    let permits = Arc::clone(&lookups.permits);
+    let notifier = notifier.clone();
+    // The seed the answer is about, kept apart because a lookup cut short or
+    // come apart cannot hand back the one it was given.
+    let asked = seed.clone();
+    lookups.tasks.spawn(async move {
+        // The permit is held for the whole lookup, so three rows at once is the
+        // most the outside hears from this window.
+        let _permit = match permits.acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                drop(claimed);
+                notifier.send(lookup_answer(asked, DiscoveryOutcome::Unreachable));
+                return;
+            }
+        };
+        // A lookup that came apart, or that outlasted its budget, still answers:
+        // its row would otherwise wait for an account of what happened that
+        // never arrives.
+        let answered = tokio::time::timeout(
+            LOOKUP_DEADLINE,
+            AssertUnwindSafe(discovery.run(seed)).catch_unwind(),
+        )
+        .await;
+        let (seed, outcome) = match answered {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => {
+                log::warn!("a discovery lookup came apart");
+                (asked, DiscoveryOutcome::Unreachable)
+            }
+            Err(_) => {
+                log::warn!("a discovery lookup outlasted its budget");
+                (asked, DiscoveryOutcome::Unreachable)
+            }
+        };
+        drop(claimed);
+        notifier.send(lookup_answer(seed, outcome));
+    });
+}
+
+/// One lookup's answer, carrying the seed it belongs to so a late answer lands
+/// on the row that asked rather than on whichever is open.
+fn lookup_answer(seed: DiscoverySeed, outcome: DiscoveryOutcome) -> Update {
+    Update::Home(HomeAnswer::Discovery(DiscoveryAnswer { seed, outcome }))
+}
+
+/// Removes finished lookups so their cells do not accumulate, and logs a task
+/// that ended without answering.
+fn reap_finished_lookups(lookups: &mut Lookups) {
+    while let Some(joined) = lookups.tasks.try_join_next() {
+        if let Err(error) = joined {
+            log::warn!("a discovery lookup ended: {error}");
+        }
     }
 }
 

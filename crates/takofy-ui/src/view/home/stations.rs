@@ -9,22 +9,17 @@
 //! Nothing here is a table row: a station cell is a quarter of the page wide, and
 //! the table's kind and size columns would leave the name no room at all.
 
-use egui::{Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Rect, Sense, Ui, pos2, vec2};
 use takofy_model::TrackEntry;
 
-use crate::availability::Control;
-use crate::cover::{Cover, want_px};
-use crate::format::{HOME_DOOR_LIBRARY, HOME_STATIONS_TITLE, format_position};
+use crate::format::{HOME_DOOR_LIBRARY, HOME_STATIONS_TITLE};
 use crate::home::stations::{Band, ROWS, Shown};
-use crate::icon::Icon;
 use crate::layout::chips;
 use crate::route::Page;
-use crate::theme::icon::Size;
-use crate::theme::{Tokens, extent, radius, space, tracking};
-use crate::view::carry;
+use crate::theme::{Tokens, extent, space};
 use crate::view::playlist::root::MediaDraw;
 
-use super::super::{art, controls, section, text as recipe};
+use super::super::{row_head, section};
 use super::Pressed;
 
 /// The band's columns: a station beside its neighbour.
@@ -34,6 +29,7 @@ pub(super) const COLUMNS: usize = 2;
 const ROW_H: f32 = extent::HOME_ROW_H;
 
 /// The station's own play, at the reference's 2rem square.
+#[cfg(test)]
 const PLAY: f32 = extent::BUTTON_LG;
 
 /// Draws the shelf, and nothing until it has something to draw.
@@ -78,18 +74,7 @@ pub(super) fn cell(ui: &Ui, tokens: &Tokens) -> f32 {
 
 /// The head's height: the seed's two lines, or the play they sit beside.
 fn head_height(ui: &Ui, tokens: &Tokens) -> f32 {
-    let lines = line_height(ui, recipe::station_seed(), tokens)
-        + space::S1
-        + line_height(ui, recipe::station_source(), tokens);
-    space::S1 + lines.max(PLAY) + space::S2
-}
-
-/// One line of type, measured as the painter lays it out.
-fn line_height(ui: &Ui, font: egui::FontId, tokens: &Tokens) -> f32 {
-    ui.painter()
-        .layout_no_wrap(" ".to_owned(), font, tokens.palette.text)
-        .size()
-        .y
+    row_head::height(ui, tokens)
 }
 
 /// The head of one station's cell.
@@ -98,10 +83,11 @@ fn head_rect(ui: &Ui, rect: Rect, tokens: &Tokens) -> Rect {
 }
 
 /// The station's own play, at the right end of its head.
+#[cfg(test)]
 fn play_rect(head: Rect) -> Rect {
     Rect::from_center_size(
         pos2(head.right() - space::S2 - PLAY / 2.0, head.center().y),
-        Vec2::splat(PLAY),
+        egui::Vec2::splat(PLAY),
     )
 }
 
@@ -115,50 +101,26 @@ fn cell_of(
     out: &mut Pressed,
 ) {
     let head = head_rect(ui, rect, tokens);
-    let play = play_rect(head);
 
-    // The words take whatever the play leaves, and the seed's name elides rather
-    // than pushing the control off the cell.
-    let left = head.left() + space::S2;
-    let width = (play.left() - space::S3 - left).max(0.0);
-    let seed = recipe::line(
+    let opened = row_head::show(
         ui,
-        station.head,
-        recipe::station_seed(),
-        tokens.palette.text,
-        recipe::tracking_pts(crate::theme::text::MD, tracking::TIGHT),
-        width,
-    );
-    let source = recipe::line(
-        ui,
-        station.source,
-        recipe::station_source(),
-        tokens.palette.text_subtle,
-        recipe::tracking_pts(crate::theme::text::XXS, tracking::WIDE),
-        width,
-    );
-    let block = seed.size().y + space::S1 + source.size().y;
-    let top = head.center().y - block / 2.0;
-    ui.painter()
-        .galley(Pos2::new(left, top), seed.clone(), tokens.palette.text);
-    ui.painter().galley(
-        Pos2::new(left, top + seed.size().y + space::S1),
-        source,
-        tokens.palette.text_subtle,
-    );
-
-    let slot = controls::icon_button_keyed(
-        ui,
+        head.shrink2(vec2(space::S2, 0.0)),
+        row_head::Head {
+            seed: station.head,
+            key: station.uri,
+            seed_page: None,
+            provenance: station.source,
+            ledger: None,
+            reroll: None,
+            play: Some(row_head::Button {
+                control: crate::availability::Control::StationPlay,
+                key: station.uri,
+                live: !crate::view::carry::carrying(ui.ctx()),
+            }),
+        },
         tokens,
-        Control::StationPlay,
-        station.uri,
-        play,
-        Icon::Play,
-        Size::SM,
-        &format!("Play the {} station", station.head),
-        !carry::carrying(ui.ctx()),
     );
-    if slot.response.clicked() {
+    if opened.play {
         out.station = Some((station.uri.to_owned(), station.whole.to_vec()));
     }
 
@@ -197,109 +159,18 @@ fn row_of(
     tokens: &Tokens,
     draw: &mut MediaDraw<'_, '_>,
 ) -> Option<String> {
-    // A track can be in two stations, so its row's identity is the station's as
-    // well as its own: one widget cannot stand for two rows.
-    let id = ui
-        .scope_id()
-        .with(("home-station-row", station.uri, row.uri.as_str()));
-    let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::Role::Button,
-            true,
-            format!("{} by {}", row.title, row.artists),
-        )
-    });
-    if response.clicked() {
-        response.request_focus();
-    }
-    let over = response.hovered() || ui.rect_contains_pointer(rect);
-    if over {
-        ui.painter()
-            .rect_filled(rect, radius::SM, tokens.palette.row_hover);
-    }
-    controls::focus_ring(ui, &response, rect, radius::SM, tokens);
-
-    let want = want_px(extent::QUEUE_ART, ui.pixels_per_point());
-    let cover: Cover = draw.art.look(row.cover.as_ref(), want, draw.now);
-    let art_rect = Rect::from_min_size(
-        pos2(
-            rect.left() + space::S2,
-            rect.center().y - extent::QUEUE_ART / 2.0,
-        ),
-        Vec2::splat(extent::QUEUE_ART),
-    );
-    art::tile(
-        ui.painter(),
-        art_rect,
-        radius::XS,
-        tokens.palette.border,
-        cover,
+    let response = super::super::mini_row::show(
+        ui,
+        rect,
+        super::super::mini_row::Row {
+            salt: station.uri,
+            track: row,
+            duration: super::super::mini_row::duration_of(row, draw),
+        },
+        draw,
         tokens,
     );
-
-    // The length goes at the row's far end, and the words take what it leaves.
-    let size = draw
-        .library
-        .home
-        .duration(&row.uri)
-        .or(row.duration_ms)
-        .map(format_position);
-    let meta = size.as_deref().map(|label| {
-        recipe::line(
-            ui,
-            label,
-            recipe::track_mono(crate::theme::text::XXS),
-            tokens.palette.text_subtle,
-            0.0,
-            rect.width(),
-        )
-    });
-    let meta_w = meta.as_ref().map_or(0.0, |line| line.size().x + space::S3);
-
-    let body_left = art_rect.right() + space::S3;
-    let body_right = (rect.right() - space::S2 - meta_w).max(body_left);
-    let width = body_right - body_left;
-    let name = recipe::line(
-        ui,
-        &row.title,
-        recipe::queue_name(),
-        tokens.palette.text,
-        0.0,
-        width,
-    );
-    let sub = recipe::line(
-        ui,
-        &row.artists,
-        recipe::queue_artist(),
-        tokens.palette.text_subtle,
-        0.0,
-        width,
-    );
-    let block = name.size().y + sub.size().y;
-    let top = rect.center().y - block / 2.0;
-    ui.painter()
-        .galley(Pos2::new(body_left, top), name.clone(), tokens.palette.text);
-    ui.painter().galley(
-        Pos2::new(body_left, top + name.size().y),
-        sub,
-        tokens.palette.text_subtle,
-    );
-    if let Some(meta) = meta {
-        ui.painter().galley(
-            Pos2::new(
-                rect.right() - space::S2 - meta.size().x,
-                rect.center().y - meta.size().y / 2.0,
-            ),
-            meta,
-            tokens.palette.text_subtle,
-        );
-    }
-
-    if response.clicked() {
-        return row.album_uri.clone();
-    }
-    None
+    response.clicked().then(|| row.album_uri.clone()).flatten()
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ mod covers;
 mod create;
 mod create_menu;
 mod devices;
+mod discovery;
 mod drag_add;
 mod drag_targets;
 mod panel;

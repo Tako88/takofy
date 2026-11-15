@@ -581,6 +581,13 @@ const PLUS_LINES: &[Line] = &[
 ];
 const PLUS_FILLS: &[&[Point]] = &[];
 
+const MINUS_LINES: &[Line] = &[Line {
+    points: &[(5.4, 12.0), (18.6, 12.0)],
+    closed: false,
+    width: None,
+}];
+const MINUS_FILLS: &[&[Point]] = &[];
+
 const VOLUME_LINES: &[Line] = &[
     Line {
         points: &[
@@ -1083,6 +1090,36 @@ const LIST_LINES: &[Line] = &[
 ];
 const LIST_FILLS: &[&[Point]] = &[];
 
+const AGAIN_LINES: &[Line] = &[
+    Line {
+        points: &[
+            (19.4, 12.0),
+            (18.826, 14.824),
+            (17.216, 17.214),
+            (14.816, 18.808),
+            (11.988, 19.365),
+            (9.163, 18.799),
+            (6.767, 17.197),
+            (5.166, 14.802),
+            (4.6, 11.976),
+            (5.157, 9.149),
+            (6.751, 6.749),
+            (9.142, 5.139),
+            (11.966, 4.565),
+            (14.795, 5.113),
+            (17.2, 6.7),
+        ],
+        closed: false,
+        width: None,
+    },
+    Line {
+        points: &[(19.7, 4.4), (19.7, 8.8), (15.3, 8.8)],
+        closed: false,
+        width: None,
+    },
+];
+const AGAIN_FILLS: &[&[Point]] = &[];
+
 pub(super) fn glyph(icon: Icon) -> Glyph {
     match icon {
         Icon::Play => Glyph {
@@ -1180,6 +1217,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: PLUS_LINES,
             fills: PLUS_FILLS,
         },
+        Icon::Minus => Glyph {
+            source: 0xe27370ae5b20d73c,
+            lines: MINUS_LINES,
+            fills: MINUS_FILLS,
+        },
         Icon::Volume => Glyph {
             source: 0x8120d018f45fca2f,
             lines: VOLUME_LINES,
@@ -1230,6 +1272,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: LIST_LINES,
             fills: LIST_FILLS,
         },
+        Icon::Again => Glyph {
+            source: 0xaa46f2347759eec1,
+            lines: AGAIN_LINES,
+            fills: AGAIN_FILLS,
+        },
     }
 }
 
@@ -1254,6 +1301,7 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::More => "i-more",
         Icon::Close => "i-close",
         Icon::Plus => "i-plus",
+        Icon::Minus => "i-minus",
         Icon::Volume => "i-volume",
         Icon::VolumeLow => "i-volume-low",
         Icon::VolumeMute => "i-volume-mute",
@@ -1264,5 +1312,6 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::Clock => "i-clock",
         Icon::Grid => "i-grid",
         Icon::List => "i-list",
+        Icon::Again => "i-again",
     }
 }

@@ -11,6 +11,7 @@ pub mod actionbar;
 pub mod cards;
 pub mod chips;
 pub mod device_list;
+pub mod discovery;
 pub mod episode;
 pub mod filter_row;
 pub mod hero;
@@ -18,6 +19,7 @@ pub mod menu;
 pub mod panel;
 pub mod playbar;
 pub mod queue;
+pub mod row_head;
 pub mod search_menu;
 pub mod section;
 pub mod sticky;
@@ -169,6 +171,14 @@ pub enum Table {
 }
 
 impl Table {
+    /// Whether a discovery row stacks its faces at this width.
+    ///
+    /// The reference's narrow rule sits at the same width as this table's, so
+    /// the breakpoint is decided here rather than by a view measuring a window.
+    pub fn stacks_discovery(self) -> bool {
+        self == Self::Narrow
+    }
+
     /// The columns this width leaves room for.
     pub fn columns(self) -> table::Present {
         match self {

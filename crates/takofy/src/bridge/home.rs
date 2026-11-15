@@ -1,6 +1,6 @@
 //! Home's shelves: the read each ask names, and the answer it lands.
 
-use takofy_model::home::{HomeAnswer, HomeAsk};
+use takofy_model::home::{DiscoveryAnswer, DiscoveryOutcome, HomeAnswer, HomeAsk};
 use takofy_ui::message::{Failure, Update};
 
 use super::errors::{library_failure, related_failure};
@@ -45,6 +45,22 @@ pub(super) async fn load_home<H: SessionHost>(host: &H, notifier: &Notifier, ask
         HomeAsk::Episodes { shows } => match host.episodes(&shows).await {
             Ok(details) => {
                 answered(notifier, HomeAnswer::Episodes(details));
+                true
+            }
+            Err(error) => {
+                failed(notifier, asked, library_failure(&error));
+                false
+            }
+        },
+        HomeAsk::Releases { artists, since } => match host.new_releases(&artists, since).await {
+            Ok(found) => {
+                answered(
+                    notifier,
+                    HomeAnswer::Releases {
+                        asked: artists,
+                        found,
+                    },
+                );
                 true
             }
             Err(error) => {
@@ -99,6 +115,19 @@ pub(super) async fn load_home<H: SessionHost>(host: &H, notifier: &Notifier, ask
                 false
             }
         },
+        // Served outside this batch; the arm only keeps a misrouted ask from
+        // sitting unanswered, and says so without blaming a read.
+        HomeAsk::Discovery { seed } => {
+            log::warn!("discovery ask arrived at the home batch");
+            answered(
+                notifier,
+                HomeAnswer::Discovery(DiscoveryAnswer {
+                    seed,
+                    outcome: DiscoveryOutcome::Unreachable,
+                }),
+            );
+            false
+        }
     }
 }
 

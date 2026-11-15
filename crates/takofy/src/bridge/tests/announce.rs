@@ -4,6 +4,7 @@ use super::test_support::*;
 use crate::session::{SessionError, TrackPage};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{RecvTimeoutError, channel};
+use takofy_model::home::ArtistReleases;
 use takofy_model::{
     AlbumDetail, CoverSet, Episode, FollowedArtist, FollowedShow, SavedAlbum, Show, ShowDetail,
 };
@@ -52,6 +53,19 @@ pub(super) enum EpisodesScript {
 impl Default for EpisodesScript {
     fn default() -> Self {
         Self::Ready(vec![show_detail(SHOW)])
+    }
+}
+
+/// A scripted release-shelf answer; the default is an empty answer.
+#[derive(Clone)]
+pub(super) enum ReleasesScript {
+    Ready(Vec<ArtistReleases>),
+    Fail,
+}
+
+impl Default for ReleasesScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
     }
 }
 
@@ -147,6 +161,7 @@ pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }
 }
 

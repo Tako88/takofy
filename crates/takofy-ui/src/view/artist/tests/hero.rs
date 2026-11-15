@@ -398,6 +398,7 @@ fn the_follow_press_writes_nothing_while_the_sidebar_removes_that_artist() {
         named: true,
         portrait: None,
         releases: None,
+        followed_at: None,
     }]));
     library.apply(&Update::Followed {
         artist: ARTIST.to_owned(),

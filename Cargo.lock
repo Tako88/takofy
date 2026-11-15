@@ -5202,6 +5202,7 @@ dependencies = [
  "librespot",
  "log",
  "reqwest",
+ "serde_json",
  "takofy-core",
  "takofy-model",
  "takofy-ui",
@@ -5213,6 +5214,7 @@ dependencies = [
 name = "takofy-core"
 version = "0.2.0"
 dependencies = [
+ "chrono",
  "futures-util",
  "http",
  "librespot",

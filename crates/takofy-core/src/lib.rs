@@ -26,9 +26,11 @@ pub mod show;
 mod collected;
 mod collection;
 mod cover;
+mod discovery;
 mod label_cache;
 mod latest;
 mod loss;
+mod new_releases;
 mod playstate;
 mod portrait;
 mod presence;
@@ -46,7 +48,10 @@ mod watch;
 mod wire;
 
 pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};
-pub use engine::{Engine, EngineError, OrderAnswer, Orders, PlaylistPage, TrackPages};
+pub use discovery::ReadFailed;
+pub use engine::{
+    DiscoveryReads, Engine, EngineError, OrderAnswer, Orders, PlaylistPage, TrackPages,
+};
 pub use playback::{Outcome, Playback, PlaybackError, PlaybackEvent, drive, map_event};
 pub use rootlist::{RootlistError, RootlistPage, RootlistWire, parse_rootlist};
 pub use transfer::{Resolution, TransferPlan};

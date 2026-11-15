@@ -174,7 +174,7 @@ pub(crate) fn release_of(uri: &str, album: &AlbumMessage) -> Release {
 }
 
 /// The wire's album type as the block labels it.
-fn kind_of(kind: AlbumType) -> ReleaseKind {
+pub(crate) fn kind_of(kind: AlbumType) -> ReleaseKind {
     match kind {
         AlbumType::ALBUM => ReleaseKind::Album,
         AlbumType::EP => ReleaseKind::Ep,

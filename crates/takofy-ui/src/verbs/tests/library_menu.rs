@@ -38,7 +38,7 @@ fn an_artist_band_offers_its_follow_its_radio_and_its_link() {
         device: Device::Keyboard,
     };
 
-    let followed = artist_request(row.clone(), door, false, None);
+    let followed = artist_request(row.clone(), door, false, false, None);
     let labels: Vec<&str> = followed
         .items
         .iter()
@@ -50,13 +50,49 @@ fn an_artist_band_offers_its_follow_its_radio_and_its_link() {
         "{labels:?}"
     );
 
-    let unfollowed = artist_request(row, door, true, None);
+    let unfollowed = artist_request(row, door, true, false, None);
     let labels: Vec<&str> = unfollowed
         .items
         .iter()
         .map(|item| item.label.as_str())
         .collect();
     assert_eq!(labels, ["Follow", "Start radio", "Copy link"], "{labels:?}");
+}
+
+#[test]
+fn a_hidden_artist_offers_its_show_row_last_and_only_then() {
+    let row = crate::menu::LibraryItem {
+        kind: crate::sidebar_kind::SidebarKind::Artists,
+        uri: "spotify:artist:a".to_owned(),
+        name: "Vela Moreno".to_owned(),
+    };
+    let door = Door {
+        anchor: Anchor::Pointer(egui::Pos2::ZERO),
+        opener: egui::Id::unique("artist-more"),
+        device: Device::Keyboard,
+    };
+
+    let shown = artist_request(row.clone(), door, false, true, None);
+    assert_eq!(
+        labels(&shown.items),
+        [
+            "Unfollow",
+            "Start radio",
+            "Copy link",
+            "Show Vela Moreno in discovery"
+        ]
+    );
+    let show = shown.items.last().expect("the show row");
+    assert_eq!(show.verb, Verb::ShowInDiscovery);
+    assert_eq!(show.kind, Kind::Plain);
+    assert_eq!(show.key, None);
+
+    let plain = artist_request(row, door, false, false, None);
+    assert_eq!(
+        labels(&plain.items),
+        ["Unfollow", "Start radio", "Copy link"],
+        "a visible artist has no show row"
+    );
 }
 
 #[test]

@@ -47,24 +47,30 @@ pub enum Loaded {
     Unreadable,
 }
 
-/// The preferences file for this platform, or `None` when the platform names no
+/// The directory Takofy keeps its files in, or `None` when the platform names no
 /// configuration directory.
 ///
 /// `windows` is a parameter rather than a compile-time branch so both paths are
 /// testable from one host; `var` is the environment.
-pub fn config_file(windows: bool, var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+pub fn config_dir(windows: bool, var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     if windows {
         let appdata = var("APPDATA").filter(|value| !value.is_empty())?;
-        return Some(PathBuf::from(appdata).join(DIR).join(FILE));
+        return Some(PathBuf::from(appdata).join(DIR));
     }
     if let Some(xdg) = var("XDG_CONFIG_HOME") {
         let path = PathBuf::from(xdg);
         if !path.as_os_str().is_empty() && path.is_absolute() {
-            return Some(path.join(DIR).join(FILE));
+            return Some(path.join(DIR));
         }
     }
     let home = var("HOME").filter(|value| !value.is_empty())?;
-    Some(PathBuf::from(home).join(".config").join(DIR).join(FILE))
+    Some(PathBuf::from(home).join(".config").join(DIR))
+}
+
+/// The preferences file for this platform, or `None` when the platform names no
+/// configuration directory.
+pub fn config_file(windows: bool, var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    Some(config_dir(windows, var)?.join(FILE))
 }
 
 /// Reads `path`, refusing it whole when any line cannot be read.
