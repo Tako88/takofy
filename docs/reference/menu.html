@@ -76,7 +76,7 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Context menu</h1>
-        <p class="page-head__note">Concept · 8 frames · pointer and keyboard</p>
+        <p class="page-head__note">Concept · 9 frames · pointer and keyboard</p>
       </div>
 
       <p class="states__intro">
@@ -526,6 +526,73 @@
           the app's own focus ring. Not the row, not the body: if focus fell to the page you would have
           to find your way back to the thing you were doing. Tab, a click outside and choosing an item
           all close it the same way.
+        </p>
+      </section>
+
+      <!-- ============ M9 ============ -->
+      <section class="section" aria-labelledby="m9">
+        <div class="section__head">
+          <h2 class="section__title" id="m9"><span class="states__no">M9</span>On a discovery card</h2>
+          <p class="label states__meta">3 verbs · the target named</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Opened from the card's ⋯</span>
+            <span class="label states__status">pointer</span>
+          </div>
+
+          <div class="states__pair">
+            <div class="disc-faces disc-faces--one">
+              <div class="card card--artist card--centred is-open">
+                <div class="card__art">
+                  <img src="img/artists/ilse-vane.jpg" alt="" loading="lazy" />
+                  <div class="card__library">
+                    <button class="card__tile" type="button" aria-label="Follow Ilse Vane">
+                      <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+                    </button>
+                    <button class="card__tile" type="button" aria-label="More options for Ilse Vane" aria-haspopup="menu" aria-expanded="true">
+                      <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
+                    </button>
+                  </div>
+                  <button class="card__play" type="button" data-track="Green Field" data-artist="Ilse Vane" data-art="img/artists/ilse-vane.jpg" data-duration="236" aria-label="Play Ilse Vane">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Ilse Vane</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="menu-demo">
+              <ul class="menu" role="menu" aria-label="Ilse Vane">
+                <li class="menu__action" role="menuitem">Follow Ilse Vane</li>
+                <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+                  <span class="menu__label">Add to playlist</span>
+                  <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="menu__action is-destructive" role="menuitem">
+                  <span class="menu__label">Hide Ilse Vane from discovery</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Three verbs, because a discovery card is a stranger: you can keep them, you can put them
+          somewhere, or you can make them stop appearing — and the last is the only command, so it
+          wears the full ink and the hairline band. It names the artist rather than saying “not
+          interested”, because the scope is the claim: hidden here and everywhere in discovery, still
+          reachable from their page, from search and from anything you already had saved. Follow names
+          the artist too, so the row and the tile in the corner read as one verb in two places.
+          <br /><br />
+          <b>Go to artist</b> is absent on purpose: the card's own click is the door, and a menu that
+          repeats what the surface already does teaches nothing. Hide is local and instant; follow
+          leaves the card only when the confirmation lands. The inverse lives where you would look for
+          it — the artist page's own ⋯ carries “Show Ilse Vane in discovery”, drawn only while that
+          artist is hidden.
         </p>
       </section>
 

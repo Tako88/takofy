@@ -1479,24 +1479,23 @@ a.section__link:hover {
   white-space: nowrap;
 }
 
-/* Faces, at one size, however many there are: the column count is the item
-   count, so two confirmed neighbours make a two-column row instead of four
-   columns with two holes in them. The columns spread across the rail — the first
-   card on the section axis, the last on the right rail — so the body is never
-   narrower than the head above it, and slack becomes gap rather than card size. */
+/* Faces stretch with the rail, like every other card shelf in the app: the
+   column count is the item count, so two confirmed neighbours make a two-column
+   row instead of four columns with two holes in them, and a wide window makes
+   bigger faces rather than wider gaps. The split is the constant — four columns
+   or two — never the card's width. */
 .disc-faces {
-  --disc-cols: 4;
   display: grid;
-  grid-template-columns: repeat(var(--disc-cols), minmax(0, 12rem));
-  justify-content: space-between;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-3);
   margin-inline: calc(var(--space-2) * -1);
 }
 
-/* One survivor is one column, held at card size rather than stretched over
-   whatever rule it happens to have. */
+/* A lone face is the one exception: stretched over a wide rule it would stop
+   being a card and start being a banner, so it keeps card size and the row ends
+   where it ends. */
 .disc-faces--one {
-  --disc-cols: 1;
+  grid-template-columns: minmax(0, 12rem);
 }
 
 .disc-faces--two {
@@ -1507,7 +1506,11 @@ a.section__link:hover {
 }
 
 .disc-faces--two .card {
-  grid-template-columns: 11rem minmax(0, 1fr);
+  /* The face takes a share of the card rather than a fixed 11rem, so the pair
+     scales with the page exactly as a four-up row does: the faces stay the same
+     size as their neighbours on any window, and the panel never becomes a
+     small picture in a wide field. */
+  grid-template-columns: 47% minmax(0, 1fr);
   gap: var(--space-4);
   align-items: center;
 }
@@ -3298,6 +3301,12 @@ a.section__link:hover {
   max-width: 68ch;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+/* A mono caption leading into a specimen takes the step of air a heading would
+   have been given on its own. */
+.states__stage > .label + .section__head {
+  margin-top: var(--space-3);
 }
 
 .section > .states__note {

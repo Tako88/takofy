@@ -94,7 +94,7 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title" data-greeting>Good evening</h1>
-        <p class="page-head__note">5 shelves · 28 saved items</p>
+        <p class="page-head__note">6 shelves · 28 saved items</p>
       </div>
 
       <!-- 01 — Discovery: a seed, the neighbours an outside graph puts next to it.
@@ -242,7 +242,7 @@
               </div>
               <div class="card__body">
                 <a class="card__title truncate" href="artist.html">Nell Varga</a>
-                <p class="card__sub">4 releases</p>
+                <p class="card__sub">Latest 2024</p>
               </div>
             </div>
 
@@ -303,7 +303,7 @@
               </div>
               <div class="card__body">
                 <a class="card__title truncate" href="artist.html">Ora Fenn</a>
-                <p class="card__sub">4 releases</p>
+                <p class="card__sub">Latest 2024</p>
               </div>
             </li>
             <li class="card card--artist card--centred">
@@ -323,7 +323,7 @@
               </div>
               <div class="card__body">
                 <a class="card__title truncate" href="artist.html">Sethe Morrow</a>
-                <p class="card__sub">3 releases</p>
+                <p class="card__sub">Latest 2023</p>
               </div>
             </li>
           </ul>
@@ -589,7 +589,74 @@
         </a>
       </section>
 
-      <!-- 05 — The shows you follow, newest first -->
+      <!-- 05 — New releases from the artists you follow: the music twin of the
+           shows row beneath it. Two batched reads, cached; the window is the last
+           thirty days or the day you followed each artist, whichever is later, and
+           a release with no day in its date is never counted into that window. -->
+      <section class="section" aria-labelledby="shelf-releases">
+        <div class="section__head">
+          <h2 class="section__title" id="shelf-releases">New from the artists you follow</h2>
+          <span class="section__link">22 releases</span>
+        </div>
+
+        <ul class="card-grid" data-playing-scope>
+          <li class="card">
+            <div class="card__art">
+              <img src="img/covers/grey-coast.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Grey Coast" data-artist="Vela Moreno" data-art="img/covers/grey-coast.jpg" data-duration="241" aria-label="Play Grey Coast">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Grey Coast</a>
+              <p class="card__sub">Vela Moreno · 14 Oct</p>
+            </div>
+          </li>
+          <li class="card">
+            <div class="card__art">
+              <img src="img/covers/junction.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Junction" data-artist="The Rookery" data-art="img/covers/junction.jpg" data-duration="203" aria-label="Play Junction">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Junction</a>
+              <p class="card__sub">The Rookery · 9 Oct</p>
+            </div>
+          </li>
+          <li class="card">
+            <div class="card__art">
+              <img src="img/covers/underglass.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Underglass" data-artist="Marta Ísleif" data-art="img/covers/underglass.jpg" data-duration="327" aria-label="Play Underglass">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Underglass</a>
+              <p class="card__sub">Marta Ísleif · 2 Oct</p>
+            </div>
+          </li>
+          <li class="card">
+            <div class="card__art">
+              <img src="img/covers/paper-weather.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Paper Weather" data-artist="Hana Sō" data-art="img/covers/paper-weather.jpg" data-duration="219" aria-label="Play Paper Weather">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Paper Weather</a>
+              <p class="card__sub">Hana Sō · 29 Sep</p>
+            </div>
+          </li>
+        </ul>
+
+        <a class="list-more" href="album.html">
+          All 22 of them
+          <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+        </a>
+      </section>
+
+      <!-- 06 — The shows you follow, newest first -->
       <section class="section" aria-labelledby="shelf-shows">
         <div class="section__head">
           <h2 class="section__title" id="shelf-shows">New from the shows you follow</h2>
@@ -646,14 +713,16 @@
       </section>
 
       <footer class="colophon">
-        <p class="colophon__line">5 shelves · 28 saved items · 3 seeds sent to Deezer</p>
+        <p class="colophon__line">6 shelves · 28 saved items · 5 calls to the wire</p>
         <p class="colophon__note">
           No play history and no curated feed: every title above names the thing in your library it was
           built from. The discovery rows ask one open outside graph — Deezer, no key, no account — which
           artist sits next to a seed; it decides nothing that is drawn here, because faces, names and
           playback are Spotify's. Anything you already own or follow is dropped before it is shown, and a
           seed with no neighbour you don't already have simply has no row: the band is as long as its
-          confirmed neighbours, no longer and no shorter.
+          confirmed neighbours, no longer and no shorter. The two release rows are the library's own
+          arithmetic, cached like the rest: thirty days back, or the day you followed the artist,
+          whichever is later — and a release whose date carries no day is shown but never counted as new.
         </p>
       </footer>
     </div>
