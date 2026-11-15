@@ -57,15 +57,18 @@ fn the_reroll_leads_the_seed_and_the_ledger_and_play_keep_the_right_edge() {
     let reroll = placed.reroll.expect("the head has a re-roll");
     let play = placed.play.expect("the head has a play");
     assert!(
-        (ledger.center().y - reroll.center().y).abs() < 0.01
-            && (reroll.center().y - play.center().y).abs() < 0.01,
-        "the count and both controls share one line"
+        (ledger.center().y - play.center().y).abs() < 0.01,
+        "the count and the play share the seed's line"
     );
     assert!((play.right() - head.right()).abs() < 0.01);
     assert!(ledger.right() <= play.left() - S2 + 0.01);
     assert!(
         (reroll.left() - head.left()).abs() < 0.01,
         "the re-roll stands at the head's left edge, beside the seed it replaces"
+    );
+    assert!(
+        (reroll.center().y - placed.about.center().y).abs() < 0.01,
+        "the re-roll centres on the title and the subtitle together"
     );
     assert!(
         placed.about.left() >= reroll.right() + S2 - 0.01,

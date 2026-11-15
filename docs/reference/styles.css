@@ -1383,12 +1383,14 @@ a.section__link:hover {
 
 /* The re-roll stands at the head's left edge, beside the seed it replaces: the
    control that changes the name sits with the name, not across the row from it.
-   Its box is centred on the seed's line rather than on the whole about block. */
+   It centres on the whole about block, title and provenance together, because it
+   belongs to the block rather than to the seed's line — which is where the
+   count and the play stay. */
 .row-head__lead {
   display: flex;
   flex: none;
   align-items: center;
-  align-self: center;
+  align-self: stretch;
 }
 
 /* The head's trailing cluster: the count, then the play. The play sits last, so

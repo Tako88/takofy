@@ -64,9 +64,12 @@ pub fn place(head: Rect, about: About, cluster: Cluster, gap: f32) -> RowHeadRec
     // its provenance sits below the words it belongs to.
     let line = block_top + about.seed / 2.0;
 
+    // The re-roll centres on the whole about block — title and provenance
+    // together — because it belongs to the block it replaces, not to the seed's
+    // line alone. The trailing cluster stays on the seed's line with the ledger.
     let reroll = cluster
         .reroll
-        .map(|size| Rect::from_min_size(pos2(head.left(), line - size.y / 2.0), size));
+        .map(|size| Rect::from_min_size(pos2(head.left(), head.center().y - size.y / 2.0), size));
 
     let mut right = head.right();
     let play = cluster.play.map(|size| {
