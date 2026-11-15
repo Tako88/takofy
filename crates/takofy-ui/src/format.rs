@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::home::SeedKind;
+use takofy_model::home::{DiscoveryKind, SeedKind};
 use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
@@ -275,6 +275,20 @@ pub fn station_source(kind: SeedKind) -> &'static str {
         SeedKind::Artist => "From an artist you follow",
         SeedKind::Album => "From an album you saved",
         SeedKind::Song => "From the songs you liked",
+    }
+}
+
+/// A discovery row's source line: what it was seeded from, and the genre its
+/// neighbours voted for when they named one.
+pub fn discovery_source(kind: DiscoveryKind, genre: Option<&str>) -> String {
+    let source = match kind {
+        DiscoveryKind::Playlist => "From your playlist",
+        DiscoveryKind::Artist => "From an artist you follow",
+        DiscoveryKind::Album => "From an album you saved",
+    };
+    match genre {
+        Some(genre) => format!("{source} · {genre}"),
+        None => source.to_owned(),
     }
 }
 

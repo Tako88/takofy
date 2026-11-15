@@ -959,3 +959,43 @@ fn the_copy_note_is_no_write_notice() {
         assert_ne!(copy_note(), sidebar_notice(write), "{write:?}");
     }
 }
+
+#[test]
+fn a_discovery_row_names_what_it_was_seeded_from() {
+    for (kind, source) in [
+        (DiscoveryKind::Playlist, "From your playlist"),
+        (DiscoveryKind::Artist, "From an artist you follow"),
+        (DiscoveryKind::Album, "From an album you saved"),
+    ] {
+        assert_eq!(
+            discovery_source(kind, None),
+            source,
+            "a row with no genre is its source alone"
+        );
+    }
+}
+
+#[test]
+fn a_discovery_row_adds_the_genre_it_votes_for() {
+    for (kind, source) in [
+        (DiscoveryKind::Playlist, "From your playlist"),
+        (DiscoveryKind::Artist, "From an artist you follow"),
+        (DiscoveryKind::Album, "From an album you saved"),
+    ] {
+        assert_eq!(
+            discovery_source(kind, Some("dubstep")),
+            format!("{source} · dubstep"),
+            "a genre follows the source after the separator"
+        );
+    }
+}
+
+#[test]
+fn a_discovery_row_with_no_genre_drops_the_separator() {
+    let source = discovery_source(DiscoveryKind::Artist, None);
+
+    assert!(
+        !source.contains('·'),
+        "a missing genre leaves no dangling separator: {source}"
+    );
+}

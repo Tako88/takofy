@@ -14,6 +14,7 @@ use crate::message::Failure;
 
 pub mod because;
 pub mod counted;
+pub mod discovery;
 pub mod draw;
 pub mod episodes;
 mod greeting;
