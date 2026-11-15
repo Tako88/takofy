@@ -1163,6 +1163,16 @@ a.section__link:hover {
   stroke: none;
 }
 
+/* A discovery card carries all three of its controls in one row at the picture's
+   top right, play first: the markup puts the play inside `.card__library`. Placed
+   in its own corner it would be a second relationship to the same circle, and two
+   anchors have to be re-judged at every card width, where one row does not. */
+.card__library .card__play {
+  position: static;
+  transform: none;
+  opacity: 1;
+}
+
 .card:hover .card__play,
 .card:focus-within .card__play,
 .card.is-playing .card__play {

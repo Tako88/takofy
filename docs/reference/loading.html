@@ -582,14 +582,14 @@
       <!-- ============ 07 · Discovery controls ============ -->
       <section class="section" aria-labelledby="state-disc-controls">
         <div class="section__head">
-          <h2 class="section__title" id="state-disc-controls"><span class="states__no">07</span>The card's two corners, and the head's two buttons</h2>
-          <p class="label states__meta">play · follow · menu · re-draw</p>
+          <h2 class="section__title" id="state-disc-controls"><span class="states__no">07</span>The card's one corner, and the head's two buttons</h2>
+          <p class="label states__meta">play · follow · unfollow · menu · re-draw</p>
         </div>
 
         <div class="states__stage">
           <div class="states__bar">
             <span class="label">Controls shown, as on hover</span>
-            <span class="label">and the write in flight</span>
+            <span class="label">the write in flight, and after it lands</span>
           </div>
 
           <div class="states__pair">
@@ -597,6 +597,9 @@
               <div class="card__art">
                 <img src="img/artists/sorne.jpg" alt="" loading="lazy" />
                 <div class="card__library">
+                  <button class="card__play" type="button" data-track="Low Beam" data-artist="Sorne" data-art="img/artists/sorne.jpg" data-duration="214" aria-label="Play Sorne">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
                   <button class="card__tile" type="button" aria-label="Follow Sorne">
                     <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
                   </button>
@@ -604,9 +607,6 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
                   </button>
                 </div>
-                <button class="card__play" type="button" data-track="Low Beam" data-artist="Sorne" data-art="img/artists/sorne.jpg" data-duration="214" aria-label="Play Sorne">
-                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-                </button>
               </div>
               <div class="card__body">
                 <a class="card__title truncate" href="artist.html">Sorne</a>
@@ -617,6 +617,9 @@
               <div class="card__art">
                 <img src="img/artists/tidewater-choir.jpg" alt="" loading="lazy" />
                 <div class="card__library">
+                  <button class="card__play" type="button" data-track="Salt Rite" data-artist="Tidewater Choir" data-art="img/artists/tidewater-choir.jpg" data-duration="271" aria-label="Play Tidewater Choir">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
                   <button class="card__tile" type="button" aria-label="Follow Tidewater Choir" aria-busy="true">
                     <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
                   </button>
@@ -624,12 +627,29 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
                   </button>
                 </div>
-                <button class="card__play" type="button" data-track="Salt Rite" data-artist="Tidewater Choir" data-art="img/artists/tidewater-choir.jpg" data-duration="271" aria-label="Play Tidewater Choir">
-                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
-                </button>
               </div>
               <div class="card__body">
                 <a class="card__title truncate" href="artist.html">Tidewater Choir</a>
+              </div>
+            </div>
+
+            <div class="card card--artist card--centred is-open">
+              <div class="card__art">
+                <img src="img/artists/ora-fenn.jpg" alt="" loading="lazy" />
+                <div class="card__library">
+                  <button class="card__play" type="button" data-track="Long Field" data-artist="Ora Fenn" data-art="img/artists/ora-fenn.jpg" data-duration="246" aria-label="Play Ora Fenn">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                  <button class="card__tile" type="button" aria-label="Unfollow Ora Fenn">
+                    <svg class="icon" aria-hidden="true"><use href="#i-minus"></use></svg>
+                  </button>
+                  <button class="card__tile" type="button" aria-label="More options for Ora Fenn" aria-haspopup="menu" aria-expanded="false">
+                    <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="artist.html">Ora Fenn</a>
               </div>
             </div>
           </div>
@@ -668,17 +688,22 @@
         </div>
 
         <p class="states__note">
-          Two corners, two kinds of action. Sound is always bottom-right and always green, and it plays
-          the one track the card names — then the queue carries on. Keeping is always top-right and
-          always bone: the plus follows the artist, the three dots open the same menu every other object
-          in the app opens, trimmed to what a stranger can honestly carry (go to artist, copy link, and
-          as the last, hairline-banded row, “Hide Tidewater Choir from discovery”). Because a write can
-          fail, the card leaves when the follow confirms, not when it is pressed; until then the tile
-          holds the pressed, dimmed look second from left — no spinner, because nothing in this client
-          spins. In the head, the count sits with the two things that act on the whole row: re-draw, then
-          play. Re-draw wears the hairline and bone on hover — it changes what you are looking at, it
-          does not make a sound — and when the day's seeds for that kind are spent it goes inert without
-          a word of explanation.
+          One row, three kinds of action. All of them sit at the picture's top right, play first and
+          always green: it plays the one track the card names, then the queue carries on. Keeping is
+          bone: the plus follows the artist, and the three dots open the same menu every other object in
+          the app opens, trimmed to what a stranger can honestly carry (go to artist, copy link, and as
+          the last, hairline-banded row, “Hide Tidewater Choir from discovery”). A second corner would be
+          a second relationship to the same circle, and both have to be re-judged at every card width;
+          one row does not.
+
+          A follow keeps its card. The tile turns into a minus while the artist stays where it was, so a
+          press made in error can be taken back; the card leaves when the page is opened again, because
+          by then the artist is in your library and the band is for things that are not. Because a write
+          can fail, the tile holds the pressed, dimmed look until the follow confirms — no spinner,
+          because nothing in this client spins. In the head, the count sits with the two things that act
+          on the whole row: re-draw, then play. Re-draw wears the hairline and bone on hover — it changes
+          what you are looking at, it does not make a sound — and when the day's seeds for that kind are
+          spent it goes inert without a word of explanation.
         </p>
       </section>
 
