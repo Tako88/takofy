@@ -63,47 +63,35 @@ fn a_split_puts_the_tracks_beside_the_card() {
 }
 
 #[test]
-fn the_corner_tiles_sit_on_the_face_rather_than_in_the_box_corner() {
-    let art = Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(300.0));
-    let follow = follow(art);
-    let more = more(art);
-    let play = play(art);
+fn the_corner_tiles_sit_on_the_cards_own_corners() {
+    let card = Rect::from_min_size(pos2(10.0, 20.0), vec2(226.0, 274.0));
+    let follow = follow(card);
+    let more = more(card);
+    let play = play(card);
 
-    // The face is drawn as a circle, so a tile is only really over it when every
-    // corner of the tile is inside that circle.
-    let radius = art.width() / 2.0;
     for tile in [follow, more, play] {
-        for corner in [
-            tile.left_top(),
-            tile.right_top(),
-            tile.left_bottom(),
-            tile.right_bottom(),
-        ] {
-            assert!(
-                (corner - art.center()).length() <= radius + 0.01,
-                "{tile:?} reaches past the face at {corner:?}"
-            );
-        }
+        assert!(card.contains_rect(tile), "{tile:?} stays inside {card:?}");
     }
+    // The corner control keeps one padding step from the edge it hangs on.
+    assert!((card.right() - space::S2 - more.right()).abs() < 0.01);
+    assert!((card.right() - space::S2 - play.right()).abs() < 0.01);
+    assert!((more.top() - card.top() - space::S2).abs() < 0.01);
+    assert!((card.bottom() - space::S2 - play.bottom()).abs() < 0.01);
+
     assert!(!overlaps(follow, play));
     assert!(!overlaps(more, play));
     assert!(!overlaps(follow, more));
-    assert!(more.center().y < art.center().y, "the menu sits high");
-    assert!(play.center().y > art.center().y, "the play sits low");
-    assert!(more.center().x > art.center().x, "the menu sits right");
-    assert!(play.center().x > art.center().x, "the play sits right");
+    assert!(more.center().y < card.center().y, "the menu sits high");
+    assert!(play.center().y > card.center().y, "the play sits low");
 }
 
 #[test]
-fn every_corner_tile_keeps_its_press_point_on_the_face() {
-    for side in [120.0, 192.0, 226.0, 340.0] {
-        let art = Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(side));
-        for tile in [follow(art), more(art), play(art)] {
-            assert!(art.contains_rect(tile), "{tile:?} stays inside {art:?}");
-            assert!(
-                (tile.center() - art.center()).length() < side / 2.0,
-                "a press at the centre of {tile:?} lands on the face"
-            );
+fn every_corner_tile_keeps_its_press_point_on_the_card() {
+    for size in [vec2(120.0, 150.0), vec2(226.0, 274.0), vec2(340.0, 400.0)] {
+        let card = Rect::from_min_size(pos2(0.0, 0.0), size);
+        for tile in [follow(card), more(card), play(card)] {
+            assert!(card.contains_rect(tile), "{tile:?} stays inside {card:?}");
+            assert!(card.contains(tile.center()));
         }
     }
 }

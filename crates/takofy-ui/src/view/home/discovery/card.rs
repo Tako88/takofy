@@ -101,7 +101,7 @@ pub(super) fn show(
     let mut pressed_play = false;
 
     if revealed {
-        let follow_rect = discovery::follow(card.art);
+        let follow_rect = discovery::follow(card.rect);
         let _ = controls::icon_button_keyed(
             ui,
             tokens,
@@ -119,7 +119,7 @@ pub(super) fn show(
             tokens,
             Control::DiscoveryMore,
             key,
-            discovery::more(card.art),
+            discovery::more(card.rect),
             Icon::More,
             Size::SM,
             &format!("More options for {}", card.data.artist.name),
@@ -136,7 +136,7 @@ pub(super) fn show(
             tokens,
             Control::DiscoveryPlay,
             key,
-            discovery::play(card.art),
+            discovery::play(card.rect),
             Icon::Play,
             &format!("Play {}", card.data.artist.name),
             live,
@@ -145,14 +145,14 @@ pub(super) fn show(
 
         let id = more.response.id;
         if live
-            && let Some(door) = context_menu::button_door(ui, &more, discovery::more(card.art), id)
-                .or_else(|| media::key_door(ui, &slot.response, &more, discovery::more(card.art)))
+            && let Some(door) = context_menu::button_door(ui, &more, discovery::more(card.rect), id)
+                .or_else(|| media::key_door(ui, &slot.response, &more, discovery::more(card.rect)))
                 .or_else(|| {
                     context_menu::pointer_door(
                         ui,
                         card.rect,
                         slot.response.id,
-                        discovery::more(card.art),
+                        discovery::more(card.rect),
                     )
                 })
         {
@@ -164,9 +164,9 @@ pub(super) fn show(
     // nothing, not fall through and open the artist instead.
     let on_tile = slot.response.interact_pointer_pos().is_some_and(|at| {
         [
-            discovery::follow(card.art),
-            discovery::more(card.art),
-            discovery::play(card.art),
+            discovery::follow(card.rect),
+            discovery::more(card.rect),
+            discovery::play(card.rect),
         ]
         .iter()
         .any(|tile| tile.contains(at))
