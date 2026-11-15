@@ -14,7 +14,7 @@ use super::follow::{FollowScript, MoveScript};
 use super::reads::{ArtistScript, LikedScript, LyricsScript, PortraitScript, SearchScript};
 use super::recovery::RetireScript;
 use super::transfer::{AcceptScript, PrepareScript, ResolveScript, default_landing};
-use crate::session::{ArtistPage, Retired, SessionError, SessionHost, TrackPage};
+use crate::session::{ArtistPage, Discover, Retired, SessionError, SessionHost, TrackPage};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -26,7 +26,7 @@ use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::rootlist::{RootEntry, Walked};
 use takofy_core::{Resolution, TransferPlan};
-use takofy_model::home::{Station, StationSeed};
+use takofy_model::home::{DiscoveryOutcome, DiscoverySeed, Station, StationSeed};
 use takofy_model::{
     Account, AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow,
     Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal,
@@ -454,6 +454,61 @@ pub(super) enum LoadScript {
     Held,
 }
 
+/// What one scripted lookup answers.
+#[derive(Clone)]
+pub(super) enum DiscoveryScript {
+    /// Answers this outcome, once any hold a test armed is released.
+    Answer(DiscoveryOutcome),
+    /// Never answers, so the bridge's own budget is what ends it.
+    Pending,
+    /// Comes apart, as a lookup that panicked does.
+    Panic,
+}
+
+impl Default for DiscoveryScript {
+    fn default() -> Self {
+        Self::Answer(DiscoveryOutcome::Unreachable)
+    }
+}
+
+/// The host's lookup handle: it answers its script and records what it was
+/// asked for, so a test can tell a lookup that ran from one that was dropped.
+#[derive(Clone)]
+pub(super) struct FakeDiscovery {
+    shared: Arc<FakeState>,
+}
+
+impl Discover for FakeDiscovery {
+    fn run(
+        self,
+        seed: DiscoverySeed,
+    ) -> impl Future<Output = (DiscoverySeed, DiscoveryOutcome)> + Send {
+        let shared = Arc::clone(&self.shared);
+        async move {
+            shared
+                .looked_up
+                .lock()
+                .expect("lock")
+                .push(seed.uri.clone());
+            if let Some(tx) = shared.lookup_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            // A hold a test armed keeps the lookup running until it is released.
+            let hold = shared.lookup_hold.lock().expect("lock").clone();
+            if let Some(hold) = hold {
+                hold.acquire().await.expect("the hold stays open").forget();
+            }
+            let script = shared.discovery_script.lock().expect("lock").clone();
+            let outcome = match script {
+                DiscoveryScript::Answer(outcome) => outcome,
+                DiscoveryScript::Pending => std::future::pending().await,
+                DiscoveryScript::Panic => panic!("a scripted lookup came apart"),
+            };
+            (seed, outcome)
+        }
+    }
+}
+
 /// One host call, in the order the command loop made it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Call {
@@ -660,6 +715,16 @@ pub(super) struct FakeState {
     /// while nothing answers. A read releases itself by taking a permit, which
     /// is spent rather than returned.
     pub(super) read_hold: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    /// What one lookup answers.
+    pub(super) discovery_script: Mutex<DiscoveryScript>,
+    /// Whether this host has a lookup handle at all.
+    pub(super) discovery_absent: AtomicBool,
+    /// Every seed a lookup was started for, in order.
+    pub(super) looked_up: Mutex<Vec<String>>,
+    /// The hold a started lookup waits behind before it answers.
+    pub(super) lookup_hold: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    /// The sender that says a lookup started, so a test can act while it runs.
+    pub(super) lookup_started: Mutex<Option<Sender<()>>>,
     /// How many reads are in flight, and the most that ever were.
     pub(super) reads_in_flight: AtomicUsize,
     pub(super) reads_peak: AtomicUsize,
@@ -797,6 +862,8 @@ fn answer_order(shared: &FakeState, id: RequestId, ok: bool) -> bool {
 }
 
 impl SessionHost for FakeHost {
+    type Discovery = FakeDiscovery;
+
     fn connect(
         &mut self,
         token: &AccessToken,
@@ -834,6 +901,15 @@ impl SessionHost for FakeHost {
 
     fn account(&self) -> Option<Account> {
         *self.shared.account.lock().expect("lock")
+    }
+
+    fn discovery(&self) -> Option<FakeDiscovery> {
+        if self.shared.discovery_absent.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(FakeDiscovery {
+            shared: Arc::clone(&self.shared),
+        })
     }
 
     fn walk_rootlist(&self) -> impl Future<Output = Result<Walked, SessionError>> + Send {

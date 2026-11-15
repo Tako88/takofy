@@ -192,6 +192,33 @@ fn on_exit_after_a_settled_write_sends_nothing_more() {
 }
 
 #[test]
+fn an_off_discovery_setting_is_written_back_off() {
+    let (log, sink) = recording();
+    let written = Prefs::parse("volume=40\ndiscovery=false\n").expect("valid prefs");
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+    assert!(
+        !app.library.discovery_enabled(),
+        "arrange: the file is what turned it off"
+    );
+    let ctx = window_context();
+    assert!(app.transport.volume.set_fraction(0.6));
+    let _ = ui_frame(&mut app, &ctx);
+    std::thread::sleep(QUIET + Duration::from_millis(50));
+    let _ = ui_frame(&mut app, &ctx);
+
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    let saved = log.lock().expect("the sink log").clone();
+    assert!(!saved.is_empty(), "the volume change was written");
+    assert!(
+        saved.iter().all(|prefs| !prefs.discovery()),
+        "the file's off setting survives the write back: {saved:?}"
+    );
+}
+
+#[test]
 fn an_untouched_session_never_writes() {
     let (log, sink) = recording();
     let written = Prefs::parse("volume=40\nshuffle=true\nrepeat=all\n").expect("valid prefs");

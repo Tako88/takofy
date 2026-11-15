@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use takofy_core::rootlist::Walked;
-use takofy_model::home::{HomeAsk, StationSeed};
+use takofy_model::home::{DiscoverySeed, HomeAsk, StationSeed};
 use takofy_model::{CoverUrl, Report, RequestId};
 use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, Update};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -75,7 +75,8 @@ pub(super) const IDLE_GRACE: Duration = Duration::from_millis(50);
 pub(super) enum Class {
     /// Reads the session; runs beside other reads, up to the cap.
     Read,
-    /// Touches nothing a read can see, so it is served at once.
+    /// Serves nothing a read can see as it runs: an instant is answered at
+    /// once, and it neither waits for a read nor holds one.
     Instant,
     /// Writes, orders the transport, or changes the session: it runs alone.
     Barrier,
@@ -85,6 +86,9 @@ pub(super) enum Class {
 /// fails the build until its class is decided.
 pub(super) fn classify(command: &Command) -> Class {
     match command {
+        // A lookup answers from the outside, so it costs the batch nothing: it
+        // is served without ending admission or waiting for a read.
+        Command::LoadHome(HomeAsk::Discovery { .. }) => Class::Instant,
         Command::LoadTracks { .. }
         | Command::LoadAlbum { .. }
         | Command::LoadArtist { .. }
@@ -144,7 +148,7 @@ pub(super) fn log_unclaimed(class: Class) {
 
 /// One command served the moment it arrives, carrying what it changes.
 ///
-/// One variant per Instant command, so `serve_instant` names all eight with no
+/// One variant per Instant command, so `serve_instant` names all nine with no
 /// wildcard: a variant added here does not compile until it has a body.
 pub(super) enum Immediate {
     Answer { id: RequestId, ok: bool },
@@ -155,6 +159,7 @@ pub(super) enum Immediate {
     Seek { position_ms: u32 },
     Volume { percent: u16 },
     Fetch { url: CoverUrl },
+    Discover { seed: DiscoverySeed },
 }
 
 impl Immediate {
@@ -169,6 +174,7 @@ impl Immediate {
             Command::Seek { position_ms } => Self::Seek { position_ms },
             Command::Volume { percent } => Self::Volume { percent },
             Command::Fetch { url } => Self::Fetch { url },
+            Command::LoadHome(HomeAsk::Discovery { seed }) => Self::Discover { seed },
             // `classify` names the instants, and it is the total match.
             _ => return None,
         })
@@ -253,6 +259,9 @@ impl Read {
             Command::LoadFollowedArtists => Self::FollowedArtists,
             Command::LoadSavedAlbums => Self::SavedAlbums,
             Command::LoadLikedTracks => Self::LikedTracks,
+            // A lookup is not a read: `classify` sends it down the instant path,
+            // where its own task answers it.
+            Command::LoadHome(HomeAsk::Discovery { .. }) => return None,
             Command::LoadHome(ask) => Self::Home(ask),
             Command::StartRadio { seed } => Self::Radio { seed },
             Command::ContinueRadio {

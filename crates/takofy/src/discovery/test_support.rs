@@ -38,10 +38,6 @@ impl FakeFetch {
         self.push(needle, Ok(body));
     }
 
-    pub(crate) fn calls(&self) -> Vec<String> {
-        self.inner.calls.lock().expect("calls").clone()
-    }
-
     pub(crate) fn count(&self) -> usize {
         self.inner.calls.lock().expect("calls").len()
     }

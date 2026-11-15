@@ -6,18 +6,20 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use librespot::core::SessionConfig;
 use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
-use takofy_core::engine::{Engine, EngineError, Orders, RootlistRead};
+use takofy_core::engine::{DiscoveryReads, Engine, EngineError, Orders, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
 use takofy_core::{Resolution, TransferPlan};
-use takofy_model::home::{Station, StationSeed};
+use takofy_model::home::{
+    DiscoveryArtist, DiscoveryCard, DiscoveryOutcome, DiscoverySeed, Station, StationSeed,
+};
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow,
     Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, PlaylistHead, Removal, Report,
@@ -25,6 +27,10 @@ use takofy_model::{
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
+
+use crate::discovery::Outside;
+use crate::discovery::http::Http;
+use crate::discovery::lookup::{self, Spotify};
 
 /// How long a rebuild waits for the dead session's player thread before going
 /// ahead without it.
@@ -119,6 +125,19 @@ pub(crate) struct ArtistPage {
     pub followed: Option<bool>,
 }
 
+/// One discovery row's lookup, run away from the reads.
+///
+/// `Clone + Send + 'static` because the bridge hands each ask to a task of its
+/// own, which outlives the call that started it.
+pub(crate) trait Discover: Clone + Send + 'static {
+    /// Looks `seed` up outside, answering the seed with the identifier the
+    /// lookup resolved for it.
+    fn run(
+        self,
+        seed: DiscoverySeed,
+    ) -> impl Future<Output = (DiscoverySeed, DiscoveryOutcome)> + Send;
+}
+
 /// The session work the command task drives.
 ///
 /// Returns `impl Future + Send` rather than being an `async fn` because an
@@ -127,6 +146,9 @@ pub(crate) struct ArtistPage {
 /// written; `shutdown` consumes, because that is what joins the thread. `Sync`
 /// is what lets several reads hold `&self` at once.
 pub(crate) trait SessionHost: Send + Sync + 'static {
+    /// What one discovery row is looked up with.
+    type Discovery: Discover;
+
     /// Opens the session with `token`.
     ///
     /// A caller that replaces a live-but-dead engine retires it first: this
@@ -136,6 +158,10 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         &mut self,
         token: &AccessToken,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// A handle that answers one discovery row outside the reads, or `None`
+    /// when this host has nothing to look up with.
+    fn discovery(&self) -> Option<Self::Discovery>;
 
     /// The account this session connected as, once it is connected.
     ///
@@ -500,6 +526,9 @@ pub(crate) struct LiveSession {
     playable: AtomicBool,
     /// The newest report published, kept for the same reason.
     report: Mutex<Option<Report>>,
+    /// The outside service a lookup reaches Deezer through, when the window
+    /// handed one in.
+    outside: Option<Arc<Outside<Http>>>,
 }
 
 impl LiveSession {
@@ -514,7 +543,15 @@ impl LiveSession {
             volume: Volume::default(),
             playable: AtomicBool::new(false),
             report: Mutex::new(None),
+            outside: None,
         }
+    }
+
+    /// Hands in the outside service the lookup runs against, which needs the
+    /// setting the window reads at startup.
+    pub(crate) fn with_outside(mut self, outside: Arc<Outside<Http>>) -> Self {
+        self.outside = Some(outside);
+        self
     }
 
     fn held_report(&self) -> Option<Report> {
@@ -540,6 +577,8 @@ impl LiveSession {
 }
 
 impl SessionHost for LiveSession {
+    type Discovery = LiveDiscovery;
+
     async fn connect(&mut self, token: &AccessToken) -> Result<(), SessionError> {
         let engine = Engine::connect(self.cfg.clone(), token)
             .await
@@ -562,6 +601,14 @@ impl SessionHost for LiveSession {
         self.engine
             .as_ref()
             .and_then(|engine| Account::from_wire(&engine.username()))
+    }
+
+    fn discovery(&self) -> Option<LiveDiscovery> {
+        let engine = self.engine.as_ref()?;
+        Some(LiveDiscovery {
+            reads: Arc::new(engine.discovery_reads()),
+            outside: Arc::clone(self.outside.as_ref()?),
+        })
     }
 
     async fn label_rootlist(&self, walked: Walked) -> Result<RootlistRead, SessionError> {
@@ -1106,6 +1153,45 @@ impl SessionHost for LiveSession {
             // rebuild goes ahead and finds out whether the device is free.
             Ok(Err(_)) | Err(_) => Retired::Lingering,
         }
+    }
+}
+
+/// The lookup handle: the engine's own reads, and the outside service they are
+/// compared against.
+///
+/// The reads are the engine's, not the batch's, so a lookup costs the session a
+/// handful of its own calls and never a place in a read batch. The label cache
+/// is this handle's own, so the cards one row reads do not contend with the
+/// window's labels.
+#[derive(Clone)]
+pub(crate) struct LiveDiscovery {
+    reads: Arc<DiscoveryReads>,
+    outside: Arc<Outside<Http>>,
+}
+
+impl Discover for LiveDiscovery {
+    async fn run(self, seed: DiscoverySeed) -> (DiscoverySeed, DiscoveryOutcome) {
+        lookup::lookup(&self, self.outside.as_ref(), seed).await
+    }
+}
+
+impl Spotify for LiveDiscovery {
+    async fn seed_titles(&self, artist: &DiscoveryArtist) -> Vec<String> {
+        self.reads.top_titles(&artist.uri).await
+    }
+
+    async fn playlist_head(&self, uri: &str) -> Vec<TrackEntry> {
+        self.reads.playlist_head(uri).await
+    }
+
+    async fn search(&self, query: &str) -> Vec<TrackEntry> {
+        // A resolve that failed is a neighbour with no hit, which is what an
+        // empty page says: the lookup drops the card either way.
+        self.reads.search(query).await.unwrap_or_default()
+    }
+
+    async fn cards(&self, uris: &[String]) -> Vec<DiscoveryCard> {
+        self.reads.cards(uris).await
     }
 }
 

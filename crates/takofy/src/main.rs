@@ -8,12 +8,8 @@ mod bridge;
 mod cover;
 mod decode;
 mod devices;
-// Lookups are only exercised by this module's tests for now.
-#[allow(dead_code)]
 mod discovery;
 mod headless;
-// The hidden file is opened by its own tests until the window reads it.
-#[allow(dead_code)]
 mod hidden_file;
 mod keychain;
 mod latest_writer;
@@ -28,6 +24,7 @@ mod snapshot_format;
 
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
@@ -141,10 +138,21 @@ fn run_window(flags: &Flags) -> ExitCode {
     // A window has no terminal, so its authorize path is loopback by
     // construction; a Paste source would block on a prompt nobody can answer.
     let source = Arc::new(SpotifyOAuth::new(&cfg.client_id, RedirectMode::Loopback));
-    let host = session::LiveSession::new(cfg);
     // Read once, before the window exists: the first frame draws what the file
     // held, and the writer outlives the window only long enough to flush it.
     let (loaded, prefs) = preferences::open();
+    // The setting is shared rather than copied: the window stores it every frame
+    // and the lookup reads it before any request.
+    let gate = Arc::new(AtomicBool::new(app::loaded_discovery(&loaded)));
+    // A client that cannot be built leaves the rows unreachable rather than the
+    // window unopened: the host then has no outside service to look up with.
+    let outside = discovery::http::Http::new()
+        .map(|http| Arc::new(discovery::Outside::new(http, Arc::clone(&gate))));
+    let host = match &outside {
+        Some(outside) => session::LiveSession::new(cfg).with_outside(Arc::clone(outside)),
+        None => session::LiveSession::new(cfg),
+    };
+    let (hidden, hidden_sync) = hidden_file::open();
     let (cached, snapshots) = snapshot::open();
 
     let runtime = match build_runtime() {
@@ -163,7 +171,15 @@ fn run_window(flags: &Flags) -> ExitCode {
                 slot.install(Arc::new(cc.egui_ctx.clone()));
                 cc.egui_ctx.request_repaint();
                 let app: Box<dyn eframe::App> = Box::new(app::TakofyApp::new(
-                    cc, ui_end, loaded, prefs, cached, snapshots,
+                    cc,
+                    ui_end,
+                    loaded,
+                    prefs,
+                    cached,
+                    snapshots,
+                    gate,
+                    hidden,
+                    hidden_sync,
                 ));
                 Ok(app)
             }),

@@ -35,6 +35,10 @@ accident. The two share only `takofy-model`, which has no dependencies at all.
 That is what lets the window hold the types it draws without the split ceasing
 to be a boundary.
 
+One exception, stated so it stays one: the binary orders a Spotify read beside a
+third-party request for Discovery's rows. The reads themselves are core's; the
+binary only decides when they run.
+
 ## How data moves
 
 The UI holds a snapshot of what it draws and emits commands. The binary owns the
@@ -54,6 +58,10 @@ is not one of them: it ends the loop and abandons the reads in flight.
 The UI never calls into core. That keeps the crate boundary real, keeps the frame
 loop free of awaits, and keeps the cursor types that borrow a session out of the
 UI.
+
+Discovery's day is `Day`, a day number the binary computes from the local date
+before a frame asks. The window therefore holds a count to compare, not a date
+it would have to read a calendar for.
 
 The updates have to stay fine-grained. An update that reports one event is
 testable; one that carries the whole state is not: it moves the UI's state into
@@ -400,6 +408,11 @@ handed over after it has been quiet for 400 ms, and `on_exit` flushes whatever
 is still unsettled. The writer's `Drop` then waits a bounded two seconds for the
 thread and detaches it: a hung filesystem cannot hold the window open longer
 than that.
+
+The artists the user never wants offered, and the positions a day's rows start
+at, are a second file, `hidden.conf`, beside the preferences: read whole before
+the window opens, replaced whole, and written by its own `takofy-hidden` thread
+on the same rules.
 
 The library cache is one file in the platform cache directory, read whole before
 the window opens and written by its own `takofy-snapshot` thread, so the UI

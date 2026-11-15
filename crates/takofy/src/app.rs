@@ -1,10 +1,13 @@
 //! The eframe application: the window's state and its draw pass.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Local, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 use eframe::egui;
+use takofy_model::home::Day;
 use takofy_model::{Order, RequestId};
 use takofy_ui::cover::Art;
 use takofy_ui::device_list::DeviceList;
@@ -24,6 +27,7 @@ use takofy_ui::theme::{Tokens, fonts, scroll, style};
 use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
+use crate::hidden_file::{self, HiddenSync};
 use crate::preferences::{Loaded, PrefsSync};
 use crate::snapshot::{Cached, SnapshotSync};
 
@@ -102,6 +106,11 @@ pub(crate) struct TakofyApp {
     prefs: PrefsSync,
     /// The last session's library, and the thread that saves this one's.
     snapshots: SnapshotSync,
+    /// The discovery setting, shared with the lookup that reads it before any
+    /// request, so one store turns the outside calls off.
+    gate: Arc<AtomicBool>,
+    /// The hidden artists, and the thread that saves their changes.
+    hidden: HiddenSync,
 }
 
 impl TakofyApp {
@@ -147,6 +156,10 @@ impl TakofyApp {
     }
 
     /// Installs the theme and takes ownership of the window's end.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one file or store each thing read before the window existed"
+    )]
     pub(crate) fn new(
         cc: &eframe::CreationContext<'_>,
         ui_end: UiEnd,
@@ -154,6 +167,9 @@ impl TakofyApp {
         prefs: PrefsSync,
         cached: Cached,
         snapshots: SnapshotSync,
+        gate: Arc<AtomicBool>,
+        hidden: hidden_file::Loaded,
+        hidden_sync: HiddenSync,
     ) -> Self {
         let tokens = Tokens::DARK;
         cc.egui_ctx.set_fonts(fonts::definitions());
@@ -167,6 +183,12 @@ impl TakofyApp {
         let mut library = Library::starting_home(wall_clock_ms());
         if let Cached::Found(snapshot) = cached {
             library.restore(snapshot);
+        }
+        // The files were read before the window existed, so the first frame
+        // draws their values rather than the defaults.
+        library.set_discovery_enabled(loaded_discovery(&loaded));
+        if let hidden_file::Loaded::Found(saved) = hidden {
+            library.restore_hidden(saved);
         }
         Self {
             state: SignIn::default(),
@@ -185,6 +207,8 @@ impl TakofyApp {
             since: None,
             prefs,
             snapshots,
+            gate,
+            hidden: hidden_sync,
         }
     }
 
@@ -271,6 +295,14 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.likes_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The day, the setting and the hidden set are handed over before the
+        // asks: a day named after the loop would leave the frame with no row to
+        // ask for, and a gate stored afterwards would act on the last frame's
+        // value.
+        self.library.set_local_day(local_day());
+        self.gate
+            .store(self.library.discovery_enabled(), Ordering::Relaxed);
+        self.hidden.observe(self.library.hidden());
         // Home's dated shelf asks first: its own label read leads, and the built
         // shelves yield to its feeds for a bounded wait. Without a wake at the
         // bound's end no frame would run after it, and a hung feed would still
@@ -355,8 +387,11 @@ impl eframe::App for TakofyApp {
 
     // Glow's exit hook carries the GL context; nothing here needs it.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.prefs
-            .close(&Prefs::of(&self.transport.volume, &self.queue));
+        self.prefs.close(
+            &Prefs::of(&self.transport.volume, &self.queue)
+                .with_discovery(self.library.discovery_enabled()),
+        );
+        self.hidden.close(self.library.hidden());
         self.snapshots.close(|| self.library.snapshot());
     }
 
@@ -400,10 +435,9 @@ impl eframe::App for TakofyApp {
         }
         // After the drain, so the value the frame drew is the one that settles.
         // The wake keeps a value written while the window is otherwise idle.
-        if let Some(wake) = self
-            .prefs
-            .observe(now, &Prefs::of(&self.transport.volume, &self.queue))
-        {
+        let values = Prefs::of(&self.transport.volume, &self.queue)
+            .with_discovery(self.library.discovery_enabled());
+        if let Some(wake) = self.prefs.observe(now, &values) {
             ui.ctx().request_repaint_after(wake.max(WAKE_FLOOR));
         }
         // After the draw, because only the draw arms the read: a navigation
@@ -456,6 +490,29 @@ fn local_hour_at<Tz: TimeZone>(at: &DateTime<Tz>) -> u8 {
 /// hand-written `localtime` would need `unsafe`, which is denied.
 fn local_hour() -> u8 {
     local_hour_at(&Local::now())
+}
+
+/// The local date as a day number, from an instant in any time zone.
+///
+/// A count rather than a date, so the window compares whole days without doing
+/// calendar arithmetic of its own.
+fn local_day_at<Tz: TimeZone>(at: &DateTime<Tz>) -> Day {
+    Day::from_days(at.date_naive().num_days_from_ce())
+}
+
+/// The local day, read once per frame.
+fn local_day() -> Day {
+    local_day_at(&Local::now())
+}
+
+/// The discovery setting the preferences file held.
+///
+/// A file that did not parse leaves the setting at its default, which is on.
+pub(crate) fn loaded_discovery(loaded: &Loaded) -> bool {
+    match loaded {
+        Loaded::Found(prefs) => prefs.discovery(),
+        Loaded::Absent | Loaded::Refused(_) | Loaded::Unreadable => Prefs::default().discovery(),
+    }
 }
 
 /// The window's background. The channels between panels read as the window

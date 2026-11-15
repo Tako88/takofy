@@ -1,4 +1,5 @@
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use librespot::core::SessionConfig;
 use librespot::playback::mixer::VolumeGetter;
@@ -9,6 +10,8 @@ use takofy_model::{Report, RequestId, Status, TrackEntry};
 use tokio::sync::oneshot;
 
 use super::{LiveSession, Retired, SessionError, SessionHost, stop_or};
+use crate::discovery::Outside;
+use crate::discovery::http::Http;
 
 #[tokio::test]
 async fn stop_or_returns_the_work_when_it_finishes_first() {
@@ -23,6 +26,25 @@ async fn stop_or_gives_up_when_the_stop_arrives_first() {
     assert_eq!(
         stop_or(&mut stop, std::future::pending::<u32>()).await,
         None
+    );
+}
+
+#[test]
+fn a_session_has_no_lookup_handle_without_a_connection_and_the_outside() {
+    let live = LiveSession::new(SessionConfig::default());
+    assert!(
+        live.discovery().is_none(),
+        "a session that never connected has no reads to look a row up with"
+    );
+
+    let outside = Arc::new(Outside::new(
+        Http::new().expect("an outside client"),
+        Arc::new(AtomicBool::new(true)),
+    ));
+    let live = LiveSession::new(SessionConfig::default()).with_outside(outside);
+    assert!(
+        live.discovery().is_none(),
+        "an outside service with no engine behind it cannot answer a row"
     );
 }
 

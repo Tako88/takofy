@@ -1,4 +1,5 @@
 mod clock;
+mod discovery;
 mod drain;
 mod home;
 mod painting;

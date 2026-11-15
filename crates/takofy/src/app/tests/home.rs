@@ -28,6 +28,9 @@ fn launched() -> TakofyApp {
         PrefsSync::off(),
         Cached::Absent,
         SnapshotSync::off(),
+        Arc::new(AtomicBool::new(true)),
+        crate::hidden_file::Loaded::Absent,
+        HiddenSync::off(),
     )
 }
 

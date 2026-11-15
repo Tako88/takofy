@@ -105,6 +105,9 @@ fn launched(
         PrefsSync::off(),
         cached,
         snapshots,
+        Arc::new(AtomicBool::new(true)),
+        crate::hidden_file::Loaded::Absent,
+        HiddenSync::off(),
     );
     (app, received)
 }
