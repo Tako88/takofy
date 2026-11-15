@@ -14,10 +14,15 @@ use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 use crate::shuffle;
 
 /// How many items at each end of a kind's usable list are candidates.
-pub const EDGE: usize = 8;
+pub const EDGE: usize = 12;
 
-/// How many candidates a kind keeps from its drawn edge set.
-pub const PER_KIND: usize = 4;
+/// How many candidates a kind keeps from the drawn edge set.
+///
+/// A row's pool is what the `↻` walks, so its size is how many times a day one
+/// row can be re-seeded before it runs out. Eight is enough to keep pressing
+/// without spending an outside lookup on nothing, and small enough that the
+/// pool still comes from the same edges of the library either way.
+pub const PER_KIND: usize = 8;
 
 /// The day's pool, one list per row in the page's kind order.
 pub fn day_pool(

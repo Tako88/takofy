@@ -37,8 +37,8 @@ pub enum Reroll {
 }
 
 /// How many asks one open allows, enough for every row to advance through its
-/// whole pool.
-pub const ASKS_PER_OPEN: usize = PER_KIND * 3;
+/// whole pool: one per row, one per seed walked, and one in hand.
+pub const ASKS_PER_OPEN: usize = PER_KIND * 3 + 3;
 
 /// What one row's read is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]

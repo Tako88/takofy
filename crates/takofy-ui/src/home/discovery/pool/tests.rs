@@ -183,7 +183,7 @@ fn each_kind_is_mixed_on_its_own() {
 fn the_whole_list_is_the_edge_set_up_to_twice_the_edge() {
     let pool = day_pool(&playlists(2 * EDGE), &[], &[], today());
 
-    assert_eq!(pool[0].len(), PER_KIND, "a full pool is still four");
+    assert_eq!(pool[0].len(), PER_KIND, "a full pool is still its size");
     assert_eq!(pool[1], Vec::new(), "a kind with nothing usable is empty");
     assert_eq!(pool[2], Vec::new(), "a kind with nothing usable is empty");
 }
