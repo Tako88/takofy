@@ -1105,3 +1105,52 @@ fn a_card_names_its_latest_year_only_when_one_is_dated() {
     assert_eq!(discovery_sub(Some(2024)), "Latest 2024");
     assert_eq!(discovery_sub(None), "");
 }
+
+#[test]
+fn a_row_offers_the_press_that_draws_deeper_and_dims_it_while_it_fetches() {
+    assert_eq!(
+        discovery_more_line(More::Offered),
+        Some(MoreLine {
+            words: "Load more",
+            live: true,
+        })
+    );
+    assert_eq!(
+        discovery_more_line(More::Fetching),
+        Some(MoreLine {
+            words: "Load more",
+            live: false,
+        }),
+        "the press is already out, so the words stay and the control does not"
+    );
+}
+
+#[test]
+fn a_row_that_found_nothing_says_so_without_claiming_the_end() {
+    assert_eq!(
+        discovery_more_line(More::Note(Note::Nothing, 1_000)),
+        Some(MoreLine {
+            words: "Nothing deeper from here",
+            live: false,
+        })
+    );
+    assert_eq!(
+        discovery_more_line(More::Note(Note::Sparse, 1_000)),
+        Some(MoreLine {
+            words: "Nothing further from these artists",
+            live: false,
+        })
+    );
+    assert_eq!(
+        discovery_more_line(More::Note(Note::Unreachable, 1_000)),
+        Some(MoreLine {
+            words: "Could not reach the outside just now",
+            live: false,
+        })
+    );
+}
+
+#[test]
+fn a_spent_row_draws_no_line_at_all() {
+    assert_eq!(discovery_more_line(More::Done), None);
+}

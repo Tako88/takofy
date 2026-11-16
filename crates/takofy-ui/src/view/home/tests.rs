@@ -2,8 +2,9 @@ use std::time::Instant;
 
 use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
 use takofy_model::home::{
-    ArtistReleases, Day, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind,
-    DiscoveryOutcome, DiscoverySeed, HomeAnswer, HomeAsk, NewRelease, ReleaseDate, Station,
+    ArtistReleases, Day, DigAnswer, DigOutcome, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard,
+    DiscoveryKind, DiscoveryOutcome, DiscoverySeed, HomeAnswer, HomeAsk, NewRelease, OutsideId,
+    ReleaseDate, Station,
 };
 use takofy_model::{
     Episode, FollowedArtist, FollowedShow, PlaylistEntry, PublishedAt, SavedAlbum, SavedAt, Show,
@@ -13,9 +14,9 @@ use takofy_model::{
 use super::*;
 use crate::cover::Art;
 use crate::format::{
-    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON,
-    HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE, HOME_QUIET, HOME_RELEASES_TITLE, HOME_SHELF_TITLE,
-    HOME_STATIONS_TITLE,
+    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_MORE, HOME_DISCOVERY_NOTE_UNREACHABLE,
+    HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON, HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE,
+    HOME_QUIET, HOME_RELEASES_TITLE, HOME_SHELF_TITLE, HOME_STATIONS_TITLE,
 };
 use crate::home::{Fit, Presence, Slot};
 use crate::library::Library;
@@ -800,7 +801,15 @@ fn discovery_card(index: usize) -> DiscoveryCard {
 /// A Home library whose discovery row has landed four fresh cards.
 fn discovery_ready() -> Library {
     let mut library = settled(
-        vec![playlist("spotify:playlist:a", "Mix", 5_000)],
+        (0..4)
+            .map(|at| {
+                playlist(
+                    &format!("spotify:playlist:{at}"),
+                    &format!("Mix {at}"),
+                    5_000,
+                )
+            })
+            .collect(),
         vec![album("spotify:album:a", "spotify:artist:held", 5_000)],
     );
     library.set_discovery_enabled(true);
@@ -813,7 +822,7 @@ fn discovery_ready() -> Library {
     library.apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
         seed,
         outcome: DiscoveryOutcome::Neighbours {
-            cards: (0..4).map(discovery_card).collect(),
+            cards: (0..4).map(outside_card).collect(),
             genre: Some("Alternative".to_owned()),
         },
     })));
@@ -973,5 +982,191 @@ fn a_reroll_and_a_play_in_one_frame_both_land_with_the_play_first() {
         library.take_play().map(|start| start.tracks),
         Some(rows),
         "the play was not lost to the re-roll"
+    );
+}
+
+/// One discovery card, with the outside id a lookup would have stamped it with.
+fn outside_card(index: usize) -> DiscoveryCard {
+    DiscoveryCard {
+        outside: Some(OutsideId::from_id(index as i64)),
+        ..discovery_card(index)
+    }
+}
+
+/// The dig the page owes once a row has been pressed, one per pressed row.
+fn dig_asks(library: &mut Library) -> Vec<takofy_model::home::DigAsk> {
+    library
+        .home_asks(Instant::now())
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::LoadHome(HomeAsk::Dig(ask)) => Some(ask),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The one dig the page owes once a row has been pressed.
+fn dig_ask(library: &mut Library) -> takofy_model::home::DigAsk {
+    let mut asks = dig_asks(library);
+    assert_eq!(asks.len(), 1, "one press is one ring: {asks:?}");
+    asks.pop().expect("a pressed row asks for its ring")
+}
+
+/// One click on the words the page drew, in the passes egui needs to report it.
+fn press_words(ctx: &Context, words: &str, library: &mut Library, art: &mut Art) {
+    let (_, output) = run(ctx, Vec::new(), library, art);
+    let at = text_rect(&output, words)
+        .unwrap_or_else(|| panic!("the page draws {words:?}"))
+        .center();
+    for event in click_events(at) {
+        let _ = run(ctx, vec![event], library, art);
+    }
+}
+
+#[test]
+fn a_pressed_load_more_line_asks_its_own_row_for_one_ring() {
+    let ctx = context();
+    let mut library = discovery_ready();
+    let mut art = Art::default();
+    let kind = DiscoveryKind::Playlist;
+
+    let _ = run(&ctx, Vec::new(), &mut library, &mut art);
+    assert!(
+        dig_asks(&mut library).is_empty(),
+        "arrange: a row asks for nothing until its line is pressed"
+    );
+
+    press_words(&ctx, HOME_DISCOVERY_MORE, &mut library, &mut art);
+
+    let asks = dig_asks(&mut library);
+    assert_eq!(asks.len(), 1, "one press is one ring: {asks:?}");
+    assert_eq!(
+        asks[0].seed.kind, kind,
+        "the ring walks from the row whose line was pressed"
+    );
+}
+
+#[test]
+fn a_line_already_fetching_takes_no_second_press() {
+    let ctx = context();
+    let mut library = discovery_ready();
+    let mut art = Art::default();
+    let kind = DiscoveryKind::Playlist;
+
+    press_words(&ctx, HOME_DISCOVERY_MORE, &mut library, &mut art);
+    assert_eq!(dig_asks(&mut library).len(), 1, "the first press asks once");
+    assert_eq!(
+        library.more_discovery(kind, NOW_MS),
+        crate::home::discovery::walk::More::Fetching,
+        "arrange: the row's ring is already out"
+    );
+
+    press_words(&ctx, HOME_DISCOVERY_MORE, &mut library, &mut art);
+    assert!(
+        dig_asks(&mut library).is_empty(),
+        "a line whose ring is out eats the next press"
+    );
+}
+
+#[test]
+fn a_line_saying_what_the_last_press_found_takes_no_press() {
+    let ctx = context();
+    let mut library = discovery_ready();
+    let mut art = Art::default();
+    let kind = DiscoveryKind::Playlist;
+
+    press_words(&ctx, HOME_DISCOVERY_MORE, &mut library, &mut art);
+    let ask = dig_ask(&mut library);
+    library.apply(&Update::Home(HomeAnswer::Dig(DigAnswer {
+        seed: ask.seed,
+        hop: ask.hop,
+        outcome: DigOutcome::Unreachable,
+    })));
+    assert!(
+        matches!(
+            library.more_discovery(kind, NOW_MS),
+            crate::home::discovery::walk::More::Note(
+                crate::home::discovery::walk::Note::Unreachable,
+                _
+            )
+        ),
+        "arrange: the row is showing what its press found"
+    );
+
+    press_words(
+        &ctx,
+        HOME_DISCOVERY_NOTE_UNREACHABLE,
+        &mut library,
+        &mut art,
+    );
+    assert!(
+        dig_asks(&mut library).is_empty(),
+        "a sentence takes no press"
+    );
+}
+
+#[test]
+fn a_grown_row_keeps_its_first_four_in_order_and_a_reroll_replaces_them() {
+    let ctx = context();
+    let mut library = discovery_ready();
+    let mut art = Art::default();
+    let kind = DiscoveryKind::Playlist;
+
+    assert!(library.press_more_discovery(kind, NOW_MS));
+    let ask = dig_ask(&mut library);
+    library.apply(&Update::Home(HomeAnswer::Dig(DigAnswer {
+        seed: ask.seed,
+        hop: ask.hop,
+        outcome: DigOutcome::Ring {
+            cards: (4..8).map(outside_card).collect(),
+            passed: Vec::new(),
+            exhausted: true,
+        },
+    })));
+
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let drawn: Vec<&str> = painted(&output)
+        .into_iter()
+        .map(|(text, _)| text)
+        .filter(|text| text.starts_with("Outside "))
+        .collect();
+    assert_eq!(
+        drawn,
+        (0..8)
+            .map(|index| format!("Outside {index}"))
+            .collect::<Vec<_>>(),
+        "the ring appends after the first four, in order"
+    );
+
+    library.stamp_discovery(NOW_MS - crate::home::discovery::REROLL_COOLDOWN_MS);
+    assert!(library.reroll_discovery(kind, NOW_MS));
+    let seed = library
+        .home_asks(Instant::now())
+        .into_iter()
+        .find_map(|command| match command {
+            Command::LoadHome(HomeAsk::Discovery { seed }) => Some(seed),
+            _ => None,
+        })
+        .expect("the re-rolled row asks for its next seed");
+    library.apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+        seed,
+        outcome: DiscoveryOutcome::Neighbours {
+            cards: (8..12).map(outside_card).collect(),
+            genre: None,
+        },
+    })));
+
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let drawn: Vec<&str> = painted(&output)
+        .into_iter()
+        .map(|(text, _)| text)
+        .filter(|text| text.starts_with("Outside "))
+        .collect();
+    assert_eq!(
+        drawn,
+        (8..12)
+            .map(|index| format!("Outside {index}"))
+            .collect::<Vec<_>>(),
+        "a re-roll replaces the whole row, grown cards and all"
     );
 }

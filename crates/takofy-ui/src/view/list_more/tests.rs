@@ -31,23 +31,49 @@ fn input(events: Vec<Event>) -> RawInput {
 /// A quiet pass comes first, so the row is already laid out when the events
 /// arrive and egui has had a pass to turn accesskit on.
 fn frame(ctx: &Context, label: Option<&str>, events: Vec<Event>) -> (bool, FullOutput, f32) {
-    let _ = pass(ctx, label, Vec::new());
-    pass(ctx, label, events)
+    frame_with(ctx, label, Look::from_left(space::S3), events)
 }
 
-/// One pass of the row.
-fn pass(ctx: &Context, label: Option<&str>, events: Vec<Event>) -> (bool, FullOutput, f32) {
+/// One frame of a row set the way `look` says.
+fn frame_with(
+    ctx: &Context,
+    label: Option<&str>,
+    look: Look,
+    events: Vec<Event>,
+) -> (bool, FullOutput, f32) {
+    let _ = pass_with(ctx, label, look, Vec::new());
+    pass_with(ctx, label, look, events)
+}
+
+/// One pass of a row set the way `look` says.
+fn pass_with(
+    ctx: &Context,
+    label: Option<&str>,
+    look: Look,
+    events: Vec<Event>,
+) -> (bool, FullOutput, f32) {
     let tokens = Tokens::DARK;
     let mut taken = false;
     let mut moved = 0.0;
     let mut output = ctx.run_ui(input(events), |ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let top = ui.cursor().top();
-        taken = show(ui, block(), label, space::S3, &tokens);
+        taken = show(ui, block(), label, look, &tokens);
         moved = ui.cursor().top() - top;
     });
     output.textures_delta.clear();
     (taken, output, moved)
+}
+
+/// The colour the words were painted in.
+fn ink(output: &FullOutput, label: &str) -> Option<egui::Color32> {
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            Shape::Text(text) if text.galley.text() == label => Some(text.fallback_color),
+            _ => None,
+        })
 }
 
 /// The fills painted on the row itself.
@@ -90,20 +116,42 @@ fn the_row_is_the_blocks_width_and_a_row_tall_directly_under_it() {
 #[test]
 fn the_label_is_inset_and_the_chevron_trails_it_by_one_gap() {
     let row = rect(block());
-    let parts = parts(row, 100.0, space::S3);
+    let parts = parts(row, 100.0, Look::from_left(space::S3));
     assert_eq!(parts.label.x, row.left() + space::S3);
     assert_eq!(
         parts.label.y,
         row.center().y,
         "the label sits on the centre"
     );
+    let chevron = parts.chevron.expect("a live row draws its chevron");
     assert_eq!(
-        parts.chevron.left(),
+        chevron.left(),
         parts.label.x + 100.0 + space::S2,
         "the chevron follows the label after one gap"
     );
-    assert_eq!(parts.chevron.size(), Vec2::splat(Size::SM.side));
-    assert_eq!(parts.chevron.center().y, row.center().y);
+    assert_eq!(chevron.size(), Vec2::splat(Size::SM.side));
+    assert_eq!(chevron.center().y, row.center().y);
+}
+
+#[test]
+fn a_centred_row_puts_its_words_and_their_chevron_on_the_centre_line() {
+    let row = rect(block());
+    let live = parts(row, 100.0, Look::centred(true));
+    let chevron = live.chevron.expect("a live line still trails its chevron");
+    assert_eq!(live.label.y, row.center().y);
+    assert_eq!(
+        (live.label.x + chevron.right()) / 2.0,
+        row.center().x,
+        "the words and the chevron they trail are centred as one group"
+    );
+
+    let quiet = parts(row, 100.0, Look::centred(false));
+    assert_eq!(quiet.chevron, None, "a sentence draws no chevron");
+    assert_eq!(
+        quiet.label.x + 50.0,
+        row.center().x,
+        "and its words are centred on their own"
+    );
 }
 
 #[test]
@@ -163,6 +211,41 @@ fn a_focused_row_answers_the_keyboards_enter() {
     }
     let (taken, _, _) = frame(&ctx, Some("Show 10 more tracks"), vec![press(Key::Enter)]);
     assert!(taken, "Enter on the focused row asks for the rest");
+}
+
+#[test]
+fn an_inert_row_is_a_sentence_that_takes_no_press() {
+    let tokens = Tokens::DARK;
+    let ctx = context();
+    let at = rect(block()).center();
+    let words = "Nothing deeper from here";
+
+    let (taken, hovered, _) = frame_with(
+        &ctx,
+        Some(words),
+        Look::centred(false),
+        vec![Event::PointerMoved(at)],
+    );
+    assert!(!taken, "a sentence is not a control");
+    assert_eq!(
+        ink(&hovered, words),
+        Some(tokens.palette.text_subtle),
+        "the sentence keeps the dim ink"
+    );
+    assert!(
+        !fills(&hovered).contains(&tokens.palette.row_hover),
+        "an inert row draws no wash under the pointer: {:?}",
+        fills(&hovered)
+    );
+
+    let mut taken = Vec::new();
+    for event in crate::view::test_support::click_events(at) {
+        taken.push(frame_with(&ctx, Some(words), Look::centred(false), vec![event]).0);
+    }
+    assert!(
+        taken.iter().all(|taken| !taken),
+        "no pass of a click takes an inert row: {taken:?}"
+    );
 }
 
 #[test]

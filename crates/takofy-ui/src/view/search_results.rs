@@ -320,8 +320,13 @@ fn tracks(
     }
     selection.finish(ui.ctx());
 
-    if list_more::show(ui, list, band.more().as_deref(), space::S3, tokens)
-        && let Some(next) = listing.answer.get(shown)
+    if list_more::show(
+        ui,
+        list,
+        band.more().as_deref(),
+        list_more::Look::from_left(space::S3),
+        tokens,
+    ) && let Some(next) = listing.answer.get(shown)
     {
         // The first row the reveal shows is the one the keyboard goes to.
         asked.more = Some((Kind::Tracks, track_row::id(ui, &next.uri, shown + 1)));

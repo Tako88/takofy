@@ -138,8 +138,13 @@ fn block(
     }
 
     let label = band.more();
-    if list_more::show(ui, reserved, label.as_deref(), space::S2, tokens)
-        && let Some(focus) = focus_of(ui, band, index)
+    if list_more::show(
+        ui,
+        reserved,
+        label.as_deref(),
+        list_more::Look::from_left(space::S2),
+        tokens,
+    ) && let Some(focus) = focus_of(ui, band, index)
     {
         act = Some(Act::More { focus });
     }
