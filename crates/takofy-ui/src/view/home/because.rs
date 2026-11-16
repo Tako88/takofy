@@ -52,6 +52,7 @@ pub(super) fn show(
             // The reference's artist card is a face and a name: the kind is what
             // the card is, and it says nothing a reader at this shelf wants.
             sub: "",
+            lead: None,
             size: "",
             round: true,
             shelf: SidebarKind::Artists,

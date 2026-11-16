@@ -16,6 +16,7 @@ fn media<'a>(uri: &'a str, round: bool, size: &'a str) -> Media<'a> {
         name: "Slow Tide",
         kind: "Album",
         sub: "Album · Nils Aker",
+        lead: None,
         size,
         round,
         shelf: SidebarKind::Albums,
@@ -958,5 +959,160 @@ fn a_row_never_draws_a_mosaic() {
         textured(&output, art),
         vec![art],
         "a 36pt row keeps the single cover: a four-up there is mush"
+    );
+}
+
+/// The painted line whose text is `text`: where it starts, how wide it is, and
+/// the format it was laid out in.
+fn painted_line(output: &egui::FullOutput, text: &str) -> Option<(Pos2, Vec2, egui::TextFormat)> {
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+                let format = shape.galley.job.sections.first()?.format.clone();
+                Some((shape.pos, shape.galley.size(), format))
+            }
+            _ => None,
+        })
+}
+
+/// The separator dots painted inside `area`.
+fn painted_dots(output: &egui::FullOutput, area: Rect) -> usize {
+    output
+        .shapes
+        .iter()
+        .filter(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Circle(circle) => {
+                area.contains(circle.center) && (circle.radius - stroke::HAIRLINE).abs() < 0.01
+            }
+            _ => false,
+        })
+        .count()
+}
+
+/// One tile with a leading kind word, reporting its rect and what it painted.
+fn lead_tile(ctx: &egui::Context, stacked: bool) -> (Rect, egui::FullOutput) {
+    let tokens = Tokens::DARK;
+    let mut card = Rect::ZERO;
+    let mut item = media("spotify:album:a", false, "");
+    item.kind = "Album";
+    item.sub = "Nils Aker";
+    item.lead = Some(Lead { stacked });
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+            ..Default::default()
+        },
+        |ui| {
+            let extra = if stacked {
+                extra_height_stacked(ui)
+            } else {
+                extra_height(ui)
+            };
+            card = Rect::from_min_size(Pos2::ZERO, Vec2::new(176.0, 176.0 + extra));
+            let _ = tile(ui, card, &item, &tokens);
+        },
+    );
+    output.textures_delta.clear();
+    (card, output)
+}
+
+#[test]
+fn a_lead_paints_the_kind_in_caps_then_a_dot_then_the_artist() {
+    let ctx = context();
+    let (card, output) = lead_tile(&ctx, false);
+
+    let (lead_at, _, lead_format) =
+        painted_line(&output, "ALBUM").expect("the kind leads the line in caps");
+    assert_eq!(
+        lead_format.extra_letter_spacing,
+        recipe::tracking_pts(text::XXS, tracking::WIDE),
+        "the kind is the sub-line's own voice, tracked wide"
+    );
+    assert_eq!(
+        lead_format.font_id,
+        recipe::card_kind(),
+        "in the card's mono"
+    );
+
+    let (sub_at, _, sub_format) =
+        painted_line(&output, "Nils Aker").expect("the artist follows the kind");
+    assert_eq!(
+        sub_format.extra_letter_spacing,
+        recipe::tracking_pts(text::XXS, tracking::SLIGHT),
+        "the artist keeps its own tracking"
+    );
+    assert!(
+        sub_at.x > lead_at.x,
+        "the artist follows the kind on the same line: {sub_at:?} vs {lead_at:?}"
+    );
+    assert!(
+        (sub_at.y - lead_at.y).abs() < 0.01,
+        "both voices share the top line"
+    );
+    assert_eq!(painted_dots(&output, card), 1, "one separator between them");
+}
+
+#[test]
+fn a_stacked_lead_paints_the_kind_above_the_artist_and_no_dot() {
+    let ctx = context();
+    let (card, output) = lead_tile(&ctx, true);
+
+    let (lead_at, _, _) = painted_line(&output, "ALBUM").expect("the kind is drawn");
+    let (sub_at, _, _) = painted_line(&output, "Nils Aker").expect("the artist is drawn");
+    assert!(
+        sub_at.y >= lead_at.y + stroke::HAIRLINE,
+        "the artist steps onto its own line: {sub_at:?} vs {lead_at:?}"
+    );
+    assert!(
+        (sub_at.x - lead_at.x).abs() < 0.01,
+        "both lines start at the same left edge"
+    );
+    assert_eq!(
+        painted_dots(&output, card),
+        0,
+        "the stacked form drops the separator rather than fronting the name with it"
+    );
+}
+
+#[test]
+fn a_stacked_tile_is_one_kind_line_taller_than_a_plain_one() {
+    let ctx = context();
+    let mut measured = None;
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+            ..Default::default()
+        },
+        |ui| {
+            measured = Some((
+                extra_height(ui),
+                extra_height_stacked(ui),
+                row_height(ui, &recipe::card_kind()),
+            ));
+        },
+    );
+    output.textures_delta.clear();
+    let (plain, stacked, kind) = measured.expect("both heights are measured");
+    assert!(
+        (stacked - plain - kind).abs() < 0.01,
+        "the stacked tile adds exactly one kind row: {stacked} - {plain} is not {kind}"
+    );
+}
+
+#[test]
+fn a_card_without_a_lead_paints_one_line_as_before() {
+    let ctx = context();
+    let items = media("spotify:album:a", false, "11 tracks");
+    let (_, output) = card_pass(&ctx, &items);
+
+    assert!(
+        painted_line(&output, "ALBUM").is_none(),
+        "no lead means no separate kind word"
+    );
+    assert!(
+        painted_line(&output, "Album · Nils Aker").is_some(),
+        "the sub-line stays whole"
     );
 }

@@ -64,6 +64,7 @@ fn cards_row(ui: &mut Ui, list: &List<'_>, tokens: &Tokens, draw: &mut MediaDraw
             name: &release.name,
             kind: "Album",
             sub: &sub,
+            lead: None,
             size: "",
             round: false,
             shelf: SidebarKind::Albums,

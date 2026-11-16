@@ -703,3 +703,74 @@ fn a_claimed_button_is_inert_even_when_its_control_is_ready() {
     assert!(!sense.senses_click());
     assert!(!sense.is_focusable());
 }
+
+/// A control holding its turn cannot act, and says so — but it keeps the Tab
+/// stop it had, so a draw that lands elsewhere does not move the keyboard away
+/// from the square the user pressed.
+#[test]
+fn a_live_busy_control_is_in_the_busy_moment() {
+    assert_eq!(Moment::of(true, false), Moment::Ready);
+    assert_eq!(Moment::of(true, true), Moment::Busy);
+    assert_eq!(Moment::of(false, true), Moment::Busy);
+    assert_eq!(Moment::of(false, false), Moment::Shut);
+}
+
+#[test]
+fn a_busy_control_keeps_its_tab_stop_and_is_announced_disabled() {
+    let ctx = Context::default();
+    // AccessKit state exists only while the pass that built it is live.
+    ctx.enable_accesskit();
+    let mut seen = None;
+    run(&ctx, input(Vec::new()), |ui| {
+        let slot = slot_moment_keyed(
+            ui,
+            Control::DiscoveryReroll,
+            "row",
+            Role::Button,
+            cell(0.0),
+            "Draw another set",
+            &Tokens::DARK,
+            Moment::Busy,
+        );
+        assert!(ui.ctx().has_accesskit_node(slot.response.id));
+        let disabled = ui
+            .ctx()
+            .accesskit_node_builder(slot.response.id, |node| node.is_disabled());
+        seen = Some((slot.live, slot.response.sense, disabled));
+    });
+
+    let (live, sense, disabled) = seen.expect("the slot drew");
+    assert!(!live, "a busy control cannot act, so it is not live");
+    assert!(sense.senses_click(), "it still answers the pointer");
+    assert!(sense.is_focusable(), "and keeps its Tab stop");
+    assert_eq!(
+        disabled,
+        Some(true),
+        "a busy control is still announced disabled"
+    );
+}
+
+/// A shutdown control is the control the slot has always offered: no click, no
+/// Tab stop. The busy moment is additive and does not loosen it.
+#[test]
+fn a_shut_control_is_still_not_focusable() {
+    let ctx = Context::default();
+    let mut sense = None;
+    run(&ctx, input(Vec::new()), |ui| {
+        let slot = slot_moment_keyed(
+            ui,
+            Control::DiscoveryReroll,
+            "row",
+            Role::Button,
+            cell(0.0),
+            "Draw another set",
+            &Tokens::DARK,
+            Moment::Shut,
+        );
+        sense = Some(slot.response.sense);
+    });
+
+    let sense = sense.expect("the slot drew");
+    assert!(!sense.senses_click());
+    assert!(!sense.is_focusable());
+}

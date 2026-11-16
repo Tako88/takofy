@@ -122,7 +122,8 @@ fn row_show(
             // The border draws itself as the wait runs out, so the frame has to
             // come before the wait ends: one wake at the end would freeze it at
             // whatever share the last repaint caught.
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+            ui.ctx()
+                .request_repaint_after(Duration::from_millis(crate::theme::eq::WAKE_MS));
         }
         // A row with nothing left to draw has no button to dim: the play keeps
         // the edge, because a box that will never come back is a promise the row
@@ -131,13 +132,16 @@ fn row_show(
             control: Control::DiscoveryReroll,
             key: row.seed.uri.as_str(),
             live: state == crate::home::discovery::Reroll::Ready,
+            busy: false,
         })
     } else {
         None
     };
 
-    let (head, _) =
-        ui.allocate_exact_size(vec2(width, row_head::height(ui, tokens)), Sense::hover());
+    let (head, _) = ui.allocate_exact_size(
+        vec2(width, row_head::height(ui, tokens, row_head::SeedRank::Row)),
+        Sense::hover(),
+    );
     let opened = row_head::show(
         ui,
         head.shrink2(vec2(space::S2, 0.0)),
@@ -154,7 +158,9 @@ fn row_show(
                 key: row.seed.uri.as_str(),
                 live: !crate::view::carry::carrying(ui.ctx())
                     && play.as_ref().is_some_and(|tracks| !tracks.is_empty()),
+                busy: false,
             }),
+            rank: row_head::SeedRank::Row,
         },
         tokens,
     );

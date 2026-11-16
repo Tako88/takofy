@@ -74,7 +74,7 @@ pub(super) fn cell(ui: &Ui, tokens: &Tokens) -> f32 {
 
 /// The head's height: the seed's two lines, or the play they sit beside.
 fn head_height(ui: &Ui, tokens: &Tokens) -> f32 {
-    row_head::height(ui, tokens)
+    row_head::height(ui, tokens, row_head::SeedRank::Row)
 }
 
 /// The head of one station's cell.
@@ -117,7 +117,9 @@ fn cell_of(
                 control: crate::availability::Control::StationPlay,
                 key: station.uri,
                 live: !crate::view::carry::carrying(ui.ctx()),
+                busy: false,
             }),
+            rank: row_head::SeedRank::Row,
         },
         tokens,
     );

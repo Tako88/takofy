@@ -1154,3 +1154,48 @@ fn a_row_that_found_nothing_says_so_without_claiming_the_end() {
 fn a_spent_row_draws_no_line_at_all() {
     assert_eq!(discovery_more_line(More::Done), None);
 }
+
+#[test]
+fn the_draw_shelfs_words_are_the_references() {
+    assert_eq!(HOME_CHANCE_TITLE, "Drawn from your library");
+    assert_eq!(DRAW_NOTHING, "Nothing beside this one");
+    assert_eq!(
+        DRAW_FAILED,
+        "The stations didn't answer · nothing was drawn"
+    );
+}
+
+#[test]
+fn the_draw_ledger_counts_only_what_is_there() {
+    assert_eq!(draw_ledger(4, 0), "4 tracks");
+    assert_eq!(draw_ledger(3, 1), "3 tracks · 1 album");
+    assert_eq!(draw_ledger(0, 4), "4 albums");
+    assert_eq!(draw_ledger(0, 0), "");
+    assert_eq!(draw_ledger(1, 1), "1 track · 1 album");
+}
+
+#[test]
+fn the_draw_source_names_the_seed_and_its_age() {
+    let saved = |days: u64| SavedAt::from_millis((NOW_MS - days * DAY) as i64);
+    assert_eq!(
+        draw_source(SeedKind::Song, saved(0), NOW_MS),
+        "From your library · a song saved today"
+    );
+    assert_eq!(
+        draw_source(SeedKind::Song, saved(3), NOW_MS),
+        "From your library · a song saved 3 days ago"
+    );
+    assert_eq!(
+        draw_source(SeedKind::Album, saved(400), NOW_MS),
+        "From your library · an album saved last year"
+    );
+    assert_eq!(
+        draw_source(SeedKind::Artist, None, NOW_MS),
+        "From your library · an artist you follow"
+    );
+    assert_eq!(
+        draw_source(SeedKind::Playlist, None, NOW_MS),
+        "From your library",
+        "a seed with no date says only where it came from"
+    );
+}

@@ -118,6 +118,7 @@ fn the_tile_height_the_grid_solves_contains_the_last_line_the_tile_paints() {
         name: "Evening",
         kind: "Playlist",
         sub: "Playlist · Vela Moreno",
+        lead: None,
         size: "62 songs",
         round: false,
         shelf: SidebarKind::Playlists,

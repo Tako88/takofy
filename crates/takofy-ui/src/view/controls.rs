@@ -3,7 +3,9 @@
 //! A painted control draws itself, but every control passes through this one
 //! seam first. The slot is where a waiting control stops being interactive: it
 //! senses hover only, never joins the tab order, and announces itself disabled
-//! with its label through `WidgetInfo`.
+//! with its label through `WidgetInfo`. A busy control is the third moment: it
+//! cannot act either and is still announced disabled, but it keeps its Tab stop
+//! and the focus it has, because the thing it waits on is about to give it back.
 //!
 //! The focus ring is drawn here too, because every control and row wants the
 //! same one. It shows only after keyboard input, so a clicked control leaves no
@@ -65,6 +67,32 @@ pub fn slot_id(ui: &Ui, control: Control, key: impl Hash + std::fmt::Debug) -> e
     ui.scope_id().with((control, key))
 }
 
+/// How a control stands this frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Moment {
+    /// It can act: it senses clicks and drags, takes Tab and is announced
+    /// enabled.
+    Ready,
+    /// It holds its turn: it cannot act and is announced disabled, but it keeps
+    /// its Tab stop and its focus for the moment it is waiting on.
+    Busy,
+    /// Nothing is queued and no track is loaded: it is offered exactly as an
+    /// absent control is.
+    Shut,
+}
+
+impl Moment {
+    /// The moment `live` and `busy` name: busy wins, because a control holding
+    /// its turn is still waiting however live its view is.
+    pub const fn of(live: bool, busy: bool) -> Self {
+        match (busy, live) {
+            (true, _) => Self::Busy,
+            (false, true) => Self::Ready,
+            (false, false) => Self::Shut,
+        }
+    }
+}
+
 /// Wires one control's rect to its interaction and accessibility, keyed.
 ///
 /// A control that appears once can use `slot`. One that appears once per row —
@@ -89,24 +117,48 @@ pub fn slot_keyed(
     tokens: &Tokens,
     live: bool,
 ) -> Slot {
+    let moment = Moment::of(live, false);
+    slot_moment_keyed(ui, control, key, role, rect, label, tokens, moment)
+}
+
+/// [`slot_keyed`] in one of the three moments.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a control needs its identity, place, label and state"
+)]
+pub fn slot_moment_keyed(
+    ui: &mut Ui,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    role: Role,
+    rect: Rect,
+    label: &str,
+    tokens: &Tokens,
+    moment: Moment,
+) -> Slot {
     // Two different facts meet here. `availability` is about the build and never
-    // changes; `live` is about the moment — nothing is queued, no track is
-    // loaded. A control that cannot act right now is offered exactly as a waiting
-    // one is: unfocusable, announced disabled, and drawn with the same tone.
-    let ready = availability(control) == Availability::Ready && live;
+    // changes; the moment is about now — nothing is queued, no track is loaded,
+    // a read is still out. A control that cannot act right now is offered as a
+    // waiting one is: announced disabled, and drawn with the same tone.
+    let acts = availability(control) == Availability::Ready && moment != Moment::Shut;
+    let announced_ready = acts && moment == Moment::Ready;
     let id = slot_id(ui, control, key);
-    let sense = if ready {
-        // Draggable as well as clickable: the seek bar is scrubbed, and a press and
-        // release without movement is still a click.
-        Sense::click_and_drag()
-    } else {
-        Sense::hover()
+    let sense = match (acts, moment) {
+        // A busy control keeps its Tab stop, so a draw that lands elsewhere
+        // leaves it where the keyboard already was.
+        (true, Moment::Busy) => Sense::click(),
+        (true, _) => {
+            // Draggable as well as clickable: the seek bar is scrubbed, and a
+            // press and release without movement is still a click.
+            Sense::click_and_drag()
+        }
+        (false, _) => Sense::hover(),
     };
     let response = ui.interact(rect, id, sense);
 
-    response.widget_info(|| WidgetInfo::labeled(role, ready, label));
+    response.widget_info(|| WidgetInfo::labeled(role, announced_ready, label));
 
-    let hover = if ready {
+    let hover = if announced_ready {
         ui.ctx().animate_bool_with_time_and_easing(
             id.with("hover"),
             response.hovered(),
@@ -117,7 +169,7 @@ pub fn slot_keyed(
         0.0
     };
 
-    if ready {
+    if sense.is_focusable() {
         focus_ring(
             ui,
             &response,
@@ -127,14 +179,14 @@ pub fn slot_keyed(
         );
     }
 
-    if ready && response.hovered() {
+    if announced_ready && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     Slot {
         response,
         hover,
-        live: ready,
+        live: announced_ready,
     }
 }
 
@@ -452,7 +504,8 @@ pub enum HeadTone {
 /// `waited` is how much of a cooldown has run, when the square is coming back:
 /// its own edge is drawn in from nothing to whole, so a button that cannot act yet
 /// says how long that lasts instead of looking broken. The glyph stays dim under
-/// the line, because the button is still inert.
+/// the line, because the button is still inert. `busy` is a button holding its
+/// turn: it paints exactly as a waiting one does, and keeps its Tab stop.
 #[expect(
     clippy::too_many_arguments,
     reason = "a control needs its identity, place, label, tone and state"
@@ -469,8 +522,10 @@ pub fn head_action_keyed(
     tone: HeadTone,
     waited: Option<f32>,
     live: bool,
+    busy: bool,
 ) -> Slot {
-    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
+    let moment = Moment::of(live, busy);
+    let slot = slot_moment_keyed(ui, control, key, Role::Button, rect, label, tokens, moment);
     let hovered = slot.live && slot.hover > 0.0;
     let edge = match (tone, hovered) {
         (HeadTone::Strong, true) => tokens.palette.accent,

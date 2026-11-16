@@ -145,6 +145,7 @@ fn cards_row(ui: &mut Ui, cards: &[Card<'_>], draw: &mut MediaDraw<'_, '_>, now_
                     name: &track.title,
                     kind: "Song",
                     sub: &sub,
+                    lead: None,
                     size: "",
                     round: false,
                     shelf: SidebarKind::Albums,

@@ -220,3 +220,17 @@ fn a_capped_grid_still_gives_way_to_a_narrow_area() {
         "a narrow page keeps the minimum width rather than squeezing four"
     );
 }
+
+#[test]
+fn the_kind_word_stacks_at_the_rails_width_and_below() {
+    assert!(kind_stacked(CARD_KIND_STACK_MAX));
+    assert!(
+        !kind_stacked(CARD_KIND_STACK_MAX + 0.1),
+        "one point above the rail the kind stays on the artist's line"
+    );
+    assert!(kind_stacked(0.0), "a collapsed area takes the stacked form");
+    assert!(
+        kind_stacked(f32::NAN),
+        "a width the solver cannot answer takes the stacked form"
+    );
+}

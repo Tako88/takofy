@@ -1,5 +1,6 @@
 use super::super::*;
 use super::test_support::*;
+use crate::home::chance::{READS_PER_PRESS, SKIPS};
 use crate::home::{Budget, Slot};
 use std::time::Instant;
 use takofy_model::home::{HomeAnswer, HomeAsk, Station, StationSeed};
@@ -819,25 +820,70 @@ fn station_for(seed: &StationSeed) -> Station {
     }
 }
 
-/// The `LoadHome` asks one frame made, in the order the frame made them.
-fn load_home_asks(asks: &[Command]) -> Vec<HomeAsk> {
-    asks.iter()
-        .filter_map(|ask| match ask {
-            Command::LoadHome(ask) => Some(ask.clone()),
-            _ => None,
-        })
-        .collect()
+/// Asks every frame until the library owes nothing more, appending the built
+/// `LoadHome` asks it made.
+///
+/// The draw shelf is asked first and is answered here, with nothing, because
+/// its asks have the same shape as two of the shelves below it and cannot be
+/// told apart after the fact. Calling [`Library::home_request`] once per ask is
+/// what lets the fixture attribute an ask before it is made.
+fn drain_asks(library: &mut Library, into: &mut Vec<HomeAsk>) {
+    for _ in 0..Budget::allowance() + SKIPS + READS_PER_PRESS {
+        let owed = library.home.chance.owed().is_some();
+        let out = library.home.chance.in_flight().is_some();
+        let Some(Command::LoadHome(ask)) = library.home_request() else {
+            return;
+        };
+        // The draw shelf leads, so the ask is its own unless a read it sent was
+        // already out when the call was made, which is then the only reason a
+        // lower shelf got one (#96).
+        let drawn = owed || (!out && library.home.chance.in_flight().is_some());
+        if drawn {
+            answer_draw(library, &ask);
+            continue;
+        }
+        into.push(ask);
+    }
 }
 
-/// Asks every frame until the library owes nothing more, appending the
-/// `LoadHome` asks it made.
-fn drain_asks(library: &mut Library, into: &mut Vec<HomeAsk>) {
-    for _ in 0..=Budget::allowance() {
-        let frame = load_home_asks(&library.home_asks(Instant::now()));
-        if frame.is_empty() {
+/// Answers one ask the draw shelf made with nothing, so the shelf moves on.
+fn answer_draw(library: &mut Library, ask: &HomeAsk) {
+    match ask {
+        HomeAsk::Station { seed } => {
+            library.apply(&Update::Home(HomeAnswer::Station(Station {
+                seed: seed.clone(),
+                uri: format!("spotify:station:{}", seed.uri),
+                title: seed.uri.clone(),
+                subtitle: None,
+                art: None,
+                rows: Vec::new(),
+            })));
+        }
+        HomeAsk::Labels { tracks } => {
+            library.apply(&Update::Home(HomeAnswer::Labelled {
+                asked: tracks.clone(),
+                named: Vec::new(),
+            }));
+        }
+        other => panic!("the draw shelf asked for {other:?}"),
+    }
+}
+
+/// Lands the draw shelf's reads, answering each with nothing.
+fn land_the_draw(library: &mut Library) {
+    let mut primed = false;
+    for _ in 0..READS_PER_PRESS {
+        if primed && library.home.chance.owed().is_none() {
             return;
         }
-        into.extend(frame);
+        let Some(Command::LoadHome(ask)) = library.home_request() else {
+            return;
+        };
+        if !primed && library.home.chance.in_flight().is_none() {
+            return;
+        }
+        primed = true;
+        answer_draw(library, &ask);
     }
 }
 
@@ -873,6 +919,104 @@ fn one_frame_carries_every_built_ask_it_owes() {
         built_asks(&after) < built_asks(&before),
         "what a frame sent is not owed again by the next one: {after:?}"
     );
+}
+
+#[test]
+fn the_draw_shelfs_read_is_asked_before_the_shelves_below_it() {
+    let mut library = every_shelf_ready();
+
+    let first = library.home_request();
+
+    assert!(
+        matches!(first, Some(Command::LoadHome(_))),
+        "the draw shelf asks first: {first:?}"
+    );
+    assert!(
+        library.home.chance.in_flight().is_some(),
+        "the first ask belongs to the draw shelf"
+    );
+    assert!(
+        !library.home.stations.chosen(),
+        "the band below it was not asked first"
+    );
+}
+
+/// A library with one thing of every kind, all of them unnamed, so the deck's
+/// only candidates are songs no read can name.
+fn only_unnameable_songs() -> Library {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::LibraryReady);
+    let mut list = playlist("spotify:playlist:a", "A");
+    list.named = false;
+    library.apply(&Update::Playlists(vec![list]));
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums),
+        "arrange: the albums are out"
+    );
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the likes are out"
+    );
+    let mut album = saved_album("spotify:album:r");
+    album.named = false;
+    library.apply(&Update::SavedAlbums(vec![album]));
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 4_000)]));
+    let mut artist = followed_artist("spotify:artist:a");
+    artist.named = false;
+    library.apply(&Update::FollowedArtists(vec![artist]));
+    library.apply(&Update::FollowedShows(vec![followed_show(
+        "spotify:show:s",
+    )]));
+    library
+}
+
+#[test]
+fn a_press_ends_the_built_asks_early_nothing() {
+    let mut library = only_unnameable_songs();
+    let mut asks: Vec<HomeAsk> = Vec::new();
+
+    drain_asks(&mut library, &mut asks);
+
+    assert!(
+        library.home.chance.nothing(),
+        "a library whose songs cannot be named draws nothing"
+    );
+    let liked = "spotify:track:t";
+    let mut order: Vec<Slot> = Vec::new();
+    for ask in &asks {
+        let slot = built_slot(ask, liked);
+        if order.last() != Some(&slot) {
+            order.push(slot);
+        }
+    }
+    assert_eq!(
+        order,
+        Slot::ORDER[1..],
+        "the shelves below it keep the page's order: {asks:?}"
+    );
+}
+
+#[test]
+fn pressing_the_square_while_a_read_is_out_moves_nothing() {
+    let mut library = every_shelf_ready();
+
+    assert!(
+        library.home_request().is_some(),
+        "arrange: the draw shelf's first read is out"
+    );
+    assert!(!library.press_draw(1_700_000_000_001));
+}
+
+#[test]
+fn a_press_after_a_landing_moves_the_deck_on() {
+    let mut library = every_shelf_ready();
+    land_the_draw(&mut library);
+    assert!(!library.home.chance.pending(), "arrange: the draw landed");
+
+    assert!(library.press_draw(1_700_000_000_002));
+    assert!(library.home.chance.pending(), "the press drew again");
 }
 
 #[test]

@@ -68,6 +68,16 @@ impl Look {
             live,
         }
     }
+
+    /// The reference's quiet sentence: left-aligned, inert, and inset from the
+    /// page's own edge.
+    pub(crate) const fn quiet(inset: f32) -> Self {
+        Self {
+            inset,
+            centred: false,
+            live: false,
+        }
+    }
 }
 
 /// Where the row's two pieces go inside its rect.

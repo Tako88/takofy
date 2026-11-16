@@ -5,10 +5,10 @@
 //! is the reference's `.section__head`: a bold title at the `lg` size on the left,
 //! the trailing widgets at the right, and one step of space below.
 
-use egui::{FontId, Pos2, Rect, Sense, Ui, Vec2, vec2};
+use egui::{Pos2, Rect, Sense, Ui, Vec2, vec2};
 
 use crate::layout::section::{self as section_layout, Placement};
-use crate::theme::{Tokens, Weight, fonts, space, stroke, text, tracking};
+use crate::theme::{Tokens, space, stroke};
 
 use super::text as recipe;
 
@@ -77,9 +77,9 @@ fn title_line(ui: &Ui, title: &str, width: f32, tokens: &Tokens) -> std::sync::A
     recipe::line(
         ui,
         title,
-        FontId::new(text::LG, fonts::sans(Weight::Bold)),
+        recipe::shelf_title(),
         tokens.palette.text,
-        recipe::tracking_pts(text::LG, tracking::TIGHT),
+        recipe::shelf_title_tracking(),
         width,
     )
 }

@@ -31,6 +31,7 @@ mod counted;
 mod dated;
 mod discovery;
 mod door;
+mod draw;
 mod episodes;
 mod foot;
 mod frame;
@@ -62,6 +63,13 @@ pub(super) struct Pressed {
     /// The discovery tracks pressed: a card's first track, a split row's tracks
     /// from that row onward, or a row's whole visible set.
     pub(super) discovery: Option<Vec<TrackEntry>>,
+    /// The draw shelf's quiet square was pressed for another draw.
+    pub(super) another: bool,
+    /// The draw shelf's track card pressed to play.
+    ///
+    /// Kept apart from `discovery`, which feeds the same sink: the two shelves'
+    /// presses change for different reasons, and one frame may take both.
+    pub(super) rows: Option<Vec<TrackEntry>>,
     /// The discovery row whose re-roll was pressed.
     pub(super) reroll: Option<takofy_model::home::DiscoveryKind>,
     /// The discovery row whose Load more line was pressed.
@@ -126,6 +134,7 @@ pub(super) fn home_view(
                 let fit = Fit {
                     columns: grid::columns(ui),
                 };
+                let stacked = crate::layout::cards::kind_stacked(ui.ctx().content_rect().width());
                 let shelves = library.home_sections(fit);
                 let discovery = library.discovery_band();
                 let mut draw = MediaDraw {
@@ -144,6 +153,27 @@ pub(super) fn home_view(
                 let mut drawn = false;
                 if discovery::show(ui, &discovery, now_ms, tokens, table, &mut draw, &mut out) {
                     drawn = true;
+                }
+                // The shelf at chance follows the band that finds its seeds: one
+                // item the deck drew, and the four cards its station yielded.
+                if matches!(
+                    shelves.chance.presence(),
+                    Presence::Waiting | Presence::Ready
+                ) {
+                    if drawn {
+                        section::divide(ui, tokens);
+                    }
+                    if draw::show(
+                        ui,
+                        &shelves.chance,
+                        now_ms,
+                        stacked,
+                        tokens,
+                        &mut draw,
+                        &mut out,
+                    ) {
+                        drawn = true;
+                    }
                 }
                 // What the artists you follow released, directly under the band
                 // that finds them. It is not a slot, so it draws here rather than
@@ -290,6 +320,20 @@ pub(super) fn home_view(
     // re-roll, because a re-roll turns the row idle and must not eat a play the
     // user made in the same frame.
     if let Some(rows) = out.discovery.take()
+        && library.want_play_rows(None, rows)
+    {
+        ui.ctx().request_repaint();
+    }
+    // The draw shelf's square starts the next draw; the four on screen stay until
+    // its station lands.
+    if out.another {
+        // The draw may have ended in a sentence rather than a read, and that is
+        // still a frame the page owes.
+        library.press_draw(now_ms);
+        ui.ctx().request_repaint();
+    }
+    // A card's play is one row, queued like the discovery band's.
+    if let Some(rows) = out.rows.take()
         && library.want_play_rows(None, rows)
     {
         ui.ctx().request_repaint();

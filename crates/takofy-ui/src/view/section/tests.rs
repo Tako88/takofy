@@ -1,6 +1,7 @@
 use egui::{Pos2, RawInput, Rect, Shape};
 
 use super::*;
+use crate::theme::fonts;
 
 /// The probe's screen width, which is the head's own width.
 const HEAD_W: f32 = 600.0;

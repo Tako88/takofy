@@ -13,6 +13,7 @@ use takofy_model::{PlaylistEntry, SavedAlbum, SavedAt, TrackEntry};
 use crate::message::Failure;
 
 pub mod because;
+pub mod chance;
 pub mod counted;
 pub mod discovery;
 pub mod draw;
@@ -78,14 +79,16 @@ pub struct Fit {
 
 /// Home's shelves for one frame, borrowed from the library.
 ///
-/// The release shelf is a member outside [`Slot`]: it needs neither a Retry nor
-/// a share of the budget, and a sixth slot would touch every match on the page's
-/// fixed order. It is still counted where it belongs, in the dated shelf's own
-/// decision, so Quiet and DayOne yield to it.
+/// The release shelf and the shelf at chance are members outside [`Slot`]: they
+/// need neither a Retry nor a share of the budget, and a sixth slot would touch
+/// every match on the page's fixed order. They are still counted where they
+/// belong, in the dated shelf's own decision, so Quiet and DayOne yield to them.
 #[derive(Debug)]
 pub struct Sections<'a> {
     /// The page's first shelf: what was saved most recently.
     pub dated: Shelf<'a>,
+    /// The one item drawn at chance, and the four cards read from its station.
+    pub chance: Section<chance::Draw<'a>>,
     pub stations: Section<stations::Band<'a>>,
     pub because: Section<because::Row<'a>>,
     pub counted: Section<counted::Tiles<'a>>,
@@ -106,8 +109,12 @@ impl Sections<'_> {
     }
 
     /// The shelves below the dated one, in the page's order.
-    pub fn others(&self) -> [Presence; 5] {
+    ///
+    /// The chance shelf is read off its own state rather than through
+    /// [`Self::presence`], the same asymmetry the release shelf has.
+    pub fn others(&self) -> [Presence; 6] {
         [
+            self.chance.presence(),
             self.presence(Slot::Stations),
             self.presence(Slot::Because),
             self.presence(Slot::Counted),
@@ -128,7 +135,7 @@ fn dated_presence(shelf: &Shelf<'_>) -> Presence {
 }
 
 /// Whether the dated shelf draws beside `others`.
-pub fn dated_draws(shelf: &Shelf<'_>, others: [Presence; 5]) -> bool {
+pub fn dated_draws(shelf: &Shelf<'_>, others: [Presence; 6]) -> bool {
     match shelf {
         Shelf::Waiting | Shelf::Cards(_) => true,
         Shelf::Unreadable(_) => true,
@@ -171,6 +178,8 @@ pub struct Home {
     pub episodes: episodes::State,
     /// The newest releases of the followed artists.
     pub releases: releases::State,
+    /// The deck one item is drawn from, and what its station answered.
+    pub chance: chance::State,
     /// Discovery's three rows: their pools, and what each has answered.
     pub discovery: discovery::State,
     /// The reads one open still allows.
@@ -188,6 +197,7 @@ impl Home {
         self.counted.open(self.seed);
         self.episodes.open(self.seed);
         self.releases.open();
+        self.chance.open(self.seed);
         self.discovery.open();
     }
 
@@ -202,6 +212,7 @@ impl Home {
             HomeAnswer::Dig(_) => return,
             _ => {}
         }
+        self.chance.land(answer);
         if let HomeAnswer::Labelled { asked, named } = answer {
             // A read any shelf sent still says how long each track it named runs,
             // which is all a station row wants from it.
@@ -234,6 +245,7 @@ impl Home {
         if matches!(ask, HomeAsk::Labels { .. } | HomeAsk::Portraits { .. }) {
             self.counted.fail(ask, failure);
         }
+        self.chance.fail(ask, failure);
         self.stations.fail(ask, failure);
         self.because.fail(ask, failure);
         self.episodes.fail(ask, failure);
@@ -309,10 +321,12 @@ impl Home {
         for slot in Slot::ORDER {
             self.forget_slot(slot);
         }
-        // The releases go with the rest and are read again; the rows go too, and
-        // their open starts again, because a retry reads the lists the pools are
-        // drawn from.
+        // The releases and the chance shelf go with the rest and are read again;
+        // the rows go too, and their open starts again, because a retry reads the
+        // lists the pools are drawn from. Neither is a slot, so neither is in the
+        // loop above.
         self.releases.forget();
+        self.chance.forget();
         self.discovery = discovery::State::default();
         self.discovery.open();
     }
