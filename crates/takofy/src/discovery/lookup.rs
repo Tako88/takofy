@@ -465,8 +465,6 @@ fn encode(value: &str) -> String {
     encoded
 }
 
-// The ring's walk is exercised by its own tests until the bridge mints a dig.
-#[allow(dead_code)]
 pub(crate) mod walk;
 
 #[cfg(test)]

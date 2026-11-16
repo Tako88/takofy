@@ -64,7 +64,9 @@ use takofy_core::instruction::Instruction;
 use takofy_core::login::{TokenSource, resume};
 use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
-use takofy_model::home::{DiscoveryAnswer, DiscoveryOutcome, DiscoverySeed, HomeAnswer};
+use takofy_model::home::{
+    DigAnswer, DigAsk, DigOutcome, DiscoveryAnswer, DiscoveryOutcome, DiscoverySeed, HomeAnswer,
+};
 use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, RequestId, Revision};
 use takofy_ui::message::{
     Command, DeviceUpdate, Failure, RemoteUpdate, Steer, TransportUpdate, Update,
@@ -938,7 +940,10 @@ fn serve_instant<H: SessionHost>(
             url,
             notifier.clone(),
         ),
-        Immediate::Discover { seed } => spawn_lookup(host, notifier, parts.lookups, seed),
+        Immediate::Discover { seed } => {
+            spawn_lookup(host, notifier, parts.lookups, Asked::Seed(seed))
+        }
+        Immediate::Dig { ask } => spawn_lookup(host, notifier, parts.lookups, Asked::Ring(ask)),
     }
 }
 
@@ -962,16 +967,56 @@ impl Lookups {
 
 /// Leaves the in-flight set when the lookup it counted ends, however it ends,
 /// so a row that asks again after a lookup is not deduped away.
-struct RunningSeed {
-    uri: String,
+struct Running {
+    key: String,
     claimed: Arc<Mutex<HashSet<String>>>,
 }
 
-impl Drop for RunningSeed {
+impl Drop for Running {
     fn drop(&mut self) {
         if let Ok(mut running) = self.claimed.lock() {
-            running.remove(&self.uri);
+            running.remove(&self.key);
         }
+    }
+}
+
+/// One outside read the loop spawns: a row's first lookup, or a ring it digs.
+#[derive(Clone)]
+enum Asked {
+    Seed(DiscoverySeed),
+    Ring(DigAsk),
+}
+
+impl Asked {
+    /// What a repeat ask is deduped by: a seed once, and a ring once per hop.
+    fn key(&self) -> String {
+        match self {
+            Self::Seed(seed) => seed.uri.clone(),
+            Self::Ring(ask) => format!("dig:{}:{}", ask.hop, ask.seed.uri),
+        }
+    }
+
+    /// The answer a read that never ran would have sent.
+    fn unreachable(&self) -> Update {
+        match self {
+            Self::Seed(seed) => lookup_answer(seed.clone(), DiscoveryOutcome::Unreachable),
+            Self::Ring(ask) => dig_answer(DigAnswer {
+                seed: ask.seed.clone(),
+                hop: ask.hop,
+                outcome: DigOutcome::Unreachable,
+            }),
+        }
+    }
+}
+
+/// Runs one asked read and turns it into the update it answers with.
+async fn answer_asked<D: Discover>(discovery: D, asked: Asked) -> Update {
+    match asked {
+        Asked::Seed(seed) => {
+            let (seed, outcome) = discovery.run(seed).await;
+            lookup_answer(seed, outcome)
+        }
+        Asked::Ring(ask) => dig_answer(discovery.dig(ask).await),
     }
 }
 
@@ -981,67 +1026,68 @@ fn spawn_lookup<H: SessionHost>(
     host: &H,
     notifier: &Notifier,
     lookups: &mut Lookups,
-    seed: DiscoverySeed,
+    asked: Asked,
 ) {
     let Some(discovery) = host.discovery() else {
         // A window with no session, or none handed an outside service, cannot
         // look anything up: the row is told so now rather than left waiting.
-        notifier.send(lookup_answer(seed, DiscoveryOutcome::Unreachable));
+        notifier.send(asked.unreachable());
         return;
     };
+    let key = asked.key();
     match lookups.in_flight.lock() {
         Ok(mut running) => {
-            if !running.insert(seed.uri.clone()) {
-                // The seed is already on its way, and its one answer lands.
+            if !running.insert(key.clone()) {
+                // The same ask is already on its way, and its one answer lands.
                 return;
             }
         }
         Err(_) => {
-            notifier.send(lookup_answer(seed, DiscoveryOutcome::Unreachable));
+            notifier.send(asked.unreachable());
             return;
         }
     }
-    let claimed = RunningSeed {
-        uri: seed.uri.clone(),
+    let claimed = Running {
+        key,
         claimed: Arc::clone(&lookups.in_flight),
     };
     let permits = Arc::clone(&lookups.permits);
     let notifier = notifier.clone();
-    // The seed the answer is about, kept apart because a lookup cut short or
-    // come apart cannot hand back the one it was given.
-    let asked = seed.clone();
+    // The ask the answer is about, kept apart because a read cut short or come
+    // apart cannot hand back the one it was given.
+    let fallback = asked.clone();
     lookups.tasks.spawn(async move {
-        // The permit is held for the whole lookup, so three rows at once is the
+        // The permit is held for the whole read, so three rows at once is the
         // most the outside hears from this window.
         let _permit = match permits.acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => {
                 drop(claimed);
-                notifier.send(lookup_answer(asked, DiscoveryOutcome::Unreachable));
+                notifier.send(fallback.unreachable());
                 return;
             }
         };
-        // A lookup that came apart, or that outlasted its budget, still answers:
+        // A read that came apart, or that outlasted its budget, still answers:
         // its row would otherwise wait for an account of what happened that
         // never arrives.
         let answered = tokio::time::timeout(
             LOOKUP_DEADLINE,
-            AssertUnwindSafe(discovery.run(seed)).catch_unwind(),
+            AssertUnwindSafe(answer_asked(discovery, asked)).catch_unwind(),
         )
         .await;
-        let (seed, outcome) = match answered {
-            Ok(Ok(answer)) => answer,
+        let update = match answered {
+            Ok(Ok(update)) => update,
             Ok(Err(_)) => {
                 log::warn!("a discovery lookup came apart");
-                (asked, DiscoveryOutcome::Unreachable)
+                fallback.unreachable()
             }
             Err(_) => {
                 log::warn!("a discovery lookup outlasted its budget");
-                (asked, DiscoveryOutcome::Unreachable)
+                fallback.unreachable()
             }
         };
         drop(claimed);
-        notifier.send(lookup_answer(seed, outcome));
+        notifier.send(update);
     });
 }
 
@@ -1049,6 +1095,11 @@ fn spawn_lookup<H: SessionHost>(
 /// on the row that asked rather than on whichever is open.
 fn lookup_answer(seed: DiscoverySeed, outcome: DiscoveryOutcome) -> Update {
     Update::Home(HomeAnswer::Discovery(DiscoveryAnswer { seed, outcome }))
+}
+
+/// One ring's answer, carrying the seed and hop it belongs to.
+fn dig_answer(answer: DigAnswer) -> Update {
+    Update::Home(HomeAnswer::Dig(answer))
 }
 
 /// Removes finished lookups so their cells do not accumulate, and logs a task
