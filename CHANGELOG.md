@@ -6,6 +6,15 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-11-16
+
+### Added
+
+- **The cover is a menu too.** Right-click the picture in Now Playing for the same
+  sheet the pane's "…" opens on the track that is playing — copy link, start
+  radio, go to the album or the artist — which is the quickest way to hand
+  someone what you are listening to.
+
 ## [0.3.0] — 2026-11-16
 
 ### Added
@@ -87,7 +96,8 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
   instead of telling you that you are offline
   ([#79](https://github.com/Tako88/takofy/issues/79)).
 
-[Unreleased]: https://github.com/Tako88/takofy/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Tako88/takofy/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Tako88/takofy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Tako88/takofy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Tako88/takofy/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Tako88/takofy/compare/v0.1.2...v0.1.3
