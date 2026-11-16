@@ -64,21 +64,13 @@ fn two_cards_are_a_pair_wide_and_two_faces_narrow() {
 }
 
 #[test]
-fn three_or_four_cards_are_faces_and_five_or_six_are_capped_at_four() {
-    for count in [3, 4] {
+fn three_or_more_cards_are_faces() {
+    for count in [3, 4, 5, 6] {
         let cards: Vec<DiscoveryCard> = (0..count).map(|at| card(at, &[true])).collect();
         assert_eq!(
             body_of(&refs(&cards), false),
             Body::Faces { cards: count },
             "{count}"
-        );
-    }
-    for count in [5, 6] {
-        let cards: Vec<DiscoveryCard> = (0..count).map(|at| card(at, &[true])).collect();
-        assert_eq!(
-            body_of(&refs(&cards), false),
-            Body::Faces { cards: 4 },
-            "{count} is capped at four"
         );
     }
 }

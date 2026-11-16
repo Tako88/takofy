@@ -194,9 +194,13 @@ impl Home {
     /// Folds one answer into the shelf that asked for it.
     pub fn land(&mut self, answer: &HomeAnswer) {
         // Discovery keeps its own state, which no shelf below holds.
-        if let HomeAnswer::Discovery(_) = answer {
-            self.discovery.land(answer);
-            return;
+        match answer {
+            HomeAnswer::Discovery(_) => {
+                self.discovery.land(answer);
+                return;
+            }
+            HomeAnswer::Dig(_) => return,
+            _ => {}
         }
         if let HomeAnswer::Labelled { asked, named } = answer {
             // A read any shelf sent still says how long each track it named runs,
@@ -213,6 +217,16 @@ impl Home {
         self.because.land(answer);
         self.episodes.land(answer);
         self.releases.land(answer);
+    }
+
+    /// Folds one ring's answer into Discovery, appending what it kept.
+    pub fn land_dig(
+        &mut self,
+        answer: &HomeAnswer,
+        owned: &discovery::fresh::Owned,
+        hidden: &discovery::hidden::Hidden,
+    ) {
+        self.discovery.land_dig(answer, owned, hidden);
     }
 
     /// Records that the read `ask` named failed.

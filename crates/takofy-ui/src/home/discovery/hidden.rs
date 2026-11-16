@@ -167,6 +167,11 @@ impl Hidden {
         self.artists.contains(artist)
     }
 
+    /// Every hidden artist URI, in no order.
+    pub fn artists(&self) -> impl Iterator<Item = &str> {
+        self.artists.iter().map(String::as_str)
+    }
+
     /// Where `day`'s rows start, or `None` when the stored positions belong to
     /// another day.
     pub fn positions_for(&self, day: Day) -> Option<[usize; 3]> {

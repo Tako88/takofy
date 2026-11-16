@@ -187,7 +187,7 @@ fn body_show(
             let height = grid.height(cards);
             let (slot, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let origin = slot.min.to_vec2();
-            for (index, data) in body::visible_cards(&row.cards).iter().enumerate() {
+            for (index, data) in row.cards.iter().enumerate() {
                 let rect = grid.card_rect(index).translate(origin);
                 card::show(
                     ui,
@@ -214,7 +214,7 @@ fn body_show(
             let height = pair.cards[0].height();
             let (slot, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let origin = slot.min.to_vec2();
-            for (index, data) in body::visible_cards(&row.cards).iter().take(2).enumerate() {
+            for (index, data) in row.cards.iter().take(2).enumerate() {
                 let rect = pair.cards[index].translate(origin);
                 card::show(
                     ui,

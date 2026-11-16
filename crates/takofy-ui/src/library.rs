@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::time::Instant;
 
-use takofy_model::home::{Day, DiscoveryKind};
+use takofy_model::home::{Day, DiscoveryKind, HomeAnswer};
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow,
     PlaylistAccess, PlaylistCover, PlaylistEntry, PlaylistHead, SavedAlbum, ShowDetail, TrackEntry,
@@ -27,6 +27,7 @@ use crate::home::Home;
 use crate::home::discovery::Band;
 use crate::home::discovery::Reroll;
 use crate::home::discovery::hidden::Hidden;
+use crate::home::discovery::walk::More;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
@@ -1194,6 +1195,10 @@ impl Library {
                 self.search.apply(update);
             }
             // A Home answer lands on the shelf that asked for it, whatever page is shown.
+            Update::Home(answer @ HomeAnswer::Dig(_)) => {
+                let owned = self.owned();
+                self.home.land_dig(answer, &owned, &self.hidden);
+            }
             Update::Home(answer) => self.home.land(answer),
             Update::HomeFailed { ask, failure } => self.home.fail(ask, *failure),
             Update::Radio { seed, rows } => self.land_radio(seed, rows.clone()),
@@ -2053,6 +2058,16 @@ impl Library {
     /// an open with no ask left to spend stays where it is.
     pub fn reroll_discovery(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
         self.home.discovery.reroll(kind, now_ms)
+    }
+
+    /// Takes one press of `kind`'s Load more, if the row may dig now.
+    pub fn press_more_discovery(&mut self, kind: DiscoveryKind, now_ms: u64) -> bool {
+        self.home.discovery.press_more(kind, now_ms)
+    }
+
+    /// What `kind`'s row offers about digging further now.
+    pub fn more_discovery(&self, kind: DiscoveryKind, now_ms: u64) -> More {
+        self.home.discovery.more(kind, now_ms)
     }
 
     /// Stamps the discovery rows whose answers have just landed, so each one's
