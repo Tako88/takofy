@@ -6,8 +6,27 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-16
+
 ### Added
 
+- **Just outside your library.** Home opens with artists next to the ones you
+  already keep — a few at a time, each with a face, what they last released and
+  the year it came out. Follow one, hide one, play one, or press the square for a
+  different set, and "Turn discovery off" removes the band entirely.
+- **A row you can keep pulling on.** Each discovery row ends with "Load more",
+  which walks one ring further out from the artists already shown. When there is
+  nobody out there it says "Nothing deeper from here" and stops offering.
+- **Something you did not know you wanted.** One shelf draws a single thing out
+  of your library and sets eight cards beside it: the songs and albums of that
+  thing's neighbourhood that you already have. Press its square and it draws
+  again, out of something else.
+- **What the artists you follow just released.** A shelf of their newest albums,
+  each with the day it came out.
+- **Every card has its own "…".** The art in the library's grid, on Home and in
+  search results now opens a menu: copy link, save, start radio, add to
+  playlist. Start radio is there on any card whose album, artist or playlist can
+  seed a station.
 - **Keep a playlist someone sends you.** A playlist you open from a link shows
   its name, description, owner and cover even when it is not in your library,
   and its heart adds it to the sidebar. The page stays put when the library
@@ -22,6 +41,7 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 - **Play next.** A track's "…" menu can put it ahead of everything that is
   waiting, including what another device queued, without interrupting what is
   playing.
+
 ## [0.2.0] — 2026-10-31
 
 ### Added
@@ -67,6 +87,7 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
   instead of telling you that you are offline
   ([#79](https://github.com/Tako88/takofy/issues/79)).
 
-[Unreleased]: https://github.com/Tako88/takofy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Tako88/takofy/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Tako88/takofy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Tako88/takofy/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/Tako88/takofy/compare/v0.1.2...v0.1.3
