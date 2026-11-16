@@ -109,6 +109,42 @@
     { name: "Amber Room", artist: "Vela Moreno", art: "img/covers/saltglass.jpg", duration: 247 }
   ];
 
+  /* Three presses of the shelf at chance, so the prototype can be pressed and
+     the rule stays visible: the mix is chance, not a shape. None of them holds a
+     track beside the album it lives on, and none of them holds the seed itself. */
+  var DRAWS = [
+    {
+      seed: { title: "Kestrel", href: "album.html" },
+      source: "From your library · a song saved in 2019",
+      items: [
+        { kind: "track", name: "Northlight", artist: "Marta Ísleif", art: "img/covers/northlight.jpg", href: "album.html", duration: 244 },
+        { kind: "album", name: "Cold Storage", artist: "Nils Aker", art: "img/covers/cold-storage.jpg", href: "album.html", duration: 218 },
+        { kind: "track", name: "Wintering", artist: "Coastal Divide", art: "img/covers/wintering.jpg", href: "album.html", duration: 324 },
+        { kind: "album", name: "Halcyon Street", artist: "The Rookery", art: "img/covers/halcyon-street.jpg", href: "album.html", duration: 196 }
+      ]
+    },
+    {
+      seed: { title: "Halcyon Street", href: "album.html" },
+      source: "From your library · an album you saved",
+      items: [
+        { kind: "track", name: "Saltglass", artist: "Vela Moreno", art: "img/covers/saltglass.jpg", href: "album.html", duration: 253 },
+        { kind: "track", name: "Wintering", artist: "Coastal Divide", art: "img/covers/wintering.jpg", href: "album.html", duration: 324 },
+        { kind: "track", name: "Row of Pines", artist: "Nils Aker", art: "img/covers/nocturne-field.jpg", href: "album.html", duration: 289 },
+        { kind: "track", name: "Chrome Gospel", artist: "Wires & Wolves", art: "img/covers/chrome-gospel.jpg", href: "album.html", duration: 261 }
+      ]
+    },
+    {
+      seed: { title: "Windows Down", href: "playlist.html" },
+      source: "From your library · a playlist you made",
+      items: [
+        { kind: "album", name: "Underglass", artist: "Marta Ísleif", art: "img/covers/underglass.jpg", href: "album.html" },
+        { kind: "track", name: "Nine Bells", artist: "Nell Varga", art: "img/covers/nine-bells.jpg", href: "album.html", duration: 302 },
+        { kind: "album", name: "Terminal", artist: "The Rookery", art: "img/covers/terminal.jpg", href: "album.html" },
+        { kind: "album", name: "Grey Coast", artist: "Vela Moreno", art: "img/covers/grey-coast.jpg", href: "album.html" }
+      ]
+    }
+  ];
+
   /* ----------------------------------------------------------------------
      Helpers
      ---------------------------------------------------------------------- */
@@ -822,6 +858,100 @@
   }
 
   /* ----------------------------------------------------------------------
+     The shelf at chance — a press replaces the set, it never grows it
+     ---------------------------------------------------------------------- */
+
+  var SWEEP =
+    '<svg class="row-head__sweep" viewBox="0 0 32 32" aria-hidden="true">' +
+    '<rect x="0.5" y="0.5" width="31" height="31" rx="2" pathLength="100" stroke-dasharray="0 100"></rect></svg>';
+
+  function drawCard(item) {
+    var album = item.kind === "album";
+    var label = album ? "Play the album " + item.name : "Play " + item.name + " by " + item.artist;
+    return (
+      '<li class="card"><div class="card__art">' +
+      '<img src="' + item.art + '" alt="" loading="lazy">' +
+      '<button class="card__play" type="button" data-track="' + item.name + '" data-artist="' + item.artist +
+      '" data-art="' + item.art + '" data-duration="' + (item.duration || 222) + '" aria-label="' + label + '">' +
+      '<svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>' +
+      '</button></div><div class="card__body">' +
+      '<a class="card__title truncate" href="' + item.href + '">' + item.name + '</a>' +
+      '<p class="card__sub"><span class="card__kind">' + (album ? "Album" : "Track") + "</span> " + item.artist + '</p>' +
+      "</div></li>"
+    );
+  }
+
+  /* The mix is chance, so the head reports what it actually drew — and a kind it
+     did not draw is not mentioned at all: a count of zero is an apology. */
+  function drawLedger(items) {
+    var tracks = items.filter(function (item) { return item.kind !== "album"; }).length;
+    var albums = items.length - tracks;
+    return [
+      tracks ? tracks + (tracks === 1 ? " track" : " tracks") : "",
+      albums ? albums + (albums === 1 ? " album" : " albums") : ""
+    ].filter(Boolean).join(" · ");
+  }
+
+  function bindDrawShelf() {
+    var shelf = $("[data-draw]");
+    if (!shelf) return;
+    var press = $("[data-draw-press]", shelf);
+    var title = $("[data-draw-title]", shelf);
+    var source = $("[data-draw-source]", shelf);
+    var ledger = $("[data-draw-ledger]", shelf);
+    var body = $("[data-draw-body]", shelf);
+    var none = $("[data-draw-none]", shelf);
+    var index = 0;
+    var drawing = false;
+    var safety = 0;
+
+    function show(draw) {
+      title.textContent = draw.seed.title;
+      title.setAttribute("href", draw.seed.href);
+      source.textContent = draw.source;
+      body.innerHTML = draw.items.map(drawCard).join("");
+      body.hidden = !draw.items.length;
+      if (none) none.hidden = !!draw.items.length;
+      ledger.hidden = !draw.items.length;
+      if (draw.items.length) ledger.textContent = drawLedger(draw.items);
+    }
+
+    function settle() {
+      window.clearTimeout(safety);
+      var sweep = $(".row-head__sweep", press);
+      if (sweep) sweep.remove();
+      press.classList.remove("row-head__action--waiting");
+      press.removeAttribute("aria-busy");
+      press.removeAttribute("aria-disabled");
+      // The cards are new nodes, so the playing one has to be found again.
+      render();
+    }
+
+    function land() {
+      if (!drawing) return;
+      drawing = false;
+      index = (index + 1) % DRAWS.length;
+      show(DRAWS[index]);
+      settle();
+    }
+
+    press.addEventListener("click", function () {
+      if (drawing) return;
+      drawing = true;
+      // Not `disabled`: a keyboard press must keep its focus for the next draw.
+      press.setAttribute("aria-disabled", "true");
+      press.setAttribute("aria-busy", "true");
+      press.classList.add("row-head__action--waiting");
+      press.insertAdjacentHTML("beforeend", SWEEP);
+      var edge = $(".row-head__sweep rect", press);
+      // The wait ends when the drawn border closes. The timeout is only there
+      // so a press can never leave the square shut for good.
+      if (edge) edge.addEventListener("animationend", land, { once: true });
+      safety = window.setTimeout(land, 1600);
+    });
+  }
+
+  /* ----------------------------------------------------------------------
      Panel tabs
      ---------------------------------------------------------------------- */
 
@@ -1041,6 +1171,7 @@
     bindViewToggle();
     bindTabs();
     bindLoadDemo();
+    bindDrawShelf();
     bindDrawer();
     bindSearch();
     bindKeys();

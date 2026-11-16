@@ -76,13 +76,13 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Loading states</h1>
-        <p class="page-head__note">Concept · 11 states · no spinners</p>
+        <p class="page-head__note">Concept · 12 states · no spinners</p>
       </div>
 
       <p class="states__intro">
         Nothing in this client spins. When the catalogue is late, the interface keeps the shape of
         what is coming, counts what it already holds, and reports it in the same mono voice it uses
-        for a bitrate. Eleven states are documented here; the first and the fifth animate on this page.
+        for a bitrate. Twelve states are documented here; the first and the fifth animate on this page.
       </p>
 
       <!-- ============ 01 · Library grid ============ -->
@@ -928,6 +928,267 @@
           names, and appends what is left. The line is the whole control — no third square in the head —
           and it reuses the one this page already draws for a row that leads somewhere: full width,
           muted, centred here because it belongs to the body rather than to a section.
+        </p>
+      </section>
+
+      <!-- ============ 12 · The shelf at chance ============ -->
+      <section class="section" aria-labelledby="state-draw">
+        <div class="section__head">
+          <h2 class="section__title" id="state-draw"><span class="states__no">12</span>The shelf at chance</h2>
+          <p class="label states__meta">one press · four · replaces</p>
+        </div>
+
+        <div class="states__stage draw-shelf">
+          <div class="states__bar">
+            <span class="label">Drawing</span>
+            <span class="label states__status">the square waits, the cards stay</span>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <p class="row-head__seed">Kestrel</p>
+              <p class="row-head__source">From your library · a song saved in 2019</p>
+            </div>
+            <div class="row-head__controls">
+              <p class="section__link">2 tracks · 2 albums</p>
+              <button class="row-head__action row-head__action--quiet row-head__action--waiting" type="button" aria-label="Drawing another set">
+                <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+                <svg class="row-head__sweep" viewBox="0 0 32 32" aria-hidden="true"><rect x="0.5" y="0.5" width="31" height="31" rx="2" pathLength="100" stroke-dasharray="45 100"></rect></svg>
+              </button>
+            </div>
+          </div>
+
+          <ul class="card-grid">
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/northlight.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Northlight" data-artist="Marta Ísleif" data-art="img/covers/northlight.jpg" data-duration="244" aria-label="Play Northlight by Marta Ísleif">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Northlight</a>
+                <p class="card__sub"><span class="card__kind">Track</span> Marta Ísleif</p>
+              </div>
+            </li>
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/cold-storage.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Cold Storage" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="218" aria-label="Play the album Cold Storage">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Cold Storage</a>
+                <p class="card__sub"><span class="card__kind">Album</span> Nils Aker</p>
+              </div>
+            </li>
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/wintering.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Wintering" data-artist="Coastal Divide" data-art="img/covers/wintering.jpg" data-duration="324" aria-label="Play Wintering by Coastal Divide">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Wintering</a>
+                <p class="card__sub"><span class="card__kind">Track</span> Coastal Divide</p>
+              </div>
+            </li>
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/halcyon-street.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Halcyon Street" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196" aria-label="Play the album Halcyon Street">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Halcyon Street</a>
+                <p class="card__sub"><span class="card__kind">Album</span> The Rookery</p>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="states__stage draw-shelf">
+          <div class="states__bar">
+            <span class="label">Landed · four tracks</span>
+            <span class="label states__status">the mix is chance, so the row can be one kind</span>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <p class="row-head__seed">Halcyon Street</p>
+              <p class="row-head__source">From your library · an album you saved</p>
+            </div>
+            <div class="row-head__controls">
+              <p class="section__link">4 tracks</p>
+              <button class="row-head__action row-head__action--quiet" type="button" aria-label="Draw another set">
+                <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <ul class="card-grid">
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Saltglass" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="253" aria-label="Play Saltglass by Vela Moreno">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Saltglass</a>
+                <p class="card__sub"><span class="card__kind">Track</span> Vela Moreno</p>
+              </div>
+            </li>
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/wintering.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Wintering" data-artist="Coastal Divide" data-art="img/covers/wintering.jpg" data-duration="324" aria-label="Play Wintering by Coastal Divide">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Wintering</a>
+                <p class="card__sub"><span class="card__kind">Track</span> Coastal Divide</p>
+              </div>
+            </li>
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/nocturne-field.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Row of Pines" data-artist="Nils Aker" data-art="img/covers/nocturne-field.jpg" data-duration="289" aria-label="Play Row of Pines by Nils Aker">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Row of Pines</a>
+                <p class="card__sub"><span class="card__kind">Track</span> Nils Aker</p>
+              </div>
+            </li>
+            <li class="card">
+              <div class="card__art">
+                <img src="img/covers/chrome-gospel.jpg" alt="" loading="lazy" />
+                <button class="card__play" type="button" data-track="Chrome Gospel" data-artist="Wires &amp; Wolves" data-art="img/covers/chrome-gospel.jpg" data-duration="261" aria-label="Play Chrome Gospel by Wires and Wolves">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+              </div>
+              <div class="card__body">
+                <a class="card__title truncate" href="album.html">Chrome Gospel</a>
+                <p class="card__sub"><span class="card__kind">Track</span> Wires &amp; Wolves</p>
+              </div>
+            </li>
+          </ul>
+
+          <!-- The one composition worth checking: four track covers directly
+               above the release shelf's four album covers, with nothing between
+               them but the page's own rule and that shelf's heading. -->
+          <div class="section">
+            <div class="section__head">
+              <p class="section__title">New from the artists you follow</p>
+              <span class="section__link">22 releases</span>
+            </div>
+            <ul class="card-grid">
+              <li class="card">
+                <div class="card__art"><img src="img/covers/grey-coast.jpg" alt="" loading="lazy" /></div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Grey Coast</a>
+                  <p class="card__sub truncate">Vela Moreno · 14 Oct</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art"><img src="img/covers/junction.jpg" alt="" loading="lazy" /></div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Junction</a>
+                  <p class="card__sub truncate">The Rookery · 9 Oct</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art"><img src="img/covers/underglass.jpg" alt="" loading="lazy" /></div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Underglass</a>
+                  <p class="card__sub truncate">Marta Ísleif · 2 Oct</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art"><img src="img/covers/paper-weather.jpg" alt="" loading="lazy" /></div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Paper Weather</a>
+                  <p class="card__sub truncate">Hana Sō · 29 Sep</p>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="states__stage draw-shelf">
+          <div class="states__bar">
+            <span class="label">Nothing beside it</span>
+            <span class="label states__status">the seed stays, the count goes, the press returns</span>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <p class="row-head__seed">Windows Down</p>
+              <p class="row-head__source">From your library · a playlist you made</p>
+            </div>
+            <div class="row-head__controls">
+              <button class="row-head__action row-head__action--quiet" type="button" aria-label="Draw another set">
+                <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <p class="list-more list-more--quiet">Nothing beside this one</p>
+        </div>
+
+        <div class="states__stage draw-shelf">
+          <div class="states__bar">
+            <span class="label">No answer</span>
+            <span class="label states__status">the other sentence, and nothing drawn</span>
+          </div>
+
+          <div class="row-head">
+            <div class="row-head__about">
+              <p class="row-head__seed">Windows Down</p>
+              <p class="row-head__source">From your library · a playlist you made</p>
+            </div>
+            <div class="row-head__controls">
+              <button class="row-head__action row-head__action--quiet" type="button" aria-label="Draw another set">
+                <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+              </button>
+            </div>
+          </div>
+
+          <p class="list-more list-more--quiet">The stations didn't answer · nothing was drawn</p>
+        </div>
+
+        <p class="states__note">
+          The shelf is a drawer, not a row that grows: four cards, one press, and the drawn item's own name
+          in the head so four odd things never look arbitrary. The press is the head's quiet square and not
+          a line at the foot, because a line at a foot in this app means “go deeper” and this shelf never
+          does — it replaces. While the draw is in flight the square paints its own border on and the
+          previous cards stay exactly where they were: nothing blanks what it drew. The wait is the slow
+          step three times over, named once as the shelf's own <b>--draw-wait</b>, and the square is whole
+          and pressable at the moment the line closes.
+        </p>
+        <p class="states__note">
+          A press that comes back with nothing keeps the seed — that part never failed — drops the count,
+          because a row never counts what it does not have, and says one sentence where the cards were. A
+          wire that does not answer gets a different sentence, because it is a different fact. Both leave
+          the square offered again. Nothing is drawn twice over: a track never sits beside the album it
+          lives on, and the seed is never one of its own four.
+        </p>
+        <p class="states__note">
+          Two four-cover rows stacked is the one composition this shelf can repeat, so the card says what
+          it is: the sub-line leads with the kind in the app's label voice — “Track”, “Album” — and the
+          artist follows it, because the library list already writes its own rows that way (“Album · Vela
+          Moreno”) and the eye looks there first. On a track the name opens the album it lives on, because
+          a track has no page of its own; on an album it opens the album's page. At tablet width and below
+          the kind steps onto its own line rather than leaving one artist's name wrapped alone under the
+          rest, and the separator is drawn rather than typed, so no dot is left at the head of that name.
+          No glyph to learn, and no year: a year would cost one more batched read per press, and it would
+          make a draw look curated.
         </p>
       </section>
 

@@ -950,14 +950,19 @@ svg {
   letter-spacing: var(--tracking-tight);
 }
 
-.section__title a {
+/* A band title that is also a link says so at rest, at the same weight as one
+   that is not: the shelf at chance names its seed at title rank, and the seed
+   opens the thing it was drawn from. */
+.section__title a,
+.draw-shelf .row-head__seed a {
   text-decoration: underline;
   text-decoration-color: var(--color-text-subtle);
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
 }
 
-.section__title a:hover {
+.section__title a:hover,
+.draw-shelf .row-head__seed a:hover {
   text-decoration-color: currentColor;
 }
 
@@ -1266,6 +1271,31 @@ a.section__link:hover {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   letter-spacing: 0.02em;
+}
+
+/* A sub-line that has to say which kind of thing the card is says it in the
+   app's label voice: caps in the same mono, so the kind forms a column at the
+   left edge of every card. The separator is drawn rather than typed, so that
+   below the width where the line stops fitting the kind can take a line of its
+   own instead of leaving a dot at the head of the artist's. */
+.card__kind {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+
+.card__kind::after {
+  content: "·";
+  margin-inline-start: var(--space-1);
+}
+
+@media (max-width: 900px) {
+  .card__kind {
+    display: block;
+  }
+
+  .card__kind::after {
+    content: none;
+  }
 }
 
 .card--artist .card__body {
@@ -1603,6 +1633,53 @@ a.section__link:hover {
   align-content: start;
   gap: var(--space-1);
   min-width: 0;
+}
+
+/* --------------------------------------------------------------------------
+   The shelf at chance — one item drawn out of the library, and four things that
+   sit beside it. Everything here is borrowed: the head is the discovery row's
+   head, the body is the ordinary card shelf, and the kind is the first word of
+   the mono sub, the way the library list already reads ("Album · Vela Moreno").
+   Four cards in that grid land on the same 12rem columns as the release shelf
+   below, so a press can never look like a new size of card.
+   -------------------------------------------------------------------------- */
+
+/* The wait is the press's own border, drawn on once and clockwise — the sweep a
+   discovery re-roll already uses, and no spinner: nothing in this client spins.
+   It borrows the slow step three times, because a station answers slower than a
+   hover, and the square is whole and pressable the moment the line closes. It
+   only runs on a press that is actually in flight, so the specimen on the states
+   page can stay frozen mid-cooldown. */
+.draw-shelf {
+  --draw-wait: calc(var(--dur-slow) * 3);
+}
+
+/* Closes the band the way every other shelf closes: the last rule on the page
+   should sit as far from the last sub-line here as it does elsewhere, even
+   though this shelf has no line at its foot to give it that room. */
+.section.draw-shelf {
+  padding-bottom: var(--space-4);
+}
+
+/* The drawn item is this shelf's title, so it takes the shelf-title step rather
+   than the head's: at the head's 15px it would read as another discovery row,
+   and the discovery rows are the thing it must not be confused with. */
+.draw-shelf .row-head__seed {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+
+.draw-shelf .row-head__action--waiting[aria-busy="true"] .row-head__sweep rect {
+  animation: draw-wait var(--draw-wait) linear forwards;
+}
+
+@keyframes draw-wait {
+  from {
+    stroke-dasharray: 0 100;
+  }
+  to {
+    stroke-dasharray: 100 100;
+  }
 }
 
 /* The library tile: a compact row that keeps its own box. Dense enough to count
