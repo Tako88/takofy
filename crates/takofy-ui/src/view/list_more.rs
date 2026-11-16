@@ -71,7 +71,6 @@ impl Look {
 
     /// The reference's quiet sentence: left-aligned, inert, and inset from the
     /// page's own edge.
-    #[cfg(test)]
     pub(crate) const fn quiet(inset: f32) -> Self {
         Self {
             inset,

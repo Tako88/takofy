@@ -343,6 +343,8 @@ pub struct Draw<'a> {
     /// The item the shelf drew, as its head names it. Owned, because a seed is
     /// nameable before its station answers.
     pub seed: Candidate,
+    /// The album a song seed's name read named, which its head opens.
+    pub album_uri: Option<String>,
     /// The cards the station yielded, in station order.
     pub cards: Vec<Card<'a>>,
     /// How many of them are tracks, for the ledger.
@@ -590,6 +592,7 @@ impl State {
         let albums = cards.len() - tracks;
         Some(Draw {
             seed: shown.seed.clone(),
+            album_uri: self.album_of(&shown.seed.uri),
             cards,
             tracks,
             albums,
@@ -615,6 +618,7 @@ impl State {
         }
         Some(Draw {
             seed: sown,
+            album_uri: self.album_of(&candidate.uri),
             cards: Vec::new(),
             tracks: 0,
             albums: 0,
@@ -623,6 +627,13 @@ impl State {
             failed: self.failed,
             pressed_ms: self.pressed_ms,
         })
+    }
+
+    /// The album a song seed's name read named, when it named one.
+    fn album_of(&self, uri: &str) -> Option<String> {
+        self.names
+            .get(uri)
+            .and_then(|found| found.album_uri.clone())
     }
 
     /// Takes the next candidate the deck offers, or says nothing was drawn.

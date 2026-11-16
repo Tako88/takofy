@@ -14,9 +14,10 @@ use takofy_model::{
 use super::*;
 use crate::cover::Art;
 use crate::format::{
-    HOME_BECAUSE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_MORE, HOME_DISCOVERY_NOTE_UNREACHABLE,
-    HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON, HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE,
-    HOME_QUIET, HOME_RELEASES_TITLE, HOME_SHELF_TITLE, HOME_STATIONS_TITLE,
+    HOME_BECAUSE_TITLE, HOME_CHANCE_TITLE, HOME_COUNTED_TITLE, HOME_DISCOVERY_MORE,
+    HOME_DISCOVERY_NOTE_UNREACHABLE, HOME_DISCOVERY_SWITCH_OFF, HOME_DISCOVERY_SWITCH_ON,
+    HOME_DISCOVERY_TITLE, HOME_EPISODES_TITLE, HOME_QUIET, HOME_RELEASES_TITLE, HOME_SHELF_TITLE,
+    HOME_STATIONS_TITLE,
 };
 use crate::home::{Fit, Presence, Slot};
 use crate::library::Library;
@@ -25,19 +26,19 @@ use crate::theme::{Tokens, fonts, style};
 use crate::view::test_support::click_events;
 
 /// A window wide enough that every card shelf draws in one row.
-const PROBE: Vec2 = Vec2::new(900.0, 1200.0);
-const NOW_MS: u64 = 1_700_000_000_000;
+pub(super) const PROBE: Vec2 = Vec2::new(900.0, 1200.0);
+pub(super) const NOW_MS: u64 = 1_700_000_000_000;
 const LOCAL_HOUR: u8 = 9;
 const DAY_MS: u64 = 86_400_000;
 
-fn context() -> Context {
+pub(super) fn context() -> Context {
     let ctx = Context::default();
     ctx.set_fonts(fonts::definitions());
     ctx.set_global_style(style(&Tokens::DARK));
     ctx
 }
 
-fn input(events: Vec<Event>) -> RawInput {
+pub(super) fn input(events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, PROBE)),
         events,
@@ -84,7 +85,7 @@ fn click(ctx: &Context, pos: Pos2, library: &mut Library, art: &mut Art) -> Opti
 }
 
 /// Every text one frame painted, with the box it filled, in paint order.
-fn painted(output: &egui::FullOutput) -> Vec<(&str, Rect)> {
+pub(super) fn painted(output: &egui::FullOutput) -> Vec<(&str, Rect)> {
     output
         .shapes
         .iter()
@@ -99,7 +100,7 @@ fn painted(output: &egui::FullOutput) -> Vec<(&str, Rect)> {
 }
 
 /// Where the galley whose text is exactly `label` was painted.
-fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+pub(super) fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
     output
         .shapes
         .iter()
@@ -324,6 +325,85 @@ fn pressing_the_discovery_switch_turns_the_setting_and_asks_for_a_frame() {
         !library.discovery_enabled(),
         "the same row turned discovery back off"
     );
+}
+
+#[test]
+fn the_draw_shelf_sits_between_the_band_and_the_releases() {
+    // The chance shelf is still naming its first seed, which is the one state
+    // that draws the shelf's own title: once a draw is nameable the seed is the
+    // title instead.
+    let mut library = draw_naming();
+    assert_eq!(
+        library.home_sections(Fit { columns: 4 }).chance.presence(),
+        Presence::Waiting,
+        "arrange: the draw shelf waits for its read"
+    );
+
+    let ctx = context();
+    let mut art = Art::default();
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+    let positions = head_positions(
+        &output,
+        &[HOME_DISCOVERY_TITLE, HOME_CHANCE_TITLE, HOME_RELEASES_TITLE],
+    );
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "the draw shelf left its place on the page: {positions:?}"
+    );
+}
+
+/// A library whose draw shelf is still naming its first seed.
+///
+/// The kind order a page's seed draws puts the song bag before the playlists',
+/// and no album or named artist is held here, so the first candidate is a song
+/// whose label read has not landed yet.
+fn draw_naming() -> Library {
+    let mut library = Library::starting_home(NOW_MS);
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::Playlists(
+        (0..4)
+            .map(|at| {
+                playlist(
+                    &format!("spotify:playlist:{at}"),
+                    &format!("Mix {at}"),
+                    5_000,
+                )
+            })
+            .collect(),
+    ));
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the liked read must be in flight"
+    );
+    library.apply(&Update::LikedTracks(vec![takofy_model::LikedTrack {
+        uri: "spotify:track:liked".to_owned(),
+        saved_at: None,
+    }]));
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    // No list named this artist, so the release shelf follows it and the deck
+    // cannot seed from it.
+    library.apply(&Update::FollowedArtists(vec![FollowedArtist {
+        uri: "spotify:artist:seed".to_owned(),
+        name: String::new(),
+        named: false,
+        portrait: None,
+        releases: None,
+        followed_at: None,
+    }]));
+    library.set_discovery_enabled(true);
+    library.set_local_day(Day::from_days(SHELF_DAY));
+    let seed = discovery_seed(&mut library);
+    library.apply(&Update::Home(HomeAnswer::Discovery(DiscoveryAnswer {
+        seed,
+        outcome: DiscoveryOutcome::Neighbours {
+            cards: (0..4).map(outside_card).collect(),
+            genre: None,
+        },
+    })));
+    land_release(&mut library);
+    library
 }
 
 /// A library whose built shelves all have something to draw.

@@ -29,7 +29,6 @@ pub(super) fn solve(ui: &mut Ui) -> Grid {
 
 /// The grid a shelf lays its cards out in when each card's kind word takes its
 /// own line above the artist's.
-#[cfg(test)]
 pub(super) fn solve_lead(ui: &mut Ui) -> Grid {
     solve_at(ui, COLUMNS, media::extra_height_stacked(ui))
 }
