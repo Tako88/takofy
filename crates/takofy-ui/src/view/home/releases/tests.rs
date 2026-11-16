@@ -42,9 +42,18 @@ fn run(
     events: Vec<Event>,
     section: &Section<List<'_>>,
 ) -> (Pressed, egui::FullOutput) {
+    run_in(ctx, events, section, &Library::default())
+}
+
+/// The same pass, over a library holding whatever the shelf's rights need.
+fn run_in(
+    ctx: &Context,
+    events: Vec<Event>,
+    section: &Section<List<'_>>,
+    library: &Library,
+) -> (Pressed, egui::FullOutput) {
     let tokens = Tokens::DARK;
     let mut art = Art::default();
-    let library = Library::default();
     let mut select = None;
     let mut open = None;
     let mut play = None;
@@ -59,7 +68,7 @@ fn run(
                         art: &mut art,
                         now: Instant::now(),
                         tokens: &tokens,
-                        library: &library,
+                        library,
                         select: &mut select,
                         open: &mut open,
                         play: &mut play,
@@ -315,5 +324,108 @@ fn a_press_on_a_cards_more_posts_the_albums_menu_with_its_radio() {
         request.targets,
         Vec::new(),
         "a card is not a pick of tracks"
+    );
+}
+
+/// A library whose lists have answered, holding `saved` albums and nothing else.
+///
+/// The rootlist is read as well, because an unsaved card's Save row is only
+/// offered once a revision exists to link against.
+fn collected(saved: &[&str]) -> Library {
+    let mut library = Library::default();
+    library.apply(&crate::message::Update::Playlists(Vec::new()));
+    // A write needs a revision to name, and the read after the rootlist's own
+    // access is what hands one over.
+    library.apply(&crate::message::Update::RootlistAccess(
+        takofy_model::PlaylistAccess {
+            revision: takofy_model::Revision::from_wire(b"root-1").expect("a revision"),
+            editable: true,
+        },
+    ));
+    library.apply(&crate::message::Update::SavedAlbums(
+        saved
+            .iter()
+            .map(|uri| takofy_model::SavedAlbum {
+                saved_at: None,
+                uri: (*uri).to_owned(),
+                name: "A Record".to_owned(),
+                named: true,
+                artists: "Vela Moreno".to_owned(),
+                artist_uris: Vec::new(),
+                artist_names: Vec::new(),
+                year: None,
+                cover: None,
+                tracks: None,
+            })
+            .collect(),
+    ));
+    library
+}
+
+#[test]
+fn a_release_nobody_saved_offers_save_and_never_also_its_removal() {
+    let ctx = context();
+    let releases = releases();
+    let section = ready(&releases);
+    // The collection has answered, so the library is live: the card's own
+    // standing is what decides its removal, not the list being readable.
+    let library = collected(&["spotify:album:somewhere-else"]);
+    let art = crate::view::media::art_rect(card_rect_for(&ctx, 0));
+    let corner = crate::layout::cards::corner_more(art);
+
+    let _ = run_in(
+        &ctx,
+        vec![Event::PointerMoved(art.center())],
+        &section,
+        &library,
+    );
+    let mut request = None;
+    for event in click_events(corner.center()) {
+        let _ = run_in(&ctx, vec![event], &section, &library);
+        request = request.or(crate::view::context_menu::take_request(&ctx));
+    }
+    let request = request.expect("the card posted no menu");
+    let offered: Vec<crate::menu::Verb> = request.items.iter().map(|item| item.verb).collect();
+
+    assert!(
+        offered.contains(&crate::menu::Verb::SaveToLibrary),
+        "a release nobody saved offers no way to keep it: {offered:?}"
+    );
+    assert!(
+        !offered.contains(&crate::menu::Verb::RemoveFromLibrary),
+        "an album nobody saved cannot be taken back out: {offered:?}"
+    );
+}
+
+#[test]
+fn a_release_already_in_the_library_offers_its_removal() {
+    let ctx = context();
+    let releases = releases();
+    let section = ready(&releases);
+    let library = collected(&["spotify:album:a"]);
+    let art = crate::view::media::art_rect(card_rect_for(&ctx, 0));
+    let corner = crate::layout::cards::corner_more(art);
+
+    let _ = run_in(
+        &ctx,
+        vec![Event::PointerMoved(art.center())],
+        &section,
+        &library,
+    );
+    let mut request = None;
+    for event in click_events(corner.center()) {
+        let _ = run_in(&ctx, vec![event], &section, &library);
+        request = request.or(crate::view::context_menu::take_request(&ctx));
+    }
+    let request = request.expect("the card posted no menu");
+    let offered: Vec<crate::menu::Verb> = request.items.iter().map(|item| item.verb).collect();
+
+    assert!(
+        offered.contains(&crate::menu::Verb::RemoveFromLibrary),
+        "a saved album offers no way out of the library: {offered:?}"
+    );
+    assert!(
+        !offered.contains(&crate::menu::Verb::SaveToLibrary),
+        "a saved album is offered saving again: {offered:?}"
     );
 }

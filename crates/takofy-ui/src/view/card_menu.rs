@@ -35,11 +35,15 @@ pub(in crate::view) fn post_thing(
         uri: media.uri.to_owned(),
         name: media.name.to_owned(),
     };
+    let saved = library.band_saved(&item.uri);
     let rights = LibraryRights {
         // The name field lives in the sidebar, so a card offers no rename.
         renamable: false,
-        removable: library.can_remove(item.kind),
-        saved: library.band_saved(&item.uri),
+        // A card need not be in the library, so its removal is the item's own
+        // standing rather than the list's: an album nobody saved offers Save
+        // alone, never both.
+        removable: saved == Some(true) && library.can_remove(item.kind),
+        saved,
     };
     // The surface only decides whether a rename would open a row's field or a
     // band's, and a card offers neither.
