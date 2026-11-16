@@ -76,7 +76,7 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Context menu</h1>
-        <p class="page-head__note">Concept · 9 frames · pointer and keyboard</p>
+        <p class="page-head__note">Concept · 10 frames · pointer and keyboard</p>
       </div>
 
       <p class="states__intro">
@@ -533,7 +533,7 @@
       <section class="section" aria-labelledby="m9">
         <div class="section__head">
           <h2 class="section__title" id="m9"><span class="states__no">M9</span>On a discovery card</h2>
-          <p class="label states__meta">3 verbs · the target named</p>
+          <p class="label states__meta">4 verbs · the target named</p>
         </div>
 
         <div class="states__stage">
@@ -568,6 +568,7 @@
             <div class="menu-demo">
               <ul class="menu" role="menu" aria-label="Ilse Vane">
                 <li class="menu__action" role="menuitem">Follow Ilse Vane</li>
+                <li class="menu__action" role="menuitem">Start radio</li>
                 <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
                   <span class="menu__label">Add to playlist</span>
                   <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
@@ -581,18 +582,84 @@
         </div>
 
         <p class="states__note">
-          Three verbs, because a discovery card is a stranger: you can keep them, you can put them
-          somewhere, or you can make them stop appearing — and the last is the only command, so it
-          wears the full ink and the hairline band. It names the artist rather than saying “not
-          interested”, because the scope is the claim: hidden here and everywhere in discovery, still
-          reachable from their page, from search and from anything you already had saved. Follow names
-          the artist too, so the row and the tile in the corner read as one verb in two places.
+          Four verbs, because a discovery card is a stranger: you can keep them, you can hear their
+          neighbourhood, you can put one of their tracks somewhere, or you can make them stop
+          appearing — and the last is the only command, so it wears the full ink and the hairline
+          band. Hide names the artist rather than saying “not interested”, because the scope is the
+          claim: hidden here and everywhere in discovery, still reachable from their page, from
+          search and from anything you already had saved. Follow names the artist too, so the row and
+          the tile in the corner read as one verb in two places. <b>Start radio</b> seeds the artist
+          and not the track the card happens to carry: the station is the artist's neighbourhood, and
+          two cards for one artist must not seed two stations because the wire named a different
+          track first.
           <br /><br />
           <b>Go to artist</b> is absent on purpose: the card's own click is the door, and a menu that
           repeats what the surface already does teaches nothing. Hide is local and instant; follow
           leaves the card only when the confirmation lands. The inverse lives where you would look for
           it — the artist page's own ⋯ carries “Show Ilse Vane in discovery”, drawn only while that
           artist is hidden.
+        </p>
+      </section>
+
+      <!-- ============ M10 ============ -->
+      <section class="section" aria-labelledby="m10">
+        <div class="section__head">
+          <h2 class="section__title" id="m10"><span class="states__no">M10</span>On a card that is not a stranger</h2>
+          <p class="label states__meta">the item's own sheet · the play keeps its corner</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Opened from the release card's ⋯</span>
+            <span class="label states__status">pointer</span>
+          </div>
+
+          <div class="states__pair">
+            <div class="disc-faces disc-faces--one">
+              <div class="card is-open">
+                <div class="card__art">
+                  <div class="card__library">
+                    <button class="card__tile" type="button" aria-label="More options for Grey Coast" aria-haspopup="menu" aria-expanded="true">
+                      <svg class="icon" aria-hidden="true"><use href="#i-more"></use></svg>
+                    </button>
+                  </div>
+                  <img src="img/covers/grey-coast.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Grey Coast" data-artist="Vela Moreno" data-art="img/covers/grey-coast.jpg" data-duration="241" aria-label="Play Grey Coast">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Grey Coast</a>
+                  <p class="card__sub">Vela Moreno · 14 Oct</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="menu-demo">
+              <ul class="menu" role="menu" aria-label="Grey Coast">
+                <li class="menu__action" role="menuitem">Copy link</li>
+                <li class="menu__action" role="menuitem">Save to your library</li>
+                <li class="menu__action" role="menuitem">Start radio</li>
+                <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+                  <span class="menu__label">Add to playlist</span>
+                  <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          A card is a face for one thing, so its menu is the sheet that thing already posts: the same
+          rows a sidebar row and a band offer, in the same order. What the menu knows is the item's
+          own URI — never the shelf the card happens to sit on — which is why the same album offers
+          the same verbs on the shelf of new releases, in the library's grid and at the root of the
+          sidebar. <b>Start radio</b> is offered by every kind that can seed a station: a playlist, an
+          album, an artist and a song. A show cannot, and neither can an episode.
+          <br /><br />
+          The card keeps its own play in the corner it always had, and the ⋯ takes the picture's
+          other corner, revealed the way the discovery card's is. One corner is a command, the other
+          is a menu; putting the menu beside the play would have made two targets of the same mark.
         </p>
       </section>
 

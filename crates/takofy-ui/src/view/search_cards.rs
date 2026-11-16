@@ -17,12 +17,14 @@ use egui::{Rect, Sense, Ui, pos2, vec2};
 
 use crate::cover::{Art, want_px};
 use crate::layout::{cards, table as table_layout};
+use crate::library::Library;
 use crate::search::Search;
 use crate::search_index::{Band, Index, Kind, PAGE, tracks_phrase};
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 
 use super::art;
+use super::card_menu;
 use super::hero;
 use super::list_more;
 use super::media;
@@ -40,28 +42,38 @@ pub(crate) enum Act {
 }
 
 /// Draws `band`'s head, cards and reveal row.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a results block needs its place, its answer and the stores it reads"
+)]
 pub(crate) fn show(
     ui: &mut Ui,
     band: &Band,
     index: &Index,
     search: &Search,
+    library: &Library,
     art: &mut Art,
     now: Instant,
     tokens: &Tokens,
 ) -> Option<Act> {
     section::head_spoken(ui, band.heading(), &band.share(), &band.spoken(), tokens);
-    block(ui, band, index, search, art, now, tokens).0
+    block(ui, band, index, search, library, art, now, tokens).0
 }
 
 /// The cards and the reveal row, under a head the caller has already drawn.
 ///
 /// Answers what the block asked for, and the grid it solved: the page ignores
 /// the grid, and a test measures the reservation with it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a results block needs its place, its answer and the stores it reads"
+)]
 fn block(
     ui: &mut Ui,
     band: &Band,
     index: &Index,
     search: &Search,
+    library: &Library,
     art: &mut Art,
     now: Instant,
     tokens: &Tokens,
@@ -102,7 +114,7 @@ fn block(
                     cover,
                     picture: hero::Picture::Cover,
                 };
-                media::tile(ui, rect, &item, tokens)
+                tile_with_menu(ui, rect, &item, library, tokens, false)
             }
             Kind::Artists => {
                 let Some(artist) = index.artists.get(position) else {
@@ -129,7 +141,7 @@ fn block(
                     cover,
                     picture: hero::Picture::Cover,
                 };
-                media::tile(ui, rect, &item, tokens)
+                tile_with_menu(ui, rect, &item, library, tokens, true)
             }
             // A track's card is drawn from the queue, so it is no tile here.
             Kind::Tracks => None,
@@ -151,6 +163,30 @@ fn block(
         act = Some(Act::More { focus });
     }
     (act, grid)
+}
+
+/// One card, with the menu its `⋯` asks for posted rather than reported.
+///
+/// A results card is a face for an artist or an album, so its sheet is the one
+/// the same thing posts from the library: the artist's follow, the album's save,
+/// and the radio either can seed.
+fn tile_with_menu(
+    ui: &mut Ui,
+    rect: Rect,
+    item: &media::Media<'_>,
+    library: &Library,
+    tokens: &Tokens,
+    artist: bool,
+) -> Option<media::Press> {
+    let pressed = media::tile(ui, rect, item, tokens);
+    if let Some(media::Press::Menu(door)) = pressed {
+        match artist {
+            true => card_menu::post_artist(ui.ctx(), library, item, door),
+            false => card_menu::post_thing(ui.ctx(), library, item, door),
+        }
+        return None;
+    }
+    pressed
 }
 
 /// The block a loading page reserves for `kind`: the grid its cards will land

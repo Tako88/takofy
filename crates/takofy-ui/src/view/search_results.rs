@@ -207,6 +207,7 @@ fn blocks(
                     band,
                     listing.index,
                     &stores.library.search,
+                    stores.library,
                     stores.art,
                     stores.now,
                     tokens,

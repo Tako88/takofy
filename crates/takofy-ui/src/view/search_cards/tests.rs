@@ -93,6 +93,7 @@ fn pass(
 ) -> Drawn {
     let tokens = Tokens::DARK;
     let search = Search::default();
+    let library = Library::default();
     let mut art = Art::default();
     art.begin_frame();
     let mut act = None;
@@ -106,7 +107,16 @@ fn pass(
         }
         let top = ui.cursor().top();
         section::head(ui, band.heading(), &band.share(), &tokens);
-        let (asked, solved) = block(ui, band, index, &search, &mut art, Instant::now(), &tokens);
+        let (asked, solved) = block(
+            ui,
+            band,
+            index,
+            &search,
+            &library,
+            &mut art,
+            Instant::now(),
+            &tokens,
+        );
         act = asked;
         grid = Some(solved);
         rects = (0..band.shown).map(|i| solved.card_rect(i)).collect();
@@ -131,6 +141,7 @@ fn fetches(
 ) -> Vec<takofy_model::CoverUrl> {
     let tokens = Tokens::DARK;
     let search = Search::default();
+    let library = Library::default();
     let mut art = Art::default();
     let now = Instant::now();
     art.begin_frame();
@@ -140,7 +151,7 @@ fn fetches(
             ui.set_clip_rect(clip);
         }
         section::head(ui, band.heading(), &band.share(), &tokens);
-        let _ = block(ui, band, index, &search, &mut art, now, &tokens);
+        let _ = block(ui, band, index, &search, &library, &mut art, now, &tokens);
     });
     output.textures_delta.clear();
     art.requests(now)
@@ -314,6 +325,7 @@ fn an_artist_card_wears_its_track_count_and_no_face_until_asked() {
     let index = artists(3);
     let tokens = Tokens::DARK;
     let search = Search::default();
+    let library = Library::default();
     let mut art = Art::default();
     art.begin_frame();
     let now = Instant::now();
@@ -324,6 +336,7 @@ fn an_artist_card_wears_its_track_count_and_no_face_until_asked() {
             &band(Kind::Artists, 3, 3),
             &index,
             &search,
+            &library,
             &mut art,
             now,
             &tokens,
@@ -381,6 +394,7 @@ fn an_artist_card_at_two_x_asks_for_the_size_its_tile_needs() {
             &band(Kind::Artists, 1, 1),
             &index,
             &library.search,
+            &library,
             &mut art,
             now,
             &tokens,
@@ -459,6 +473,7 @@ fn an_artist_card_draws_the_portrait_the_page_holds() {
             &band(Kind::Artists, 3, 3),
             &index,
             &library.search,
+            &library,
             &mut art,
             now,
             &tokens,
@@ -470,5 +485,57 @@ fn an_artist_card_draws_the_portrait_the_page_holds() {
             url: portrait.variants()[0].url.clone()
         }),
         "a known portrait is what the card fetches"
+    );
+}
+
+/// Hovers the first card, presses its `⋯`, and answers the request posted.
+fn more_press(ctx: &Context, band: &Band, index: &Index) -> Option<crate::menu::Request> {
+    use crate::view::context_menu;
+    let drawn = pass(ctx, band, index, None, Vec::new());
+    let art = crate::view::media::art_rect(drawn.rects[0]);
+    let corner = crate::layout::cards::corner_more(art);
+
+    let _ = pass(
+        ctx,
+        band,
+        index,
+        None,
+        vec![Event::PointerMoved(art.center())],
+    );
+    let mut request = None;
+    for event in crate::view::test_support::click_events(corner.center()) {
+        let _ = pass(ctx, band, index, None, vec![event]);
+        request = request.or(context_menu::take_request(ctx));
+    }
+    request
+}
+
+#[test]
+fn an_album_result_card_posts_the_albums_menu_with_its_radio() {
+    let ctx = context();
+    let band = band(Kind::Albums, 3, 3);
+    let request = more_press(&ctx, &band, &albums(3)).expect("the card posted no menu");
+    let offered: Vec<crate::menu::Verb> = request.items.iter().map(|item| item.verb).collect();
+
+    assert!(
+        offered.contains(&crate::menu::Verb::StartRadio),
+        "an album result offers no radio: {offered:?}"
+    );
+}
+
+#[test]
+fn an_artist_result_card_posts_the_artists_menu() {
+    let ctx = context();
+    let band = band(Kind::Artists, 2, 2);
+    let request = more_press(&ctx, &band, &artists(2)).expect("the card posted no menu");
+    let offered: Vec<crate::menu::Verb> = request.items.iter().map(|item| item.verb).collect();
+
+    assert!(
+        offered.contains(&crate::menu::Verb::Follow),
+        "an artist result offers no follow: {offered:?}"
+    );
+    assert!(
+        offered.contains(&crate::menu::Verb::StartRadio),
+        "an artist result offers no radio: {offered:?}"
     );
 }
