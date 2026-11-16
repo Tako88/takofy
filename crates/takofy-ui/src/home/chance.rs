@@ -16,7 +16,13 @@ use crate::shuffle;
 use super::seed::{Seed, below};
 
 /// How many cards the shelf draws from the station it read.
-pub const CARDS: usize = 4;
+///
+/// Two rows of the page's four columns (#96).
+pub const CARDS: usize = 8;
+
+/// The stream a draw's row sample is taken from, kept apart from the stream that
+/// picks each card's kind so the two cannot correlate.
+const ROW_SALT: u64 = 0x5A17;
 
 /// How many seeds one press may try before it draws nothing (#96).
 ///
@@ -268,20 +274,38 @@ pub struct Card<'a> {
 /// album with it, so no two cards are one album and a track never sits beside
 /// its own album (#96).
 pub fn draw_cards(rows: &[TrackEntry], seed: &StationSeed, draw: Seed) -> Vec<CardAt> {
+    // Only the rows that could be a card are candidates, so the sample is a choice
+    // among usable rows rather than a lottery the unusable ones waste (#96).
+    let usable: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            entry.named
+                && entry.uri != seed.uri
+                && entry
+                    .album_uri
+                    .as_deref()
+                    .is_some_and(|album| album != seed.uri)
+        })
+        .map(|(row, _)| row)
+        .collect();
+    let order = shuffle::order(usable.len(), draw.split(ROW_SALT).state());
+
     let mut state = draw.state();
     let mut cards: Vec<CardAt> = Vec::with_capacity(CARDS);
     let mut uris: HashSet<&str> = HashSet::new();
     let mut albums: HashSet<&str> = HashSet::new();
-    for (row, entry) in rows.iter().enumerate() {
+    for at in order {
         if cards.len() == CARDS {
             break;
         }
+        let Some(&row) = usable.get(at) else {
+            continue;
+        };
+        let entry = &rows[row];
         let Some(album) = entry.album_uri.as_deref() else {
             continue;
         };
-        if !entry.named || entry.uri == seed.uri || album == seed.uri {
-            continue;
-        }
         if uris.contains(entry.uri.as_str()) || albums.contains(album) {
             continue;
         }

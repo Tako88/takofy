@@ -539,7 +539,7 @@ fn a_station_answer_lands_on_the_draw_shelf_and_not_on_the_stations() {
         title: "Radio".to_owned(),
         subtitle: None,
         art: None,
-        rows: clean_rows(6),
+        rows: clean_rows(chance::CARDS + 1),
     }));
 
     let drawn = home

@@ -321,8 +321,8 @@ fn an_empty_library_draws_nothing() {
 }
 
 #[test]
-fn the_seed_is_never_among_its_four() {
-    let mut rows = clean_rows(8);
+fn the_seed_is_never_among_its_cards() {
+    let mut rows = clean_rows(CARDS + 1);
     let album = "spotify:album:seed".to_owned();
     rows.insert(3, row("spotify:track:seed", Some(&album)));
     let drew = seed_of(SeedKind::Song, "spotify:track:seed");
@@ -338,17 +338,17 @@ fn the_seed_is_never_among_its_four() {
 
 #[test]
 fn a_track_and_its_own_album_never_sit_together() {
-    let rows = vec![
-        row("spotify:track:0", Some("spotify:album:0")),
-        row("spotify:track:1", Some("spotify:album:0")),
-        row("spotify:track:2", Some("spotify:album:2")),
-        row("spotify:track:3", Some("spotify:album:3")),
-        row("spotify:track:4", Some("spotify:album:4")),
-    ];
+    let mut rows = clean_rows(CARDS);
+    // One row repeats the first one's album, so the pair rule has something to refuse.
+    rows.push(row("spotify:track:twin", Some("spotify:album:0")));
 
     let cards = draw_cards(&rows, &seed_of(SeedKind::Album, "x"), seed());
 
-    assert_eq!(cards.len(), CARDS);
+    assert_eq!(
+        cards.len(),
+        CARDS,
+        "the pair rule cost a card it did not have to"
+    );
     let albums: Vec<&str> = cards
         .iter()
         .filter_map(|card| rows[card.row].album_uri.as_deref())
@@ -358,21 +358,17 @@ fn a_track_and_its_own_album_never_sit_together() {
         CARDS,
         "two cards are one album"
     );
-    assert!(
-        !cards.iter().any(|card| card.row == 1),
-        "the row sharing the first album was drawn"
-    );
+    let twins = cards
+        .iter()
+        .filter(|card| rows[card.row].album_uri.as_deref() == Some("spotify:album:0"))
+        .count();
+    assert!(twins <= 1, "two rows of one album were drawn as cards");
 }
 
 #[test]
 fn no_uri_is_drawn_twice() {
-    let rows = vec![
-        row("spotify:track:0", Some("spotify:album:0")),
-        row("spotify:track:0", Some("spotify:album:1")),
-        row("spotify:track:2", Some("spotify:album:2")),
-        row("spotify:track:3", Some("spotify:album:3")),
-        row("spotify:track:4", Some("spotify:album:4")),
-    ];
+    let mut rows = clean_rows(CARDS);
+    rows.push(row("spotify:track:0", Some("spotify:album:twin")));
 
     let cards = draw_cards(&rows, &seed_of(SeedKind::Artist, "x"), seed());
 
@@ -382,8 +378,7 @@ fn no_uri_is_drawn_twice() {
         .map(|card| card.row)
         .map(|row| rows[row].uri.as_str())
         .collect();
-    assert_eq!(uris.len(), CARDS);
-    assert!(!cards.iter().any(|card| card.row == 1));
+    assert_eq!(uris.len(), CARDS, "a URI was drawn twice");
 }
 
 #[test]
@@ -401,14 +396,58 @@ fn an_unnamed_row_or_one_with_no_album_is_never_a_card() {
 }
 
 #[test]
-fn eight_clean_rows_yield_four() {
-    let cards = draw_cards(&clean_rows(8), &seed_of(SeedKind::Artist, "x"), seed());
+fn a_station_with_enough_rows_fills_the_shelf() {
+    let cards = draw_cards(
+        &clean_rows(CARDS * 3),
+        &seed_of(SeedKind::Artist, "x"),
+        seed(),
+    );
 
     assert_eq!(cards.len(), CARDS);
 }
 
 #[test]
-fn a_collision_is_passed_over_for_the_next_row() {
+fn the_rows_drawn_are_sampled_rather_than_taken_from_the_head() {
+    // Two draws over one answer must not always open with the same rows: the pick is
+    // a sample, or two seeds that share a neighbourhood draw the same shelf (#96).
+    let rows = clean_rows(CARDS * 5);
+    let station = seed_of(SeedKind::Artist, "x");
+    let first: Vec<usize> = draw_cards(&rows, &station, seed())
+        .iter()
+        .map(|card| card.row)
+        .collect();
+    let mut elsewhere = false;
+    for press in 1..8u64 {
+        let mut state = seed();
+        for _ in 0..press {
+            state = state.split(press);
+        }
+        let rows_drawn: Vec<usize> = draw_cards(&rows, &station, state)
+            .iter()
+            .map(|card| card.row)
+            .collect();
+        if rows_drawn != first {
+            elsewhere = true;
+            break;
+        }
+        if let Some(&last) = rows_drawn.last()
+            && last >= CARDS
+        {
+            elsewhere = true;
+            break;
+        }
+    }
+    assert!(elsewhere, "every draw took the same rows from the answer");
+    assert!(
+        first.iter().any(|&row| row >= CARDS) || first.len() == CARDS,
+        "the first draw took nothing past the head"
+    );
+}
+
+#[test]
+fn a_refused_row_does_not_cost_the_shelf_a_card() {
+    // One row of five shares an album with another, so four can be cards. The sample
+    // must reach past the refusal rather than stopping short of it (#96).
     let rows = vec![
         row("spotify:track:0", Some("spotify:album:0")),
         row("spotify:track:1", Some("spotify:album:1")),
@@ -416,12 +455,19 @@ fn a_collision_is_passed_over_for_the_next_row() {
         row("spotify:track:3", Some("spotify:album:0")),
         row("spotify:track:4", Some("spotify:album:4")),
     ];
-    let drew = seed_of(SeedKind::Album, "x");
 
     for open in 0..8 {
-        let cards = draw_cards(&rows, &drew, Seed::for_open(1_700_000_000_000, open));
-        let taken: Vec<usize> = cards.iter().map(|card| card.row).collect();
-        assert_eq!(taken, vec![0, 1, 2, 4], "the fourth row's album was taken");
+        let cards = draw_cards(
+            &rows,
+            &seed_of(SeedKind::Album, "x"),
+            Seed::for_open(1_700_000_000_000, open),
+        );
+        let albums: HashSet<&str> = cards
+            .iter()
+            .filter_map(|card| rows[card.row].album_uri.as_deref())
+            .collect();
+        assert_eq!(cards.len(), 4, "the refusal cost the shelf a card");
+        assert_eq!(albums.len(), 4, "two cards are one album");
     }
 }
 
@@ -494,7 +540,7 @@ fn a_press_while_a_read_is_out_is_dropped() {
 #[test]
 fn a_late_station_answer_for_the_previous_seed_is_dropped() {
     let mut state = opened(&Library::new(2));
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
     let landed = state.draw().expect("a draw").seed.clone();
 
     assert!(state.press(1_000), "a press after a landing draws");
@@ -666,7 +712,7 @@ fn a_walk_that_runs_out_on_a_kept_draw_announces_nothing() {
     let mut state = State::default();
     state.open(seed());
     state.fill(&candidates);
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
     assert_eq!(state.draw().expect("a draw").cards.len(), CARDS);
 
     // Every press from here lands on the songs, whose names never come back.
@@ -755,7 +801,7 @@ fn a_failed_station_read_keeps_the_last_four() {
         ..Library::default()
     };
     let mut state = opened(&library);
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
     assert_eq!(state.draw().expect("a draw").cards.len(), CARDS);
 
     assert!(state.press(1_000));
@@ -821,7 +867,7 @@ fn a_press_keeps_the_four_while_it_draws() {
         ..Library::default()
     };
     let mut state = opened(&library);
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
     let landed: Vec<String> = state
         .draw()
         .expect("a draw")
@@ -846,7 +892,7 @@ fn a_press_keeps_the_four_while_it_draws() {
 #[test]
 fn the_shelf_counts_what_it_drew() {
     let mut state = opened(&Library::new(2));
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
 
     let drawn = state.draw().expect("a draw");
     assert_eq!(drawn.cards.len(), CARDS);
@@ -864,7 +910,7 @@ fn the_shelf_counts_what_it_drew() {
 #[test]
 fn forget_drops_the_deck_and_the_four() {
     let mut state = opened(&Library::new(2));
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
     assert!(state.filled());
     assert!(state.draw().is_some());
 
@@ -879,7 +925,7 @@ fn forget_drops_the_deck_and_the_four() {
 #[test]
 fn an_open_starts_the_shelf_again() {
     let mut state = opened(&Library::new(2));
-    land_draw(&mut state, clean_rows(6));
+    land_draw(&mut state, clean_rows(CARDS + 1));
 
     state.open(another());
 

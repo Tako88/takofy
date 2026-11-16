@@ -120,7 +120,11 @@
         { kind: "track", name: "Northlight", artist: "Marta Ísleif", art: "img/covers/northlight.jpg", href: "album.html", duration: 244 },
         { kind: "album", name: "Cold Storage", artist: "Nils Aker", art: "img/covers/cold-storage.jpg", href: "album.html", duration: 218 },
         { kind: "track", name: "Wintering", artist: "Coastal Divide", art: "img/covers/wintering.jpg", href: "album.html", duration: 324 },
-        { kind: "album", name: "Halcyon Street", artist: "The Rookery", art: "img/covers/halcyon-street.jpg", href: "album.html", duration: 196 }
+        { kind: "album", name: "Halcyon Street", artist: "The Rookery", art: "img/covers/halcyon-street.jpg", href: "album.html", duration: 196 },
+        { kind: "track", name: "Nine Bells", artist: "Nell Varga", art: "img/covers/nine-bells.jpg", href: "album.html", duration: 302 },
+        { kind: "album", name: "Underglass", artist: "Marta Ísleif", art: "img/covers/underglass.jpg", href: "album.html" },
+        { kind: "album", name: "Terminal", artist: "The Rookery", art: "img/covers/terminal.jpg", href: "album.html" },
+        { kind: "track", name: "Ashlight", artist: "Nell Varga", art: "img/covers/ashlight.jpg", href: "album.html", duration: 232 },
       ]
     },
     {
@@ -130,7 +134,11 @@
         { kind: "track", name: "Saltglass", artist: "Vela Moreno", art: "img/covers/saltglass.jpg", href: "album.html", duration: 253 },
         { kind: "track", name: "Wintering", artist: "Coastal Divide", art: "img/covers/wintering.jpg", href: "album.html", duration: 324 },
         { kind: "track", name: "Row of Pines", artist: "Nils Aker", art: "img/covers/nocturne-field.jpg", href: "album.html", duration: 289 },
-        { kind: "track", name: "Chrome Gospel", artist: "Wires & Wolves", art: "img/covers/chrome-gospel.jpg", href: "album.html", duration: 261 }
+        { kind: "track", name: "Chrome Gospel", artist: "Wires & Wolves", art: "img/covers/chrome-gospel.jpg", href: "album.html", duration: 261 },
+        { kind: "track", name: "Nine Bells", artist: "Nell Varga", art: "img/covers/nine-bells.jpg", href: "album.html", duration: 302 },
+        { kind: "album", name: "Underglass", artist: "Marta Ísleif", art: "img/covers/underglass.jpg", href: "album.html" },
+        { kind: "album", name: "Terminal", artist: "The Rookery", art: "img/covers/terminal.jpg", href: "album.html" },
+        { kind: "track", name: "Ashlight", artist: "Nell Varga", art: "img/covers/ashlight.jpg", href: "album.html", duration: 232 },
       ]
     },
     {

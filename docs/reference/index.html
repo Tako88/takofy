@@ -342,12 +342,12 @@
         <button class="list-more" type="button">Turn discovery off</button>
       </section>
 
-      <!-- 02 — The shelf at chance: one item drawn out of the library, and four
-           things that sit beside it. The mix is chance, not a rule — four tracks,
-           two and two, or three albums and a track — and a press replaces the set
+      <!-- 02 — The shelf at chance: one item drawn out of the library, and eight
+           things that sit beside it. The mix is chance, not a rule — eight tracks,
+           five and three, or six albums and two tracks — and a press replaces the set
            instead of growing it, which is why the press is the head's square and
            not the line at a row's foot: in this app that line means "go deeper".
-           The seed is named in the head so four odd things never look arbitrary,
+           The seed is named in the head so eight odd things never look arbitrary,
            and every card says its kind before its artist, the way the library list
            does ("Album · Vela Moreno"): on a track the name opens the album it
            lives on, because a track has no page of its own. A track and its own
@@ -364,7 +364,7 @@
             <p class="row-head__source" data-draw-source>From your library · a song saved in 2019</p>
           </div>
           <div class="row-head__controls">
-            <p class="section__link" data-draw-ledger>2 tracks · 2 albums</p>
+            <p class="section__link" data-draw-ledger>4 tracks · 4 albums</p>
           </div>
         </div>
 
@@ -417,7 +417,55 @@
               <p class="card__sub"><span class="card__kind">Album</span> The Rookery</p>
             </div>
           </li>
-        </ul>
+              <li class="card">
+            <div class="card__art">
+              <img src="img/covers/grey-coast.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Grey Coast" data-artist="Vela Moreno" data-art="img/covers/grey-coast.jpg" data-duration="244" aria-label="Play Grey Coast by Marta Ísleif">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Grey Coast</a>
+              <p class="card__sub"><span class="card__kind">Track</span> Vela Moreno</p>
+            </div>
+          </li>
+      <li class="card">
+            <div class="card__art">
+              <img src="img/covers/junction.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Junction" data-artist="The Rookery" data-art="img/covers/junction.jpg" data-duration="218" aria-label="Play the album Junction">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Junction</a>
+              <p class="card__sub"><span class="card__kind">Album</span> The Rookery</p>
+            </div>
+          </li>
+      <li class="card">
+            <div class="card__art">
+              <img src="img/covers/underglass.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Underglass" data-artist="Marta Ísleif" data-art="img/covers/underglass.jpg" data-duration="324" aria-label="Play Underglass by Coastal Divide">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Underglass</a>
+              <p class="card__sub"><span class="card__kind">Track</span> Marta Ísleif</p>
+            </div>
+          </li>
+      <li class="card">
+            <div class="card__art">
+              <img src="img/covers/paper-weather.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Paper Weather" data-artist="Hana Sō" data-art="img/covers/paper-weather.jpg" data-duration="196" aria-label="Play the album Paper Weather">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Paper Weather</a>
+              <p class="card__sub"><span class="card__kind">Album</span> Hana Sō</p>
+            </div>
+          </li>
+</ul>
 
         <!-- What a press leaves when it comes back with nothing. The head keeps
              the seed it drew — that part never failed — and drops its count,
@@ -808,7 +856,7 @@
           built from. The discovery rows ask one open outside graph — Deezer, no key, no account — which
           artist sits next to a seed; it decides nothing that is drawn here, because faces, names and
           playback are Spotify's. The shelf at chance draws one item you already keep and asks the same
-          library for four things beside it: a press replaces what it drew, it never grows, and it never
+          library for eight things beside it: a press replaces what it drew, it never grows, and it never
           counts what it did not get. Anything you already own or follow is dropped
           before it is shown, and a seed with no neighbour you don't already have simply has no row: the
           band is as long as its confirmed neighbours, no longer and no shorter. The two release rows are
