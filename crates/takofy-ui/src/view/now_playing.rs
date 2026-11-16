@@ -98,7 +98,7 @@ pub fn show(
         frame.now,
     );
 
-    let menu = head(ui, stack, frame.current, likes, tokens);
+    let head_door = head(ui, stack, frame.current, likes, tokens);
     // Idle is the transport, never the cover: a track with no cover of its own
     // still has a box to frame.
     if transport.now_playing.is_none() {
@@ -113,6 +113,11 @@ pub fn show(
             tokens,
         );
     }
+    // The cover is the second door to the head's menu: the `⋯` above it is the
+    // one a reader can see and reach with the keyboard, and the picture is where
+    // the pointer already is. A left press is left alone, so the art stays a
+    // picture rather than becoming a button.
+    let menu = head_door.or(cover_door(ui, stack.art, frame.current.is_some()));
     let open = meta(ui, stack.meta, transport, tokens);
     let tab = tabs(ui, stack.tabs, tokens, lyrics.showing());
 
@@ -212,6 +217,19 @@ fn head(
         opener: id,
         device: Device::Keyboard,
     })
+}
+
+/// The door a right-click on the cover opens, when the pane draws an entry.
+///
+/// It is a door and not a target: nothing about the picture changes, and a left
+/// press falls through to nothing, because the menu is about the track and the
+/// cover is where the pointer happens to be.
+fn cover_door(ui: &Ui, art: Rect, live: bool) -> Option<Door> {
+    if !live {
+        return None;
+    }
+    let opener = ui.scope_id().with("now-playing-cover");
+    context_menu::pointer_door(ui, art, opener, art)
 }
 
 /// Title, artist and the transport's state, or the one line that says nothing is

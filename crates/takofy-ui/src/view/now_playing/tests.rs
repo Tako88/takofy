@@ -985,3 +985,52 @@ fn the_more_button_acts_on_the_entry_the_pane_was_handed() {
         .expect("the handed entry's menu did not open");
     assert_eq!(door.device, crate::menu::Device::Pointer);
 }
+
+/// The door a right-click at `at` asks for, over the passes egui needs.
+fn right_click(panel: &mut Panel, ctx: &Context, at: Pos2) -> Option<Door> {
+    let _ = panel.reply(ctx, Vec::new());
+    let mut door = None;
+    for event in crate::view::test_support::secondary_click_events(at) {
+        let reply = panel.reply(ctx, vec![event]);
+        door = door.or(reply.menu);
+    }
+    door
+}
+
+#[test]
+fn a_right_click_on_the_cover_opens_the_drawn_entrys_menu() {
+    let ctx = context();
+    let mut panel = Panel::new(playing("Slow Tide", "Vela Moreno")).with_queue(2, 1);
+    let (stack, _, _) = solve(&mut panel, &ctx, PROBE);
+
+    let door = right_click(&mut panel, &ctx, stack.art.center())
+        .expect("a right-click on the cover opened no menu");
+
+    assert_eq!(door.device, Device::Pointer);
+    assert_eq!(door.anchor, Anchor::Pointer(stack.art.center()));
+}
+
+#[test]
+fn a_left_click_on_the_cover_opens_nothing() {
+    let ctx = context();
+    let mut panel = Panel::new(playing("Slow Tide", "Vela Moreno")).with_queue(2, 1);
+    let (stack, _, _) = solve(&mut panel, &ctx, PROBE);
+
+    let _ = panel.reply(&ctx, Vec::new());
+    let mut menu = None;
+    for event in crate::view::test_support::click_events(stack.art.center()) {
+        menu = menu.or(panel.reply(&ctx, vec![event]).menu);
+    }
+
+    assert_eq!(menu, None, "a plain click on the cover opened a menu");
+}
+
+#[test]
+fn the_cover_opens_nothing_while_no_entry_is_drawn() {
+    let ctx = context();
+    // A transport on a track the queue does not hold: the pane draws no entry.
+    let mut panel = Panel::new(playing("Slow Tide", "Vela Moreno"));
+    let (stack, _, _) = solve(&mut panel, &ctx, PROBE);
+
+    assert_eq!(right_click(&mut panel, &ctx, stack.art.center()), None);
+}
