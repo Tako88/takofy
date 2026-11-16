@@ -264,3 +264,40 @@ fn the_rows_node_is_a_button_labelled_with_its_words() {
         .collect::<Vec<_>>();
     assert_eq!(nodes, ["Show 10 more tracks"]);
 }
+
+#[test]
+fn a_quiet_row_is_a_left_aligned_sentence_that_takes_no_press() {
+    let ctx = context();
+    let words = "Nothing beside this one";
+    let look = Look::quiet(space::S1);
+    // The first pass is the one that carries the whole tree.
+    let (taken, output, _) = pass_with(&ctx, Some(words), look, Vec::new());
+    assert!(!taken, "a sentence is not a control");
+
+    let parts = parts(rect(block()), 100.0, look);
+    assert_eq!(
+        parts.label.x,
+        rect(block()).left() + space::S1,
+        "a quiet row keeps the page's left edge rather than a centre"
+    );
+    assert_eq!(parts.chevron, None, "and draws no chevron");
+
+    // A label node carries its words as the value, not as a label.
+    let labels = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("accesskit is on")
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == egui::accesskit::Role::Label)
+        .filter_map(|(_, node)| node.value())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, [words.to_owned()]);
+
+    let at = rect(block()).center();
+    for event in crate::view::test_support::click_events(at) {
+        let (taken, _, _) = frame_with(&ctx, Some(words), look, vec![event]);
+        assert!(!taken, "no pass of a click takes a quiet row");
+    }
+}

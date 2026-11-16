@@ -540,6 +540,7 @@ impl MediaWords {
             name: &self.name,
             kind: self.kind,
             sub: &self.sub,
+            lead: None,
             size: &self.size,
             round: self.round,
             shelf: self.shelf,

@@ -43,6 +43,13 @@ pub const NOWPLAYING_HIDDEN_MAX: f32 = 1120.0;
 pub const PLAYBAR_REDUCED_MAX: f32 = 1000.0;
 /// At and below this width the sidebar becomes the rail.
 pub const RAIL_MAX: f32 = 900.0;
+/// At and below this width a card's kind word steps onto its own line above
+/// the artist's name, and the separator between them is dropped.
+///
+/// The reference sets this query on the window at 900px, the same width that
+/// turns the sidebar into the rail, so it reuses that number rather than
+/// inventing a second one (#96).
+pub const CARD_KIND_STACK_MAX: f32 = RAIL_MAX;
 /// At and below this width a playlist drops the album column and keeps the
 /// artist. The reference does it in the same media query that reduces the
 /// playbar, and the artist is what tells a listener which record is playing.

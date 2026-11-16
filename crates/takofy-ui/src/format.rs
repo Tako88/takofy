@@ -357,6 +357,51 @@ pub fn station_source(kind: SeedKind) -> &'static str {
     }
 }
 
+/// The draw shelf's title, the reference's own words for it.
+pub const HOME_CHANCE_TITLE: &str = "Drawn from your library";
+
+/// What the draw shelf says when its walk found nothing to draw.
+pub const DRAW_NOTHING: &str = "Nothing beside this one";
+
+/// What the draw shelf says when a read failed: the other of its two sentences.
+pub const DRAW_FAILED: &str = "The stations didn't answer · nothing was drawn";
+
+/// The draw shelf's ledger: how many of its cards are tracks and how many
+/// albums.
+///
+/// A part with nothing to count is left out, so a draw is never said to have
+/// zero of something it was not looking for.
+pub fn draw_ledger(tracks: usize, albums: usize) -> String {
+    [(tracks, "track"), (albums, "album")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, noun)| count_noun(count, noun))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The draw shelf's source line: what was drawn, and when it was saved.
+///
+/// A seed with no date, or one dated after the clock, keeps only where it came
+/// from. There is no civil year here: the app's only date wording is relative
+/// (#96).
+pub fn draw_source(kind: SeedKind, at: Option<SavedAt>, now_ms: u64) -> String {
+    let detail = match kind {
+        SeedKind::Playlist => saved_phrase("a playlist", at, now_ms),
+        SeedKind::Artist => "an artist you follow".to_owned(),
+        SeedKind::Album => saved_phrase("an album", at, now_ms),
+        SeedKind::Song => saved_phrase("a song", at, now_ms),
+    };
+    library_kind("From your library", Some(&detail))
+}
+
+/// `what was saved <age>`, or nothing when there is no age to name.
+fn saved_phrase(what: &str, at: Option<SavedAt>, now_ms: u64) -> String {
+    at.and_then(|at| age_label(at.as_millis(), now_ms))
+        .map(|age| format!("{what} saved {}", age.to_lowercase()))
+        .unwrap_or_default()
+}
+
 /// A discovery row's source line: what it was seeded from, and the genre its
 /// neighbours voted for when they named one.
 pub fn discovery_source(kind: DiscoveryKind, genre: Option<&str>) -> String {

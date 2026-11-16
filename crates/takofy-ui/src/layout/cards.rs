@@ -18,6 +18,8 @@
 
 use egui::{Pos2, Rect, pos2, vec2};
 
+use super::CARD_KIND_STACK_MAX;
+
 /// A solved card grid.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Grid {
@@ -129,6 +131,15 @@ pub fn grid_capped(
     let gap = usable(gap);
     let columns = columns_for(avail, card_min, gap).min(max_columns.max(1));
     grid_fixed(available, columns, gap, card_extra_h)
+}
+
+/// Whether a card's kind word stacks above its sub-line at `width` points.
+///
+/// The reference drops the separator and gives the kind its own line at the same
+/// query that turns the sidebar into the rail. A width the solver cannot answer
+/// takes the stacked form, as the hero's tiers do.
+pub fn kind_stacked(width: f32) -> bool {
+    !width.is_finite() || width <= CARD_KIND_STACK_MAX
 }
 
 /// The auto-fill column count for non-negative `avail`, `card_min` and `gap`.

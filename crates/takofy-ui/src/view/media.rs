@@ -31,6 +31,9 @@ pub struct Media<'a> {
     pub kind: &'a str,
     /// The line under the name: what it is and who made it.
     pub sub: &'a str,
+    /// Whether the sub-line leads with the kind word, and whether that word
+    /// takes a line of its own.
+    pub lead: Option<Lead>,
     /// The Size cell: empty when the wire named no count.
     pub size: &'a str,
     /// An artist's cover is a circle; everything else is a rounded square.
@@ -44,6 +47,14 @@ pub struct Media<'a> {
     pub cover: Cover,
     /// What a tile draws in its art box: the mosaic once every quadrant is held.
     pub picture: hero::Picture,
+}
+
+/// The kind word a card's sub-line leads with.
+///
+/// The word itself is [`Media::kind`], so a card cannot name it twice: this says
+/// only whether it takes a line of its own above the artist.
+pub struct Lead {
+    pub stacked: bool,
 }
 
 /// The columns a list row solves, left to right, inside its padding.
@@ -102,6 +113,12 @@ pub fn columns(rect: Rect) -> Columns {
 /// what they hold.
 pub fn extra_height(ui: &Ui) -> f32 {
     space::S2 + row_height(ui, &recipe::card_name()) + row_height(ui, &recipe::card_kind())
+}
+
+/// The height a tile takes beyond its width when its kind word steps onto its
+/// own line: the plain height plus one more kind line.
+pub fn extra_height_stacked(ui: &Ui) -> f32 {
+    extra_height(ui) + row_height(ui, &recipe::card_kind())
 }
 
 /// One tile: the cover over the name and the subline, raised when reached.
@@ -178,19 +195,48 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Opti
     ui.painter()
         .galley(Pos2::new(inner.left(), top), name, tokens.palette.text);
     top += row_height(ui, &recipe::card_name());
+    let kind_h = row_height(ui, &recipe::card_kind());
+    let colour = tokens.palette.text_subtle;
+    let mut sub_left = inner.left();
+    let mut sub_width = inner.width();
+    if let Some(lead) = &media.lead {
+        let word = recipe::spaced(
+            ui,
+            &media.kind.to_uppercase(),
+            recipe::card_kind(),
+            colour,
+            recipe::tracking_pts(text::XXS, tracking::WIDE),
+        );
+        let lead_w = word.size().x;
+        ui.painter()
+            .galley(Pos2::new(inner.left(), top), word, colour);
+        if lead.stacked {
+            top += kind_h;
+        } else {
+            // The separator is painted, not typed: the stacked form drops it
+            // without leaving a dot at the head of the artist's name.
+            let dot_span = space::S1 + 2.0 * stroke::HAIRLINE + space::S1;
+            ui.painter().circle_filled(
+                Pos2::new(
+                    inner.left() + lead_w + space::S1 + stroke::HAIRLINE,
+                    top + kind_h / 2.0,
+                ),
+                stroke::HAIRLINE,
+                colour,
+            );
+            sub_left = inner.left() + lead_w + dot_span;
+            sub_width = (inner.width() - lead_w - dot_span).max(0.0);
+        }
+    }
     let sub = recipe::line(
         ui,
         media.sub,
         recipe::card_kind(),
-        tokens.palette.text_subtle,
+        colour,
         recipe::tracking_pts(text::XXS, tracking::SLIGHT),
-        inner.width(),
+        sub_width,
     );
-    ui.painter().galley(
-        Pos2::new(inner.left(), top),
-        sub,
-        tokens.palette.text_subtle,
-    );
+    ui.painter().galley(Pos2::new(sub_left, top), sub, colour);
 
     let mut pressed = None;
     if media.playable && (over || response.has_focus() || play_focused) {

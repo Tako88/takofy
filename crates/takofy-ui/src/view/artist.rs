@@ -563,6 +563,7 @@ fn fans(
             name: &card.name,
             kind: media_type(RootKind::Artists),
             sub: &sub,
+            lead: None,
             size: "",
             round: true,
             shelf: SidebarKind::Artists,

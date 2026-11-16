@@ -131,13 +131,16 @@ fn row_show(
             control: Control::DiscoveryReroll,
             key: row.seed.uri.as_str(),
             live: state == crate::home::discovery::Reroll::Ready,
+            busy: false,
         })
     } else {
         None
     };
 
-    let (head, _) =
-        ui.allocate_exact_size(vec2(width, row_head::height(ui, tokens)), Sense::hover());
+    let (head, _) = ui.allocate_exact_size(
+        vec2(width, row_head::height(ui, tokens, row_head::SeedRank::Row)),
+        Sense::hover(),
+    );
     let opened = row_head::show(
         ui,
         head.shrink2(vec2(space::S2, 0.0)),
@@ -154,7 +157,9 @@ fn row_show(
                 key: row.seed.uri.as_str(),
                 live: !crate::view::carry::carrying(ui.ctx())
                     && play.as_ref().is_some_and(|tracks| !tracks.is_empty()),
+                busy: false,
             }),
+            rank: row_head::SeedRank::Row,
         },
         tokens,
     );

@@ -121,6 +121,16 @@ pub fn library_kind(label: &str, tokens: &Tokens) -> RichText {
         .color(tokens.palette.text_subtle)
 }
 
+/// A section head's title: the bold `lg` line that names what follows it.
+pub fn shelf_title() -> FontId {
+    FontId::new(text::LG, fonts::sans(Weight::Bold))
+}
+
+/// The tracking a section head's title carries, in points.
+pub fn shelf_title_tracking() -> f32 {
+    tracking_pts(text::LG, tracking::TIGHT)
+}
+
 /// A card's name, and the heading of anything that names a thing in a grid.
 pub fn card_name() -> FontId {
     FontId::new(text::SM, fonts::sans(Weight::Semibold))

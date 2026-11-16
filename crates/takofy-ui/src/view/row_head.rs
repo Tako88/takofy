@@ -27,6 +27,37 @@ pub struct Button<K> {
     pub control: Control,
     pub key: K,
     pub live: bool,
+    /// Whether the control is holding its turn: it keeps its Tab stop while it
+    /// waits, and paints as an inert one does.
+    pub busy: bool,
+}
+
+/// The size a head's seed is set at.
+///
+/// A station or a discovery row names its seed one step under a shelf's title;
+/// the draw shelf's seed *is* its title, so it takes the shelf's own rank.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SeedRank {
+    Row,
+    Shelf,
+}
+
+impl SeedRank {
+    /// The type the seed is laid out in.
+    fn font(self) -> egui::FontId {
+        match self {
+            Self::Row => recipe::station_seed(),
+            Self::Shelf => recipe::shelf_title(),
+        }
+    }
+
+    /// The tracking the seed line carries, in points.
+    fn tracking(self) -> f32 {
+        match self {
+            Self::Row => recipe::tracking_pts(text::MD, tracking::TIGHT),
+            Self::Shelf => recipe::shelf_title_tracking(),
+        }
+    }
 }
 
 /// What one head draws.
@@ -44,6 +75,8 @@ pub struct Head<'a, K> {
     /// How much of the re-roll's wait has run, when it is cooling.
     pub waited: Option<f32>,
     pub play: Option<Button<K>>,
+    /// The rank the seed is set at.
+    pub rank: SeedRank,
 }
 
 /// What a head's presses asked for.
@@ -55,8 +88,8 @@ pub struct Opened {
 }
 
 /// The head's height: the seed and its provenance, or the controls beside them.
-pub fn height(ui: &Ui, tokens: &Tokens) -> f32 {
-    let lines = line_height(ui, recipe::station_seed(), tokens)
+pub fn height(ui: &Ui, tokens: &Tokens, rank: SeedRank) -> f32 {
+    let lines = line_height(ui, rank.font(), tokens)
         + space::S1
         + line_height(ui, recipe::station_source(), tokens);
     row_head::height(lines, extent::BUTTON_LG)
@@ -72,7 +105,7 @@ pub fn show<K: Hash + Debug>(
     head: Head<'_, K>,
     tokens: &Tokens,
 ) -> Opened {
-    let seed_h = line_height(ui, recipe::station_seed(), tokens);
+    let seed_h = line_height(ui, head.rank.font(), tokens);
     let source_h = line_height(ui, recipe::station_source(), tokens);
     let block_h = seed_h + space::S1 + source_h;
 
@@ -116,8 +149,11 @@ pub fn show<K: Hash + Debug>(
             controls::HeadTone::Quiet,
             head.waited,
             button.live,
+            button.busy,
         );
-        opened.reroll = control.response.clicked();
+        // A busy square keeps its Tab stop but must not act: its sense still
+        // answers the pointer, so the press is gated on the slot being live.
+        opened.reroll = control.live && control.response.clicked();
     }
 
     let seed = Placed {
@@ -126,8 +162,8 @@ pub fn show<K: Hash + Debug>(
             ui,
             head.seed,
             &Face {
-                font: recipe::station_seed(),
-                tracking: recipe::tracking_pts(text::MD, tracking::TIGHT),
+                font: head.rank.font(),
+                tracking: head.rank.tracking(),
             },
             placed.about.width(),
         ),
@@ -178,8 +214,9 @@ pub fn show<K: Hash + Debug>(
             controls::HeadTone::Strong,
             None,
             button.live,
+            button.busy,
         );
-        opened.play = control.response.clicked();
+        opened.play = control.live && control.response.clicked();
     }
 
     opened
