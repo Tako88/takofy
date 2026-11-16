@@ -105,6 +105,7 @@ pub(crate) fn assemble(
             uri: uri.to_owned(),
             name: name_of(uri, artist),
         },
+        outside: None,
         portrait: portrait_of(artist),
         tracks,
         latest_year: years.get(uri).copied(),

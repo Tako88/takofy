@@ -27,7 +27,8 @@ use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::rootlist::{RootEntry, Walked};
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{
-    ArtistReleases, Day, DiscoveryOutcome, DiscoverySeed, Station, StationSeed,
+    ArtistReleases, Day, DigAnswer, DigAsk, DigOutcome, DiscoveryOutcome, DiscoverySeed, Station,
+    StationSeed,
 };
 use takofy_model::{
     Account, AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow,
@@ -461,6 +462,8 @@ pub(super) enum LoadScript {
 pub(super) enum DiscoveryScript {
     /// Answers this outcome, once any hold a test armed is released.
     Answer(DiscoveryOutcome),
+    /// Answers this ring, once any hold a test armed is released.
+    Ring(DigOutcome),
     /// Never answers, so the bridge's own budget is what ends it.
     Pending,
     /// Comes apart, as a lookup that panicked does.
@@ -505,8 +508,40 @@ impl Discover for FakeDiscovery {
                 DiscoveryScript::Answer(outcome) => outcome,
                 DiscoveryScript::Pending => std::future::pending().await,
                 DiscoveryScript::Panic => panic!("a scripted lookup came apart"),
+                DiscoveryScript::Ring(_) => panic!("a lookup was scripted as a ring"),
             };
             (seed, outcome)
+        }
+    }
+
+    fn dig(self, ask: DigAsk) -> impl Future<Output = DigAnswer> + Send {
+        let shared = Arc::clone(&self.shared);
+        async move {
+            shared
+                .dug_up
+                .lock()
+                .expect("lock")
+                .push((ask.hop, ask.seed.uri.clone()));
+            if let Some(tx) = shared.lookup_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            // A hold a test armed keeps the ring running until it is released.
+            let hold = shared.lookup_hold.lock().expect("lock").clone();
+            if let Some(hold) = hold {
+                hold.acquire().await.expect("the hold stays open").forget();
+            }
+            let script = shared.discovery_script.lock().expect("lock").clone();
+            let outcome = match script {
+                DiscoveryScript::Ring(outcome) => outcome,
+                DiscoveryScript::Pending => std::future::pending().await,
+                DiscoveryScript::Panic => panic!("a scripted ring came apart"),
+                DiscoveryScript::Answer(_) => panic!("a ring was scripted as a lookup"),
+            };
+            DigAnswer {
+                seed: ask.seed,
+                hop: ask.hop,
+                outcome,
+            }
         }
     }
 }
@@ -727,6 +762,8 @@ pub(super) struct FakeState {
     pub(super) discovery_absent: AtomicBool,
     /// Every seed a lookup was started for, in order.
     pub(super) looked_up: Mutex<Vec<String>>,
+    /// Every ring a dig was started for, in order, by hop and seed.
+    pub(super) dug_up: Mutex<Vec<(u8, String)>>,
     /// The hold a started lookup waits behind before it answers.
     pub(super) lookup_hold: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     /// The sender that says a lookup started, so a test can act while it runs.

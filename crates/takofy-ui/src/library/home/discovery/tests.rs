@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use takofy_model::home::{
-    Day, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome,
-    DiscoverySeed, HomeAnswer,
+    Day, DigAnswer, DigAsk, DigOutcome, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard,
+    DiscoveryKind, DiscoveryOutcome, DiscoverySeed, HomeAnswer, OutsideId,
 };
 use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
 
@@ -129,6 +129,7 @@ fn card(artist: &str) -> DiscoveryCard {
             uri: artist.to_owned(),
             name: artist.to_owned(),
         },
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: None,
@@ -685,4 +686,138 @@ fn one_owned_set_serves_the_asks_and_the_draw() {
         1,
         "the frame built the owned set more than once"
     );
+}
+
+/// A card stamped with the id the outside named it by.
+fn stamped(artist: &str, id: i64) -> DiscoveryCard {
+    DiscoveryCard {
+        outside: Some(OutsideId::from_id(id)),
+        ..card(artist)
+    }
+}
+
+/// The dig answer a ring of `cards` gives the row `seed` asked for.
+fn dig(seed: &DiscoverySeed, hop: u8, cards: Vec<DiscoveryCard>) -> HomeAnswer {
+    HomeAnswer::Dig(DigAnswer {
+        seed: seed.clone(),
+        hop,
+        outcome: DigOutcome::Ring {
+            cards,
+            passed: Vec::new(),
+            exhausted: false,
+        },
+    })
+}
+
+/// One frame's dig asks, in the order it made them.
+fn dig_asks(library: &mut Library) -> Vec<DigAsk> {
+    library
+        .home_asks(Instant::now())
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::LoadHome(HomeAsk::Dig(ask)) => Some(ask),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The playlist row's first ring, landed full and ready to dig.
+fn first_ring(library: &mut Library) -> DiscoverySeed {
+    let seeds = asks_on(library, today());
+    let seed = seeds[0].clone();
+    land(
+        library,
+        &seed,
+        vec![
+            stamped("spotify:artist:n1", 1),
+            stamped("spotify:artist:n2", 2),
+            stamped("spotify:artist:n3", 3),
+            stamped("spotify:artist:n4", 4),
+        ],
+    );
+    seed
+}
+
+#[test]
+fn a_press_sends_exactly_one_dig_and_its_answer_appends() {
+    let mut library = ready();
+    let seed = first_ring(&mut library);
+
+    assert!(library.press_more_discovery(DiscoveryKind::Playlist, NOW_MS));
+    let asks = dig_asks(&mut library);
+    assert_eq!(asks.len(), 1, "one press owes one dig: {asks:?}");
+    assert_eq!(asks[0].seed, seed);
+    assert_eq!(asks[0].hop, 2);
+    assert_eq!(asks[0].frontier.len(), 4);
+
+    library.apply(&Update::Home(dig(
+        &seed,
+        2,
+        vec![stamped("spotify:artist:n5", 5)],
+    )));
+
+    assert!(
+        dig_asks(&mut library).is_empty(),
+        "a landed ring does not ask again"
+    );
+    let band = library.discovery_band();
+    assert_eq!(
+        drawn(&band, DiscoveryKind::Playlist),
+        [
+            "spotify:artist:n1",
+            "spotify:artist:n2",
+            "spotify:artist:n3",
+            "spotify:artist:n4",
+            "spotify:artist:n5"
+        ]
+    );
+}
+
+#[test]
+fn a_re_roll_in_flight_drops_the_ring() {
+    let mut library = ready();
+    let seed = first_ring(&mut library);
+    library.stamp_discovery(5_000);
+    assert!(library.press_more_discovery(DiscoveryKind::Playlist, 5_000));
+    let asks = dig_asks(&mut library);
+    assert_eq!(asks.len(), 1);
+
+    assert!(
+        library.reroll_discovery(DiscoveryKind::Playlist, 7_000),
+        "the re-roll's wait is out"
+    );
+    library.apply(&Update::Home(dig(
+        &seed,
+        2,
+        vec![stamped("spotify:artist:n3", 3)],
+    )));
+
+    assert!(
+        drawn(&library.discovery_band(), DiscoveryKind::Playlist).is_empty(),
+        "the old seed's ring does not land on the new seed"
+    );
+    assert_eq!(
+        read_of(&library.discovery_band(), DiscoveryKind::Playlist),
+        Some(RowRead::Loading),
+        "the re-rolled row waits for its own answer"
+    );
+}
+
+#[test]
+fn a_dig_waits_for_the_lists_to_answer_again() {
+    let mut library = ready();
+    let _ = first_ring(&mut library);
+    assert!(library.press_more_discovery(DiscoveryKind::Playlist, NOW_MS));
+
+    library.saved_albums = Load::Loading;
+    assert!(
+        dig_asks(&mut library).is_empty(),
+        "a pool drawn from half a library is not walked"
+    );
+
+    let (_, _, albums) = lists();
+    library.saved_albums = Load::Ready(albums);
+    let asks = dig_asks(&mut library);
+    assert_eq!(asks.len(), 1, "the waiting press goes out once: {asks:?}");
+    assert_eq!(asks[0].hop, 2);
 }

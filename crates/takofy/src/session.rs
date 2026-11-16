@@ -18,8 +18,8 @@ use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
 use takofy_core::{ReadFailed, Resolution, TransferPlan};
 use takofy_model::home::{
-    ArtistReleases, Day, DiscoveryArtist, DiscoveryCard, DiscoveryOutcome, DiscoverySeed, Station,
-    StationSeed,
+    ArtistReleases, Day, DigAnswer, DigAsk, DiscoveryArtist, DiscoveryCard, DiscoveryOutcome,
+    DiscoverySeed, Station, StationSeed,
 };
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow,
@@ -138,6 +138,10 @@ pub(crate) trait Discover: Clone + Send + 'static {
         self,
         seed: DiscoverySeed,
     ) -> impl Future<Output = (DiscoverySeed, DiscoveryOutcome)> + Send;
+
+    /// Walks one ring out from `ask`'s frontier, answering for the seed and hop
+    /// the row asked from.
+    fn dig(self, ask: DigAsk) -> impl Future<Output = DigAnswer> + Send;
 }
 
 /// The session work the command task drives.
@@ -1198,6 +1202,15 @@ pub(crate) struct LiveDiscovery {
 impl Discover for LiveDiscovery {
     async fn run(self, seed: DiscoverySeed) -> (DiscoverySeed, DiscoveryOutcome) {
         lookup::lookup(&self, self.outside.as_ref(), seed).await
+    }
+
+    async fn dig(self, ask: DigAsk) -> DigAnswer {
+        let outcome = lookup::walk::walk(&self, self.outside.as_ref(), &ask).await;
+        DigAnswer {
+            seed: ask.seed,
+            hop: ask.hop,
+            outcome,
+        }
     }
 }
 

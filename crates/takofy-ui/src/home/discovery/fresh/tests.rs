@@ -13,6 +13,7 @@ fn artist(index: usize) -> DiscoveryArtist {
 fn card(index: usize) -> DiscoveryCard {
     DiscoveryCard {
         artist: artist(index),
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: None,

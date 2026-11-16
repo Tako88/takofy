@@ -92,6 +92,9 @@ impl Library {
         // Recorded whatever moved the rows, and only a change is written.
         let positions = self.home.discovery.positions();
         self.hidden.set_positions(day, positions);
+        if let Some(ask) = self.home.discovery.next_dig(&owned, &self.hidden) {
+            return Some(Command::LoadHome(HomeAsk::Dig(ask)));
+        }
         let seed = self.home.discovery.next_ask()?;
         Some(Command::LoadHome(HomeAsk::Discovery { seed }))
     }
@@ -162,7 +165,7 @@ impl Library {
     }
 
     /// This frame's set, built on first use when no ask ran.
-    fn owned(&self) -> Arc<Owned> {
+    pub(crate) fn owned(&self) -> Arc<Owned> {
         match self.owned.take() {
             Some(owned) => owned,
             None => Arc::new(owned_of(self)),

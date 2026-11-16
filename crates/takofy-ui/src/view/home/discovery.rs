@@ -6,7 +6,9 @@
 //! "off" when it has nothing to say. Its section head is shared with the
 //! stations band, and each row's head is the same head again. Off is not a
 //! silence: the band collapses to the switch row that turned it off, so the
-//! setting has somewhere visible to be undone.
+//! setting has somewhere visible to be undone. A row's foot line is the press
+//! that draws one ring deeper, or the sentence that says what the last press
+//! found.
 
 use std::time::Duration;
 
@@ -16,7 +18,8 @@ use takofy_model::home::{DiscoveryKind, DiscoverySeed};
 
 use crate::availability::Control;
 use crate::format::{
-    HOME_DISCOVERY_ASIDE, HOME_DISCOVERY_TITLE, discovery_ledger, discovery_source,
+    HOME_DISCOVERY_ASIDE, HOME_DISCOVERY_TITLE, discovery_ledger, discovery_more_line,
+    discovery_source,
 };
 use crate::home::discovery::body::{self, Body};
 use crate::home::discovery::{Band, RowRead};
@@ -24,6 +27,7 @@ use crate::layout::Table;
 use crate::layout::discovery as geometry;
 use crate::route::Page;
 use crate::theme::{Tokens, extent, space};
+use crate::view::list_more;
 use crate::view::mini_row;
 use crate::view::playlist::root::MediaDraw;
 use crate::view::skeleton;
@@ -85,7 +89,7 @@ pub(super) fn show(
     }
 }
 
-/// One row: its head, then the body its cards take.
+/// One row: its head, the body its cards take, and the line under it.
 fn row_show(
     ui: &mut Ui,
     row: &crate::home::discovery::RowView<'_>,
@@ -96,6 +100,11 @@ fn row_show(
     out: &mut Pressed,
 ) {
     let ready = row.read == RowRead::Ready;
+    let more = draw.library.more_discovery(row.seed.kind, now_ms);
+    if let crate::home::discovery::walk::More::Note(_, remaining) = more {
+        ui.ctx()
+            .request_repaint_after(Duration::from_millis(remaining));
+    }
     let body = ready.then(|| body::body_of(&row.cards, narrow));
     let width = ui.available_width();
     let mut waited = None;
@@ -160,13 +169,28 @@ fn row_show(
     }
 
     ui.add_space(space::S2);
-    match body {
-        None => skeleton_row(ui, 4, narrow, tokens),
+    let block = match body {
+        None => {
+            skeleton_row(ui, 4, narrow, tokens);
+            return;
+        }
         Some(body) => body_show(ui, row, body, narrow, tokens, draw, out),
+    };
+    let Some(line) = discovery_more_line(more) else {
+        return;
+    };
+    if list_more::show(
+        ui,
+        block,
+        Some(line.words),
+        list_more::Look::centred(line.live),
+        tokens,
+    ) {
+        out.more = Some(row.seed.kind);
     }
 }
 
-/// The row's body, in the shape its cards take.
+/// The row's body, in the shape its cards take, and the block it took.
 fn body_show(
     ui: &mut Ui,
     row: &crate::home::discovery::RowView<'_>,
@@ -175,7 +199,7 @@ fn body_show(
     tokens: &Tokens,
     draw: &mut MediaDraw<'_, '_>,
     out: &mut Pressed,
-) {
+) -> Rect {
     let width = ui.available_width();
     let extra = media::extra_height(ui);
     let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 0.0));
@@ -187,7 +211,7 @@ fn body_show(
             let height = grid.height(cards);
             let (slot, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let origin = slot.min.to_vec2();
-            for (index, data) in body::visible_cards(&row.cards).iter().enumerate() {
+            for (index, data) in row.cards.iter().enumerate() {
                 let rect = grid.card_rect(index).translate(origin);
                 card::show(
                     ui,
@@ -203,6 +227,7 @@ fn body_show(
                     out,
                 );
             }
+            slot
         }
         Body::Pair => {
             let pair = geometry::pair(
@@ -214,7 +239,7 @@ fn body_show(
             let height = pair.cards[0].height();
             let (slot, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let origin = slot.min.to_vec2();
-            for (index, data) in body::visible_cards(&row.cards).iter().take(2).enumerate() {
+            for (index, data) in row.cards.iter().take(2).enumerate() {
                 let rect = pair.cards[index].translate(origin);
                 card::show(
                     ui,
@@ -230,6 +255,7 @@ fn body_show(
                     out,
                 );
             }
+            slot
         }
         Body::One => {
             let rect = geometry::lone(area, crate::theme::discovery::FACE_W, extra);
@@ -250,6 +276,7 @@ fn body_show(
                     out,
                 );
             }
+            slot
         }
         Body::Split { rows } => {
             let split = geometry::split(area, crate::theme::discovery::FACE_W, space::S5, extra);
@@ -274,6 +301,7 @@ fn body_show(
                 );
                 split_rows(ui, &tracks_rect, data, rows, tokens, draw, out);
             }
+            slot
         }
     }
 }

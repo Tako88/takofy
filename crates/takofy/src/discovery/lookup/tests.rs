@@ -1,165 +1,18 @@
 //! Constructed Spotify lists and scripted outside bodies: no socket, and every
 //! name, id and URI is invented.
 
-use std::future::Future;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use takofy_model::TrackEntry;
-use takofy_model::home::{
-    DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed,
+use takofy_model::home::{DiscoveryKind, DiscoveryOutcome, DiscoverySeed, OutsideId};
+
+use super::{deep_cuts, lookup};
+use crate::discovery::test_support::{
+    ALBUMS, Call, FakeFetch, FakeSpotify, GENRE, RELATED, SEARCH, TOP, artist, card, hit,
+    one_title, outside, route_happy, spotify_happy,
 };
-
-use super::{Spotify, deep_cuts, lookup};
-use crate::discovery::test_support::FakeFetch;
-use crate::discovery::{FetchError, Outside, wire};
-use takofy_core::ReadFailed;
-
-const SEARCH: &str = include_str!("../fixtures/search_artist.json");
-const TOP: &str = include_str!("../fixtures/top.json");
-const RELATED: &str = include_str!("../fixtures/related.json");
-const ALBUMS: &str = include_str!("../fixtures/albums.json");
-const GENRE: &str = include_str!("../fixtures/genre.json");
+use crate::discovery::{FetchError, wire};
 
 const QUOTA_ERROR: &str = r#"{"error":{"type":"DataException","message":"no data","code":800}}"#;
-
-struct FakeSpotify {
-    titles: Vec<String>,
-    head: Vec<TrackEntry>,
-    searches: Mutex<Vec<(String, Vec<TrackEntry>)>>,
-    cards: Vec<DiscoveryCard>,
-    reads: AtomicUsize,
-    asked_cards: Mutex<Vec<Vec<String>>>,
-    /// The reads this fake answers with an error instead.
-    failing: Vec<Call>,
-    /// The queries whose search answers with an error.
-    failing_searches: Mutex<Vec<String>>,
-}
-
-/// One of the four reads a lookup asks Spotify for.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Call {
-    Titles,
-    Head,
-    Search,
-    Cards,
-}
-
-impl FakeSpotify {
-    fn new(titles: &[&str]) -> Self {
-        Self {
-            titles: titles.iter().map(|title| (*title).to_owned()).collect(),
-            head: Vec::new(),
-            searches: Mutex::new(Vec::new()),
-            cards: Vec::new(),
-            reads: AtomicUsize::new(0),
-            asked_cards: Mutex::new(Vec::new()),
-            failing: Vec::new(),
-            failing_searches: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn failing(mut self, call: Call) -> Self {
-        self.failing.push(call);
-        self
-    }
-
-    fn failing_search(self, needle: &str) -> Self {
-        self.failing_searches
-            .lock()
-            .expect("failing searches")
-            .push(needle.to_owned());
-        self
-    }
-
-    fn fails(&self, call: Call) -> bool {
-        self.failing.contains(&call)
-    }
-
-    fn with_head(mut self, head: Vec<TrackEntry>) -> Self {
-        self.head = head;
-        self
-    }
-
-    fn with_search(self, needle: &str, hits: Vec<TrackEntry>) -> Self {
-        self.searches
-            .lock()
-            .expect("searches")
-            .push((needle.to_owned(), hits));
-        self
-    }
-
-    fn with_cards(mut self, cards: Vec<DiscoveryCard>) -> Self {
-        self.cards = cards;
-        self
-    }
-
-    fn reads(&self) -> usize {
-        self.reads.load(Ordering::Relaxed)
-    }
-
-    fn asked_cards(&self) -> Vec<Vec<String>> {
-        self.asked_cards.lock().expect("cards").clone()
-    }
-}
-
-impl Spotify for FakeSpotify {
-    fn seed_titles(
-        &self,
-        _artist: &DiscoveryArtist,
-    ) -> impl Future<Output = Result<Vec<String>, ReadFailed>> + Send {
-        self.reads.fetch_add(1, Ordering::Relaxed);
-        let titles = self.titles.clone();
-        let fails = self.fails(Call::Titles);
-        async move { if fails { Err(ReadFailed) } else { Ok(titles) } }
-    }
-
-    fn playlist_head(
-        &self,
-        _uri: &str,
-    ) -> impl Future<Output = Result<Vec<TrackEntry>, ReadFailed>> + Send {
-        self.reads.fetch_add(1, Ordering::Relaxed);
-        let head = self.head.clone();
-        let fails = self.fails(Call::Head);
-        async move { if fails { Err(ReadFailed) } else { Ok(head) } }
-    }
-
-    fn search(
-        &self,
-        query: &str,
-    ) -> impl Future<Output = Result<Vec<TrackEntry>, ReadFailed>> + Send {
-        self.reads.fetch_add(1, Ordering::Relaxed);
-        let hits = self
-            .searches
-            .lock()
-            .expect("searches")
-            .iter()
-            .find(|(needle, _)| query.contains(needle.as_str()))
-            .map(|(_, hits)| hits.clone())
-            .unwrap_or_default();
-        let fails = self.fails(Call::Search)
-            || self
-                .failing_searches
-                .lock()
-                .expect("failing searches")
-                .iter()
-                .any(|needle| query.contains(needle.as_str()));
-        async move { if fails { Err(ReadFailed) } else { Ok(hits) } }
-    }
-
-    fn cards(
-        &self,
-        uris: &[String],
-    ) -> impl Future<Output = Result<Vec<DiscoveryCard>, ReadFailed>> + Send {
-        self.reads.fetch_add(1, Ordering::Relaxed);
-        self.asked_cards.lock().expect("cards").push(uris.to_vec());
-        let cards = self.cards.clone();
-        let fails = self.fails(Call::Cards);
-        async move { if fails { Err(ReadFailed) } else { Ok(cards) } }
-    }
-}
 
 fn artist_seed() -> DiscoverySeed {
     DiscoverySeed {
@@ -168,48 +21,6 @@ fn artist_seed() -> DiscoverySeed {
         name: "Vela".to_owned(),
         anchor: Some(artist("Vela")),
     }
-}
-
-fn artist(name: &str) -> DiscoveryArtist {
-    DiscoveryArtist {
-        uri: format!("spotify:artist:{}", name.to_lowercase().replace(' ', "-")),
-        name: name.to_owned(),
-    }
-}
-
-fn hit(title: &str, name: &str, uri: &str) -> TrackEntry {
-    TrackEntry {
-        uri: format!("spotify:track:{}", title.replace(' ', "-")),
-        title: title.to_owned(),
-        artists: name.to_owned(),
-        album: None,
-        album_uri: None,
-        artist_uris: vec![uri.to_owned()],
-        artist_names: vec![name.to_owned()],
-        added_at: None,
-        duration_ms: None,
-        named: true,
-        cover: None,
-    }
-}
-
-fn card(uri: &str, name: &str) -> DiscoveryCard {
-    DiscoveryCard {
-        artist: DiscoveryArtist {
-            uri: uri.to_owned(),
-            name: name.to_owned(),
-        },
-        portrait: None,
-        tracks: Vec::new(),
-        latest_year: None,
-    }
-}
-
-fn one_title(title: &str) -> Vec<u8> {
-    format!(
-        r#"{{"_synthetic":"synthetic","data":[{{"id":1,"title":"{title}"}}],"next":null,"total":1}}"#
-    )
-    .into_bytes()
 }
 
 fn no_overlap() -> Vec<u8> {
@@ -226,42 +37,6 @@ fn excluded_albums() -> Vec<u8> {
 
 fn album_seed_albums() -> Vec<u8> {
     br#"{"_synthetic":"synthetic","data":[{"title":"Day Break","genre_id":13},{"title":"Other One","genre_id":11},{"title":"Other Two","genre_id":11}],"total":3}"#.to_vec()
-}
-
-fn route_happy(fetch: &FakeFetch) {
-    fetch.ok("search/artist", SEARCH.as_bytes().to_vec());
-    fetch.ok("1001/top", TOP.as_bytes().to_vec());
-    fetch.ok("1001/related", RELATED.as_bytes().to_vec());
-    fetch.ok("1001/albums", ALBUMS.as_bytes().to_vec());
-    fetch.ok("/genre", GENRE.as_bytes().to_vec());
-    for (id, title) in [("2002", "Window"), ("2003", "Plains"), ("2004", "Fracture")] {
-        fetch.ok(&format!("{id}/top"), one_title(title));
-    }
-}
-
-fn spotify_happy(titles: &[&str]) -> FakeSpotify {
-    FakeSpotify::new(titles)
-        .with_search(
-            "Aphex Twin Window",
-            vec![hit("Window", "Aphex Twin", "spotify:artist:aphex")],
-        )
-        .with_search(
-            "Seefeel Plains",
-            vec![hit("Plains", "Seefeel", "spotify:artist:seefeel")],
-        )
-        .with_search(
-            "Clark Fracture",
-            vec![hit("Fracture", "Clark", "spotify:artist:clark")],
-        )
-        .with_cards(vec![
-            card("spotify:artist:aphex", "Aphex Twin"),
-            card("spotify:artist:seefeel", "Seefeel"),
-            card("spotify:artist:clark", "Clark"),
-        ])
-}
-
-fn outside(fetch: &FakeFetch, gate: bool) -> Outside<FakeFetch> {
-    Outside::new(fetch.clone(), Arc::new(AtomicBool::new(gate)))
 }
 
 #[test]
@@ -300,6 +75,19 @@ async fn the_happy_path_returns_the_cards_and_the_vote() {
         DiscoveryOutcome::Neighbours { cards, genre } => {
             assert_eq!(cards.len(), 3);
             assert_eq!(genre.as_deref(), Some("Rock"));
+            let stamped: Vec<(&str, Option<OutsideId>)> = cards
+                .iter()
+                .map(|card| (card.artist.uri.as_str(), card.outside))
+                .collect();
+            assert_eq!(
+                stamped,
+                vec![
+                    ("spotify:artist:aphex", Some(OutsideId::from_id(2002))),
+                    ("spotify:artist:seefeel", Some(OutsideId::from_id(2003))),
+                    ("spotify:artist:clark", Some(OutsideId::from_id(2004))),
+                ],
+                "a first-ring card carries the neighbour id it was resolved from"
+            );
         }
         other => panic!("expected neighbours, got {other:?}"),
     }
@@ -890,16 +678,16 @@ async fn the_call_count_stays_within_the_stated_worst_case() {
     fetch.ok("3001/top", no_overlap());
     fetch.ok("3002/top", no_overlap());
     fetch.ok("3003/top", TOP.as_bytes().to_vec());
-    let related = (0..8)
+    let related = (0..16)
         .map(|index| format!(r#"{{"id":{},"name":"Neighbour {index}"}}"#, 4000 + index))
         .collect::<Vec<_>>()
         .join(",");
     fetch.ok(
         "3003/related",
-        format!(r#"{{"_synthetic":"synthetic","data":[{related}],"next":null,"total":8}}"#)
+        format!(r#"{{"_synthetic":"synthetic","data":[{related}],"next":null,"total":16}}"#)
             .into_bytes(),
     );
-    for index in 0..8 {
+    for index in 0..16 {
         fetch.ok(
             &format!("{}/top", 4000 + index),
             one_title(&format!("Track {index}")),
@@ -919,10 +707,34 @@ async fn the_call_count_stays_within_the_stated_worst_case() {
         }
         other => panic!("expected neighbours, got {other:?}"),
     }
-    // 1 identify + 3 verify + 1 related + 8 neighbour tops + 1 albums + 1 genre
-    // table: the row's stated worst case.
-    assert_eq!(fetch.count(), 15);
+    // 1 identify + 3 verify + 1 related + 16 neighbour tops + 1 albums + 1
+    // genre table: the row's stated worst case.
+    assert_eq!(fetch.count(), 23);
     assert!(spotify.asked_cards().is_empty());
+}
+
+#[tokio::test]
+async fn the_related_read_asks_for_a_pool_wide_enough_to_fill_the_row() {
+    let fetch = FakeFetch::new();
+    fetch.ok("search/artist", SEARCH.as_bytes().to_vec());
+    fetch.ok("1001/top", TOP.as_bytes().to_vec());
+    fetch.ok("1001/related?limit=25", RELATED.as_bytes().to_vec());
+    for (id, title) in [("2002", "Window"), ("2003", "Plains"), ("2004", "Fracture")] {
+        fetch.ok(&format!("{id}/top"), one_title(title));
+    }
+    fetch.ok("1001/albums", ALBUMS.as_bytes().to_vec());
+    fetch.ok("/genre", GENRE.as_bytes().to_vec());
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]);
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    match outcome {
+        DiscoveryOutcome::Neighbours { cards, .. } => {
+            assert_eq!(cards.len(), 3, "the wider pool is what the row reads");
+        }
+        other => panic!("expected neighbours, got {other:?}"),
+    }
 }
 
 #[test]

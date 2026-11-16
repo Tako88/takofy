@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use takofy_core::rootlist::Walked;
-use takofy_model::home::{DiscoverySeed, HomeAsk, StationSeed};
+use takofy_model::home::{DigAsk, DiscoverySeed, HomeAsk, StationSeed};
 use takofy_model::{CoverUrl, Report, RequestId};
 use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, Update};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -88,7 +88,9 @@ pub(super) fn classify(command: &Command) -> Class {
     match command {
         // A lookup answers from the outside, so it costs the batch nothing: it
         // is served without ending admission or waiting for a read.
-        Command::LoadHome(HomeAsk::Discovery { .. }) => Class::Instant,
+        Command::LoadHome(HomeAsk::Discovery { .. }) | Command::LoadHome(HomeAsk::Dig(_)) => {
+            Class::Instant
+        }
         Command::LoadTracks { .. }
         | Command::LoadAlbum { .. }
         | Command::LoadArtist { .. }
@@ -160,6 +162,7 @@ pub(super) enum Immediate {
     Volume { percent: u16 },
     Fetch { url: CoverUrl },
     Discover { seed: DiscoverySeed },
+    Dig { ask: DigAsk },
 }
 
 impl Immediate {
@@ -175,6 +178,7 @@ impl Immediate {
             Command::Volume { percent } => Self::Volume { percent },
             Command::Fetch { url } => Self::Fetch { url },
             Command::LoadHome(HomeAsk::Discovery { seed }) => Self::Discover { seed },
+            Command::LoadHome(HomeAsk::Dig(ask)) => Self::Dig { ask },
             // `classify` names the instants, and it is the total match.
             _ => return None,
         })
@@ -262,6 +266,8 @@ impl Read {
             // A lookup is not a read: `classify` sends it down the instant path,
             // where its own task answers it.
             Command::LoadHome(HomeAsk::Discovery { .. }) => return None,
+            // A dig is a lookup's second half: the instant path spawns it too.
+            Command::LoadHome(HomeAsk::Dig(_)) => return None,
             Command::LoadHome(ask) => Self::Home(ask),
             Command::StartRadio { seed } => Self::Radio { seed },
             Command::ContinueRadio {

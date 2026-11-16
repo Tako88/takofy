@@ -15,10 +15,6 @@ use takofy_model::{
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a report is the frame's state, and one command carries it"
-)]
 pub enum Command {
     /// Begin the interactive sign-in flow.
     Authorize,

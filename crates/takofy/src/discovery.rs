@@ -28,8 +28,9 @@ mod tests;
 
 // Worst case per row: 14 outside calls (1 identify, 3 verify, 1 related, 8
 // neighbour tops, 1 albums) and about 25 Spotify calls, so three rows stay
-// under the limiter's 40 calls per five seconds. The genre table adds one
-// outside call once per process.
+// under the limiter's 40 calls per five seconds. A dig's ring adds at most 20
+// (4 related, 16 neighbour tops). The genre table adds one outside call once
+// per process.
 
 /// How long one lookup may run before the bridge cancels it.
 pub(crate) const LOOKUP_DEADLINE: Duration = Duration::from_secs(30);

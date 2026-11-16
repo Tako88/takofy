@@ -14,7 +14,8 @@ use std::future::Future;
 use takofy_core::ReadFailed;
 use takofy_model::TrackEntry;
 use takofy_model::home::{
-    DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed, VARIOUS_ARTISTS,
+    DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome, DiscoverySeed, OutsideId,
+    RING_CARDS, VARIOUS_ARTISTS,
 };
 
 use super::verify::{confirm_hit, normalise, overlaps};
@@ -24,12 +25,30 @@ use super::{Fetch, Outside, OutsideError, genre, wire};
 const ANCHOR_MIN: usize = 2;
 /// How many search candidates may be verified before the row is rejected.
 const VERIFY_MAX: usize = 3;
-/// How many neighbours may be tried before the row stops looking.
-const RESOLVE_MAX: usize = 8;
-/// How many neighbours a row may resolve into cards.
+/// How many neighbours a row's first ring may resolve into cards.
 const CARDS_MAX: usize = 6;
+/// How many neighbours may be tried before the row stops looking.
+const ATTEMPTS_MAX: usize = 16;
 /// How many of the anchor's own titles may be compared.
 const SEED_TITLES_MAX: usize = 10;
+
+/// The caps one neighbour walk runs under.
+struct Limits {
+    cards: usize,
+    attempts: usize,
+}
+
+/// The first ring's caps.
+const FIRST_RING: Limits = Limits {
+    cards: CARDS_MAX,
+    attempts: ATTEMPTS_MAX,
+};
+
+/// A dig's ring: four cards, and the attempts a whole union may cost.
+const RING: Limits = Limits {
+    cards: RING_CARDS,
+    attempts: ATTEMPTS_MAX,
+};
 
 /// The Spotify reads a lookup needs, faked in tests.
 ///
@@ -91,18 +110,23 @@ where
         Err(error) => return (seed, outcome_of(error)),
     };
 
-    let path = format!("/artist/{}/related?limit=10", candidate.id);
-    let body = match outside.get(&path).await {
-        Ok(body) => body,
-        Err(error) => return (seed, outcome_of(error)),
-    };
-    let related = match wire::related_artists(&body) {
+    let related = match related(outside, candidate.id).await {
         Ok(related) => related,
-        Err(_) => return (seed, DiscoveryOutcome::Unreachable),
+        Err(error) => return (seed, outcome_of(error)),
     };
 
     let own: HashSet<String> = own.into_iter().collect();
-    let resolved = match neighbours(spotify, outside, &related, &own).await {
+    let no_exclusions = HashSet::new();
+    let resolved = match neighbours(
+        spotify,
+        outside,
+        &related,
+        &own,
+        &no_exclusions,
+        &FIRST_RING,
+    )
+    .await
+    {
         Ok(resolved) => resolved,
         Err(error) => return (seed, outcome_of(error)),
     };
@@ -114,7 +138,7 @@ where
         Vec::new()
     } else {
         match spotify.cards(&resolved.uris).await {
-            Ok(cards) => cards,
+            Ok(cards) => stamp(cards, &resolved),
             Err(ReadFailed) => return (seed, DiscoveryOutcome::Unreachable),
         }
     };
@@ -124,8 +148,30 @@ where
 
 struct Resolved {
     uris: Vec<String>,
+    /// The outside id each URI was resolved from, in the same order.
+    ids: Vec<i64>,
+    /// The ids the walk tried and drew no card from.
+    passed: Vec<OutsideId>,
+    /// How many candidates the filtered union held.
+    candidates: usize,
     attempted: usize,
     failed: usize,
+}
+
+/// Sets each card's outside id from the neighbour its URI was resolved from.
+fn stamp(cards: Vec<DiscoveryCard>, resolved: &Resolved) -> Vec<DiscoveryCard> {
+    cards
+        .into_iter()
+        .map(|mut card| {
+            card.outside = resolved
+                .ids
+                .iter()
+                .zip(&resolved.uris)
+                .find(|(_, uri)| uri.as_str() == card.artist.uri)
+                .map(|(id, _)| OutsideId::from_id(*id));
+            card
+        })
+        .collect()
 }
 
 /// The artist a seed is looked up from, and every artist the seed's own source
@@ -197,6 +243,17 @@ fn recurring_anchor(head: &[TrackEntry]) -> Option<DiscoveryArtist> {
     best.map(|(artist, _)| artist)
 }
 
+/// One artist's related list, which is what a ring walks from.
+async fn related<F: Fetch + Sync>(
+    outside: &Outside<F>,
+    id: i64,
+) -> Result<Vec<wire::ArtistHit>, OutsideError> {
+    let body = outside
+        .get(&format!("/artist/{id}/related?limit=25"))
+        .await?;
+    wire::related_artists(&body).map_err(|_| OutsideError::Failed)
+}
+
 async fn identify<F: Fetch + Sync>(
     outside: &Outside<F>,
     anchor: &DiscoveryArtist,
@@ -257,32 +314,46 @@ async fn neighbours<S, F>(
     outside: &Outside<F>,
     related: &[wire::ArtistHit],
     own: &HashSet<String>,
+    exclude_ids: &HashSet<i64>,
+    limits: &Limits,
 ) -> Result<Resolved, OutsideError>
 where
     S: Spotify,
     F: Fetch + Sync,
 {
-    let mut uris = Vec::new();
-    let mut seen_uris: HashSet<String> = HashSet::new();
+    // A held or excluded artist is dropped before the ranking, so it neither
+    // costs an attempt nor takes a deep cut's place in the ring.
     let mut seen_ids: HashSet<i64> = HashSet::new();
+    let filtered: Vec<wire::ArtistHit> = related
+        .iter()
+        .filter(|hit| !exclude_ids.contains(&hit.id) && seen_ids.insert(hit.id))
+        .cloned()
+        .collect();
+    let candidates = filtered.len();
+    let mut uris = Vec::new();
+    let mut ids = Vec::new();
+    let mut passed = Vec::new();
+    let mut seen_uris: HashSet<String> = HashSet::new();
     let mut attempted = 0usize;
     let mut failed = 0usize;
-    for neighbour in deep_cuts(related) {
-        if uris.len() >= CARDS_MAX || attempted >= RESOLVE_MAX {
+    for neighbour in deep_cuts(&filtered) {
+        if uris.len() >= limits.cards || attempted >= limits.attempts {
             break;
         }
-        if !seen_ids.insert(neighbour.id) {
-            continue;
-        }
         attempted += 1;
+        let tried = OutsideId::from_id(neighbour.id);
         let path = format!("/artist/{}/top?limit=1", neighbour.id);
         let body = match outside.get(&path).await {
             Ok(body) => body,
             Err(OutsideError::Off) => return Err(OutsideError::Off),
             Err(OutsideError::Backoff) => return Err(OutsideError::Backoff),
-            Err(OutsideError::Absent) => continue,
+            Err(OutsideError::Absent) => {
+                passed.push(tried);
+                continue;
+            }
             Err(OutsideError::Failed) => {
                 failed += 1;
+                passed.push(tried);
                 continue;
             }
         };
@@ -290,10 +361,12 @@ where
             Ok(titles) => titles,
             Err(_) => {
                 failed += 1;
+                passed.push(tried);
                 continue;
             }
         };
         let Some(title) = titles.into_iter().next() else {
+            passed.push(tried);
             continue;
         };
         let query = format!("{} {}", neighbour.name, title);
@@ -301,24 +374,32 @@ where
             Ok(hits) => hits,
             Err(ReadFailed) => {
                 failed += 1;
+                passed.push(tried);
                 continue;
             }
         };
         let Some((entry, index)) = hits.iter().find_map(|entry| {
             confirm_hit(entry, &title, &neighbour.name).map(|index| (entry, index))
         }) else {
+            passed.push(tried);
             continue;
         };
         let Some(uri) = entry.artist_uris.get(index) else {
+            passed.push(tried);
             continue;
         };
         if uri.is_empty() || own.contains(uri) || !seen_uris.insert(uri.clone()) {
+            passed.push(tried);
             continue;
         }
+        ids.push(neighbour.id);
         uris.push(uri.clone());
     }
     Ok(Resolved {
         uris,
+        ids,
+        passed,
+        candidates,
         attempted,
         failed,
     })
@@ -381,6 +462,8 @@ fn encode(value: &str) -> String {
     }
     encoded
 }
+
+pub(crate) mod walk;
 
 #[cfg(test)]
 mod tests;

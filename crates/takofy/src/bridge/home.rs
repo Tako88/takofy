@@ -1,6 +1,8 @@
 //! Home's shelves: the read each ask names, and the answer it lands.
 
-use takofy_model::home::{DiscoveryAnswer, DiscoveryOutcome, HomeAnswer, HomeAsk};
+use takofy_model::home::{
+    DigAnswer, DigOutcome, DiscoveryAnswer, DiscoveryOutcome, HomeAnswer, HomeAsk,
+};
 use takofy_ui::message::{Failure, Update};
 
 use super::errors::{library_failure, related_failure};
@@ -124,6 +126,20 @@ pub(super) async fn load_home<H: SessionHost>(host: &H, notifier: &Notifier, ask
                 HomeAnswer::Discovery(DiscoveryAnswer {
                     seed,
                     outcome: DiscoveryOutcome::Unreachable,
+                }),
+            );
+            false
+        }
+        // Served outside this batch too, and a dig names the artists the user
+        // follows, so the warning says nothing about the ask.
+        HomeAsk::Dig(ask) => {
+            log::warn!("dig ask arrived at the home batch");
+            answered(
+                notifier,
+                HomeAnswer::Dig(DigAnswer {
+                    seed: ask.seed,
+                    hop: ask.hop,
+                    outcome: DigOutcome::Unreachable,
                 }),
             );
             false

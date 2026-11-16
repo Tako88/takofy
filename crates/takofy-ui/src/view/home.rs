@@ -64,6 +64,8 @@ pub(super) struct Pressed {
     pub(super) discovery: Option<Vec<TrackEntry>>,
     /// The discovery row whose re-roll was pressed.
     pub(super) reroll: Option<takofy_model::home::DiscoveryKind>,
+    /// The discovery row whose Load more line was pressed.
+    pub(super) more: Option<takofy_model::home::DiscoveryKind>,
     /// The artist whose card's Follow tile was pressed.
     pub(super) follow: Option<String>,
     /// The artist whose card's tile was pressed to take that follow back.
@@ -294,6 +296,11 @@ pub(super) fn home_view(
     }
     if let Some(kind) = out.reroll.take()
         && library.reroll_discovery(kind, now_ms)
+    {
+        ui.ctx().request_repaint();
+    }
+    if let Some(kind) = out.more.take()
+        && library.press_more_discovery(kind, now_ms)
     {
         ui.ctx().request_repaint();
     }

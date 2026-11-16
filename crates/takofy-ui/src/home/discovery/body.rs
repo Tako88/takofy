@@ -7,9 +7,6 @@
 use takofy_model::TrackEntry;
 use takofy_model::home::DiscoveryCard;
 
-/// How many cards a row draws, however many the lookup found.
-pub const DRAWN: usize = 4;
-
 /// The shape of one row's body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Body {
@@ -23,18 +20,12 @@ pub enum Body {
     One,
 }
 
-/// The first [`DRAWN`] cards, which is all a row draws.
-pub fn visible_cards<'a>(cards: &'a [&'a DiscoveryCard]) -> &'a [&'a DiscoveryCard] {
-    &cards[..cards.len().min(DRAWN)]
-}
-
 /// The body `cards` takes at this width.
 ///
 /// One card with at least two named tracks is a split: the card is the row's
 /// subject and the tracks are what it has to offer. Fewer named tracks leave the
 /// card alone, because a mini-row of one is a list nobody needed.
 pub fn body_of(cards: &[&DiscoveryCard], narrow: bool) -> Body {
-    let cards = visible_cards(cards);
     match cards {
         [one] => match named_tracks(one).len() {
             0 | 1 => Body::One,
@@ -78,7 +69,6 @@ pub fn named_tracks(card: &DiscoveryCard) -> Vec<&TrackEntry> {
 /// A split row plays its mini-rows; every other body plays the first track of
 /// each face it draws, which is the track its card's own play names.
 pub fn row_tracks(cards: &[&DiscoveryCard], body: Body) -> Vec<TrackEntry> {
-    let cards = visible_cards(cards);
     match body {
         Body::Split { .. } => cards
             .first()
@@ -94,7 +84,6 @@ pub fn row_tracks(cards: &[&DiscoveryCard], body: Body) -> Vec<TrackEntry> {
 /// The ledger's numbers: how many artists, and how many tracks when the body is
 /// a split.
 pub fn ledger_counts(cards: &[&DiscoveryCard], body: Body) -> (usize, Option<usize>) {
-    let cards = visible_cards(cards);
     match body {
         Body::Split { .. } => (
             cards.len(),

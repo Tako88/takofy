@@ -12,8 +12,8 @@ use crate::discovery::LOOKUP_DEADLINE;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use takofy_model::home::{
-    DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind, DiscoveryOutcome,
-    DiscoverySeed, HomeAnswer, HomeAsk,
+    DigAnswer, DigAsk, DigOutcome, DiscoveryAnswer, DiscoveryArtist, DiscoveryCard, DiscoveryKind,
+    DiscoveryOutcome, DiscoverySeed, HomeAnswer, HomeAsk, OutsideId,
 };
 use tokio::sync::Semaphore;
 
@@ -32,6 +32,31 @@ fn answer(seed: DiscoverySeed, outcome: DiscoveryOutcome) -> Update {
     Update::Home(HomeAnswer::Discovery(DiscoveryAnswer { seed, outcome }))
 }
 
+/// The answer one ring makes.
+fn dig_answer(seed: DiscoverySeed, hop: u8, outcome: DigOutcome) -> Update {
+    Update::Home(HomeAnswer::Dig(DigAnswer { seed, hop, outcome }))
+}
+
+/// One ring's ask, honouring the hop it names.
+fn dig_ask(hop: u8) -> DigAsk {
+    DigAsk {
+        seed: seed(),
+        hop,
+        frontier: vec![OutsideId::from_id(1)],
+        held: Vec::new(),
+        skip: Vec::new(),
+    }
+}
+
+/// A ring that found these cards and gave up on nothing.
+fn ring(cards: Vec<DiscoveryCard>) -> DigOutcome {
+    DigOutcome::Ring {
+        cards,
+        passed: Vec::new(),
+        exhausted: false,
+    }
+}
+
 /// One neighbour, as a scripted outcome carries it.
 fn card(uri: &str) -> DiscoveryCard {
     DiscoveryCard {
@@ -39,6 +64,7 @@ fn card(uri: &str) -> DiscoveryCard {
             uri: uri.to_owned(),
             name: "Neighbour".to_owned(),
         },
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: Some(2001),
@@ -75,16 +101,30 @@ fn notifier() -> (Notifier, Receiver<Update>) {
 
 /// Reads updates until a discovery answer arrives, passing over the rest.
 fn await_discovery(ui_end: &UiEnd) -> Update {
+    await_home(ui_end, |update| {
+        matches!(update, Update::Home(HomeAnswer::Discovery(_)))
+    })
+}
+
+/// Reads updates until a dig answer arrives, passing over the rest.
+fn await_dig(ui_end: &UiEnd) -> Update {
+    await_home(ui_end, |update| {
+        matches!(update, Update::Home(HomeAnswer::Dig(_)))
+    })
+}
+
+/// Reads updates until the one `wanted` names arrives.
+fn await_home(ui_end: &UiEnd, wanted: impl Fn(&Update) -> bool) -> Update {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         match ui_end.updates.recv_timeout(Duration::from_millis(100)) {
-            Ok(update @ Update::Home(HomeAnswer::Discovery(_))) => return update,
+            Ok(update) if wanted(&update) => return update,
             Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => panic!("the worker went away"),
         }
     }
-    panic!("timed out waiting for the discovery answer");
+    panic!("timed out waiting for the home answer");
 }
 
 /// Every outcome one lookup may answer with.
@@ -262,7 +302,7 @@ async fn a_lookup_past_its_budget_answers_unreachable() {
     let mut lookups = Lookups::new();
     let began = tokio::time::Instant::now();
 
-    spawn_lookup(&host, &notifier, &mut lookups, seed());
+    spawn_lookup(&host, &notifier, &mut lookups, Asked::Seed(seed()));
     while lookups.tasks.join_next().await.is_some() {}
 
     assert!(
@@ -291,7 +331,7 @@ fn a_lookup_that_came_apart_answers_unreachable() {
     let mut lookups = Lookups::new();
 
     runtime.block_on(async {
-        spawn_lookup(&host, &notifier, &mut lookups, seed());
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Seed(seed()));
         while lookups.tasks.join_next().await.is_some() {}
     });
 
@@ -316,7 +356,7 @@ fn a_host_with_no_lookup_handle_answers_unreachable() {
     let (notifier, answers) = notifier();
     let mut lookups = Lookups::new();
 
-    spawn_lookup(&host, &notifier, &mut lookups, seed());
+    spawn_lookup(&host, &notifier, &mut lookups, Asked::Seed(seed()));
 
     assert_eq!(
         lookups.tasks.len(),
@@ -344,11 +384,11 @@ fn a_repeat_ask_for_a_running_seed_answers_once() {
     let mut lookups = Lookups::new();
 
     runtime.block_on(async {
-        spawn_lookup(&host, &notifier, &mut lookups, seed());
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Seed(seed()));
         until("the lookup started", || {
             !shared.looked_up.lock().expect("lock").is_empty()
         });
-        spawn_lookup(&host, &notifier, &mut lookups, seed());
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Seed(seed()));
         assert_eq!(
             lookups.tasks.len(),
             1,
@@ -441,5 +481,251 @@ fn the_home_batch_guard_answers_a_misrouted_ask() {
     assert!(
         shared.looked_up.lock().expect("lock").is_empty(),
         "the guard reads nothing"
+    );
+}
+
+#[test]
+fn a_dig_is_an_instant_and_never_a_read() {
+    let command = Command::LoadHome(HomeAsk::Dig(dig_ask(2)));
+
+    assert_eq!(
+        classify(&command),
+        Class::Instant,
+        "a ring answers from the outside, so it costs the batch nothing"
+    );
+    assert!(
+        matches!(
+            Immediate::claim(command.clone()),
+            Some(Immediate::Dig { .. })
+        ),
+        "the instant path must claim the ring, or the press is dropped"
+    );
+    assert!(
+        Read::claim(command).is_none(),
+        "a ring must not fall back to the home batch"
+    );
+}
+
+#[test]
+fn a_ring_answers_once_with_the_seed_and_hop_that_asked() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let outcome = ring(vec![card("spotify:artist:ring")]);
+    *shared.discovery_script.lock().expect("lock") = DiscoveryScript::Ring(outcome.clone());
+    let scripted = outcome.clone();
+
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::LoadHome(HomeAsk::Dig(dig_ask(2))))
+            .expect("dig");
+        let update = await_dig(&ui_end);
+        expect_no_update(&ui_end);
+        update
+    });
+
+    assert_eq!(
+        update,
+        dig_answer(seed(), 2, scripted),
+        "the ring reaches the window as itself, for the seed and hop that asked"
+    );
+    assert_eq!(
+        shared.dug_up.lock().expect("lock").clone(),
+        vec![(2, seed().uri)],
+        "one ring is one dig"
+    );
+    assert!(
+        shared.looked_up.lock().expect("lock").is_empty(),
+        "a ring is not the seed's first lookup"
+    );
+}
+
+#[test]
+fn a_repeat_ring_for_a_running_hop_answers_once() {
+    let runtime = runtime();
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let hold = hold_lookups(&shared);
+    let outcome = ring(vec![card("spotify:artist:ring")]);
+    *shared.discovery_script.lock().expect("lock") = DiscoveryScript::Ring(outcome.clone());
+    let (notifier, answers) = notifier();
+    let mut lookups = Lookups::new();
+
+    runtime.block_on(async {
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+        until("the ring started", || {
+            !shared.dug_up.lock().expect("lock").is_empty()
+        });
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+        assert_eq!(
+            lookups.tasks.len(),
+            1,
+            "a hop already on its way is not dug twice"
+        );
+        hold.add_permits(1);
+        while lookups.tasks.join_next().await.is_some() {}
+    });
+
+    assert_eq!(
+        shared.dug_up.lock().expect("lock").clone(),
+        vec![(2, seed().uri)],
+        "one ring ran for the two asks"
+    );
+    assert_eq!(
+        answers.recv().expect("answer"),
+        dig_answer(seed(), 2, outcome)
+    );
+    assert!(
+        matches!(answers.try_recv(), Err(TryRecvError::Empty)),
+        "the dropped ask lands on the running ring's one answer"
+    );
+    assert!(lookups.in_flight.lock().expect("lock").is_empty());
+}
+
+#[test]
+fn a_ring_dedupes_by_hop_and_a_seed_is_its_own_key() {
+    let runtime = runtime();
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.discovery_script.lock().expect("lock") = DiscoveryScript::Pending;
+    let (notifier, _answers) = notifier();
+    let mut lookups = Lookups::new();
+
+    runtime.block_on(async {
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+        until("the ring started", || {
+            !shared.dug_up.lock().expect("lock").is_empty()
+        });
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+        assert_eq!(lookups.tasks.len(), 1, "the same hop is already on its way");
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(3)));
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Seed(seed()));
+        assert_eq!(
+            lookups.tasks.len(),
+            3,
+            "a different hop and the seed's first lookup are their own asks"
+        );
+        lookups.tasks.abort_all();
+        while lookups.tasks.join_next().await.is_some() {}
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_ring_past_its_budget_answers_unreachable() {
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.discovery_script.lock().expect("lock") = DiscoveryScript::Pending;
+    let (notifier, answers) = notifier();
+    let mut lookups = Lookups::new();
+    let began = tokio::time::Instant::now();
+
+    spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+    while lookups.tasks.join_next().await.is_some() {}
+
+    assert!(
+        tokio::time::Instant::now().duration_since(began) >= LOOKUP_DEADLINE,
+        "the ring was cut at its budget, not sooner"
+    );
+    assert_eq!(
+        answers.recv().expect("answer"),
+        dig_answer(seed(), 2, DigOutcome::Unreachable),
+        "a ring the outside never finished is not a row with nothing in it"
+    );
+    assert!(
+        matches!(answers.try_recv(), Err(TryRecvError::Empty)),
+        "one cut ring sends one answer"
+    );
+    assert!(lookups.in_flight.lock().expect("lock").is_empty());
+}
+
+#[test]
+fn a_ring_that_came_apart_answers_unreachable() {
+    let runtime = runtime();
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    *shared.discovery_script.lock().expect("lock") = DiscoveryScript::Panic;
+    let (notifier, answers) = notifier();
+    let mut lookups = Lookups::new();
+
+    runtime.block_on(async {
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+        while lookups.tasks.join_next().await.is_some() {}
+    });
+
+    assert_eq!(
+        answers.recv().expect("answer"),
+        dig_answer(seed(), 2, DigOutcome::Unreachable),
+        "a ring that panicked still answers the row that asked"
+    );
+    assert_eq!(
+        shared.dug_up.lock().expect("lock").clone(),
+        vec![(2, seed().uri)],
+        "the ring ran before it came apart"
+    );
+    assert!(lookups.in_flight.lock().expect("lock").is_empty());
+}
+
+#[test]
+fn the_home_batch_guard_answers_a_misrouted_dig() {
+    let runtime = runtime();
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let (notifier, answers) = notifier();
+    let startup = Startup::new();
+
+    runtime.block_on(Read::Home(HomeAsk::Dig(dig_ask(2))).run(&host, &notifier, &startup));
+
+    assert_eq!(
+        answers.recv().expect("answer"),
+        dig_answer(seed(), 2, DigOutcome::Unreachable),
+        "a misrouted ring is answered without blaming a read"
+    );
+    assert!(
+        matches!(answers.try_recv(), Err(TryRecvError::Empty)),
+        "the guard answers once"
+    );
+    assert!(
+        shared.looked_up.lock().expect("lock").is_empty(),
+        "the guard reads nothing"
+    );
+    assert!(
+        shared.dug_up.lock().expect("lock").is_empty(),
+        "the guard digs nothing"
+    );
+}
+
+#[test]
+fn a_ring_takes_a_lookup_permit() {
+    let runtime = runtime();
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let outcome = ring(vec![card("spotify:artist:ring")]);
+    *shared.discovery_script.lock().expect("lock") = DiscoveryScript::Ring(outcome.clone());
+    let (notifier, answers) = notifier();
+    let mut lookups = Lookups::new();
+    lookups.permits = Arc::new(Semaphore::new(0));
+
+    runtime.block_on(async {
+        spawn_lookup(&host, &notifier, &mut lookups, Asked::Ring(dig_ask(2)));
+        tokio::task::yield_now().await;
+        assert!(
+            shared.dug_up.lock().expect("lock").is_empty(),
+            "a ring reads nothing before it holds a permit"
+        );
+        lookups.permits.add_permits(1);
+        while lookups.tasks.join_next().await.is_some() {}
+    });
+
+    assert_eq!(
+        shared.dug_up.lock().expect("lock").clone(),
+        vec![(2, seed().uri)]
+    );
+    assert_eq!(
+        answers.recv().expect("answer"),
+        dig_answer(seed(), 2, outcome)
     );
 }

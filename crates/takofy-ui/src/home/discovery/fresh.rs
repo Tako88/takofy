@@ -39,6 +39,11 @@ impl Owned {
         self.artists.contains(artist)
     }
 
+    /// Every artist URI the library holds, in no order.
+    pub fn artists(&self) -> impl Iterator<Item = &str> {
+        self.artists.iter().map(String::as_str)
+    }
+
     /// Forgets `artist`, so a card the user has just followed stays drawable.
     pub fn forget(&mut self, artist: &str) {
         self.artists.remove(artist);

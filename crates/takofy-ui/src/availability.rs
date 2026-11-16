@@ -87,6 +87,8 @@ pub enum Control {
     DiscoveryCard,
     /// A discovery card's `⋯`, opening its three-verb menu.
     DiscoveryMore,
+    /// A discovery row's Load more line, which walks one ring further.
+    DiscoveryLoadMore,
     /// A discovery card's own play: the first track it names.
     DiscoveryPlay,
     /// A discovery row's re-roll.
@@ -101,7 +103,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 60] = [
+    pub const ALL: [Self; 61] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -155,6 +157,7 @@ impl Control {
         Self::StationPlay,
         Self::DiscoveryCard,
         Self::DiscoveryMore,
+        Self::DiscoveryLoadMore,
         Self::DiscoveryPlay,
         Self::DiscoveryReroll,
         Self::DiscoveryRowPlay,
@@ -239,6 +242,7 @@ pub fn availability(control: Control) -> Availability {
         // writes over it.
         Control::DiscoveryCard => Availability::Ready, // #90
         Control::DiscoveryMore => Availability::Ready, // #90
+        Control::DiscoveryLoadMore => Availability::Ready, // #94
         Control::DiscoveryPlay => Availability::Ready, // #90
         Control::DiscoveryReroll => Availability::Ready, // #90
         Control::DiscoveryRowPlay => Availability::Ready, // #90

@@ -29,6 +29,7 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::StationPlay
                 | Control::DiscoveryCard
                 | Control::DiscoveryMore
+                | Control::DiscoveryLoadMore
                 | Control::DiscoveryPlay
                 | Control::DiscoveryReroll
                 | Control::DiscoveryRowPlay

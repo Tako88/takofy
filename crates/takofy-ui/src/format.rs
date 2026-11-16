@@ -6,6 +6,7 @@ use takofy_model::home::{DiscoveryKind, ReleaseDate, SeedKind};
 use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
+use crate::home::discovery::walk::{More, Note};
 use crate::library::SidebarWrite;
 use crate::library_filter::RootKind;
 use crate::search_index::tracks_phrase;
@@ -301,6 +302,43 @@ pub fn discovery_sub(latest_year: Option<u16>) -> String {
         Some(year) => format!("Latest {year}"),
         None => String::new(),
     }
+}
+
+/// The discovery row's foot line, before and while it fetches the next ring.
+pub const HOME_DISCOVERY_MORE: &str = "Load more";
+
+/// What a row says when its press found nothing beyond the cards it draws.
+pub const HOME_DISCOVERY_NOTE_NOTHING: &str = "Nothing deeper from here";
+
+/// What a row says when the ring came back empty but the walk has not ended, so
+/// the row will offer again rather than claim the end.
+pub const HOME_DISCOVERY_NOTE_SPARSE: &str = "Nothing further from these artists";
+
+/// What a row says when the outside did not answer at all.
+pub const HOME_DISCOVERY_NOTE_UNREACHABLE: &str = "Could not reach the outside just now";
+
+/// The words a row's foot line says, and whether they can be pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoreLine {
+    pub words: &'static str,
+    /// Whether the words are a control. Everything but a fresh offer is a
+    /// sentence: fetching is the same request already out, and a note is what
+    /// the last one found.
+    pub live: bool,
+}
+
+/// The row's foot line for the state it is in, or none when there is nothing
+/// further to ask for.
+pub fn discovery_more_line(more: More) -> Option<MoreLine> {
+    let (words, live) = match more {
+        More::Offered => (HOME_DISCOVERY_MORE, true),
+        More::Fetching => (HOME_DISCOVERY_MORE, false),
+        More::Note(Note::Nothing, _) => (HOME_DISCOVERY_NOTE_NOTHING, false),
+        More::Note(Note::Sparse, _) => (HOME_DISCOVERY_NOTE_SPARSE, false),
+        More::Note(Note::Unreachable, _) => (HOME_DISCOVERY_NOTE_UNREACHABLE, false),
+        More::Done => return None,
+    };
+    Some(MoreLine { words, live })
 }
 
 /// The stations shelf's title, which names the seeds rather than a count.
