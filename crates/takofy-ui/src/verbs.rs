@@ -188,8 +188,8 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
 
 /// The request a discovery card posts for its own menu.
 ///
-/// A card is a stranger: the three verbs are keep them, put one of their tracks
-/// somewhere, or stop them appearing. Follow goes through `Library::ask_follow`,
+/// A card is a stranger: the verbs are keep them, hear their neighbourhood, put
+/// one of their tracks somewhere, or stop them appearing. Follow goes through `Library::ask_follow`,
 /// which holds one write per artist, Add to
 /// playlist acts on the card's first track, which is the one its play names,
 /// and Hide is the destructive row.
@@ -203,6 +203,10 @@ pub fn discovery_request(card: &DiscoveryCard, door: Door) -> Request {
         live: true,
         verb: Verb::Follow,
     }];
+    // The card's subject is the artist, not the track it happens to carry: the
+    // station is the artist's neighbourhood, and the same card must seed the same
+    // station whichever of the artist's tracks the wire put first.
+    items.push(item(Verb::StartRadio, "Start radio".to_owned()));
     if card.tracks.first().is_some_and(TrackEntry::is_track) {
         items.push(Item {
             label: "Add to playlist".to_owned(),

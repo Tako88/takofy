@@ -28,7 +28,7 @@ fn door() -> Door {
 }
 
 #[test]
-fn a_discovery_card_offers_follow_add_and_hide_all_live() {
+fn a_discovery_card_offers_follow_radio_add_and_hide_all_live() {
     let request = discovery_request(
         &card(vec![entry("spotify:track:a"), entry("spotify:track:b")]),
         door(),
@@ -38,13 +38,19 @@ fn a_discovery_card_offers_follow_add_and_hide_all_live() {
         labels(&request.items),
         [
             "Follow Ilse Vane",
+            "Start radio",
             "Add to playlist",
             "Hide Ilse Vane from discovery"
         ]
     );
     assert_eq!(
         verbs(&request.items),
-        [Verb::Follow, Verb::AddToPlaylist, Verb::HideFromDiscovery]
+        [
+            Verb::Follow,
+            Verb::StartRadio,
+            Verb::AddToPlaylist,
+            Verb::HideFromDiscovery
+        ]
     );
     assert_eq!(
         request
@@ -52,7 +58,7 @@ fn a_discovery_card_offers_follow_add_and_hide_all_live() {
             .iter()
             .map(|item| item.live)
             .collect::<Vec<_>>(),
-        [true, true, true],
+        [true, true, true, true],
         "every row can act"
     );
     assert_eq!(
@@ -60,7 +66,7 @@ fn a_discovery_card_offers_follow_add_and_hide_all_live() {
         Some(Kind::Destructive),
         "Hide is the destructive row"
     );
-    assert!(request.items[1].submenu, "the add opens a list");
+    assert!(request.items[2].submenu, "the add opens a list");
     assert_eq!(
         request.targets,
         vec![entry("spotify:track:a")],
@@ -87,8 +93,35 @@ fn an_unplayable_card_offers_no_add_row() {
     );
     assert_eq!(
         labels(&request.items),
-        ["Follow Ilse Vane", "Hide Ilse Vane from discovery"]
+        [
+            "Follow Ilse Vane",
+            "Start radio",
+            "Hide Ilse Vane from discovery"
+        ]
     );
+}
+
+#[test]
+fn a_discovery_cards_radio_seeds_the_artist_not_the_track_it_carries() {
+    // Two cards for the same artist whose wires named different tracks first.
+    let one = discovery_request(&card(vec![entry("spotify:track:a")]), door());
+    let other = discovery_request(&card(vec![entry("spotify:track:z")]), door());
+
+    for request in [one, other] {
+        let Listing::Band(row) = &request.listing else {
+            panic!("a discovery card is a band");
+        };
+        assert_eq!(
+            library_outcome(Verb::StartRadio, row),
+            Some(Outcome::StartRadio {
+                seed: StationSeed {
+                    kind: SeedKind::Artist,
+                    uri: "spotify:artist:vane".to_owned(),
+                },
+            }),
+            "the card seeds the artist, whichever track its play names"
+        );
+    }
 }
 
 #[test]
@@ -127,7 +160,7 @@ fn a_discovery_menus_every_row_live_lands_the_keyboard_on_follow() {
         "the keyboard lights the first row, which can act"
     );
     assert!(menu.items().iter().all(|item| item.live));
-    assert!(menu.items()[1].submenu, "the add opens the playlist list");
+    assert!(menu.items()[2].submenu, "the add opens the playlist list");
     assert_eq!(
         menu.choose(0).and_then(|closed| closed.chose),
         Some(Verb::Follow),

@@ -679,12 +679,19 @@ fn the_card_menu_is_posted_with_only_the_add_live() {
     let request =
         crate::view::context_menu::take_request(&ctx).expect("the card posted its menu this frame");
     let live: Vec<bool> = request.items.iter().map(|item| item.live).collect();
-    assert_eq!(live, [true, true, true]);
+    assert_eq!(live, [true, true, true, true]);
     assert!(
         request
             .items
             .iter()
             .any(|item| item.verb == crate::menu::Verb::AddToPlaylist)
+    );
+    assert!(
+        request
+            .items
+            .iter()
+            .any(|item| item.verb == crate::menu::Verb::StartRadio),
+        "a discovery card's menu offers no radio"
     );
     assert!(
         request
