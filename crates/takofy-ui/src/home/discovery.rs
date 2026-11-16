@@ -21,6 +21,7 @@ pub mod body;
 pub mod fresh;
 pub mod hidden;
 pub mod pool;
+pub mod walk;
 
 /// How long one row waits after its answer lands before it may re-roll again.
 ///

@@ -31,6 +31,7 @@ fn hide_request() -> crate::menu::Request {
             uri: ARTIST.to_owned(),
             name: "Ilse Vane".to_owned(),
         },
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: None,

@@ -129,6 +129,7 @@ fn card(artist: &str) -> DiscoveryCard {
             uri: artist.to_owned(),
             name: artist.to_owned(),
         },
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: None,

@@ -61,10 +61,32 @@ pub struct DiscoverySeed {
     pub anchor: Option<DiscoveryArtist>,
 }
 
+/// One artist's id outside Spotify, which is what a row digs from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutsideId(i64);
+
+impl OutsideId {
+    /// The id the outside named.
+    pub fn from_id(id: i64) -> Self {
+        Self(id)
+    }
+
+    /// The id, for the reads that address the outside by it.
+    pub fn id(self) -> i64 {
+        self.0
+    }
+}
+
+/// How many cards one ring of a dig adds, which is also the frontier it walks
+/// from.
+pub const RING_CARDS: usize = 4;
+
 /// One artist recommended beside a seed, as its card draws it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryCard {
     pub artist: DiscoveryArtist,
+    /// The artist's id outside, once a lookup or a dig has stamped it.
+    pub outside: Option<OutsideId>,
     /// `None` when the wire offered no picture.
     pub portrait: Option<CoverSet>,
     /// The artist's top tracks, in the wire's order, up to [`CARD_TRACKS`]. The
@@ -104,6 +126,49 @@ pub enum DiscoveryOutcome {
 pub struct DiscoveryAnswer {
     pub seed: DiscoverySeed,
     pub outcome: DiscoveryOutcome,
+}
+
+/// One ring a row digs, one hop further from the seed it grew from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigAsk {
+    pub seed: DiscoverySeed,
+    /// How many artists out from the seed this ring sits, the first lookup being
+    /// hop one.
+    pub hop: u8,
+    /// The outside ids of the cards this ring is walked from.
+    pub frontier: Vec<OutsideId>,
+    /// The ids of every card a row already holds, and of every artist an earlier
+    /// ring tried and drew nothing from.
+    pub held: Vec<OutsideId>,
+    /// The Spotify URIs of every held card, plus the library's own and the
+    /// hidden ones.
+    pub skip: Vec<String>,
+}
+
+/// What one dig found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DigOutcome {
+    /// The setting is off, so nothing was read.
+    Off,
+    /// The outside did not answer, which is not the same as finding nobody.
+    Unreachable,
+    /// One ring of artists.
+    Ring {
+        cards: Vec<DiscoveryCard>,
+        /// The ids the walk tried and drew no card from.
+        passed: Vec<OutsideId>,
+        /// Whether the whole filtered union was tried.
+        exhausted: bool,
+    },
+}
+
+/// The answer to a dig, carrying the seed and hop so a late answer lands on the
+/// row that asked for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigAnswer {
+    pub seed: DiscoverySeed,
+    pub hop: u8,
+    pub outcome: DigOutcome,
 }
 
 /// A day number, which the binary computes from the local date.
@@ -216,6 +281,8 @@ pub enum HomeAsk {
     Portraits { artists: Vec<String> },
     /// The neighbours one discovery row draws, looked up outside.
     Discovery { seed: DiscoverySeed },
+    /// One ring further out from the cards a discovery row draws.
+    Dig(DigAsk),
     /// The newest releases of these followed artists, from `since` onwards.
     Releases { artists: Vec<String>, since: Day },
 }
@@ -248,6 +315,8 @@ pub enum HomeAnswer {
     },
     /// The neighbours a discovery row found, answered for its seed.
     Discovery(DiscoveryAnswer),
+    /// One ring a discovery row dug for.
+    Dig(DigAnswer),
     /// One entry per artist the read answered, including an artist with nothing
     /// new. An artist the read could not get is missing rather than answered
     /// empty, so the shelf neither holds it nor waits on it again this open.

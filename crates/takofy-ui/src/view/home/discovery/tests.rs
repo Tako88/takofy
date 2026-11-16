@@ -72,6 +72,7 @@ fn card(index: usize, tracks: usize) -> DiscoveryCard {
             uri: format!("spotify:artist:card{index}"),
             name: format!("Artist {index}"),
         },
+        outside: None,
         portrait: None,
         tracks: (0..tracks).map(|at| track(index * 10 + at)).collect(),
         latest_year: Some(2024),

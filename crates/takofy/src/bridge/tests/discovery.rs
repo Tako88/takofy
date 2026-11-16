@@ -39,6 +39,7 @@ fn card(uri: &str) -> DiscoveryCard {
             uri: uri.to_owned(),
             name: "Neighbour".to_owned(),
         },
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: Some(2001),

@@ -788,6 +788,7 @@ fn discovery_card(index: usize) -> DiscoveryCard {
             uri: format!("spotify:artist:outside{index}"),
             name: format!("Outside {index}"),
         },
+        outside: None,
         portrait: None,
         tracks: vec![takofy_model::TrackEntry::unnamed(&format!(
             "spotify:track:outside{index}"

@@ -9,6 +9,7 @@ fn card(tracks: Vec<TrackEntry>) -> DiscoveryCard {
             uri: "spotify:artist:vane".to_owned(),
             name: "Ilse Vane".to_owned(),
         },
+        outside: None,
         portrait: None,
         tracks,
         latest_year: None,

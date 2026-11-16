@@ -73,6 +73,7 @@ fn card(index: usize) -> DiscoveryCard {
             uri: format!("spotify:artist:card{index}"),
             name: format!("Card {index}"),
         },
+        outside: None,
         portrait: None,
         tracks: Vec::new(),
         latest_year: None,

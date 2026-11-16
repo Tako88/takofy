@@ -22,6 +22,7 @@ fn card(index: usize, named: &[bool]) -> DiscoveryCard {
             uri: format!("spotify:artist:{index}"),
             name: format!("Artist {index}"),
         },
+        outside: None,
         portrait: None,
         tracks: named
             .iter()
