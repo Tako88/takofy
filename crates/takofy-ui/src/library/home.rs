@@ -14,7 +14,7 @@ mod stations;
 
 use std::time::{Duration, Instant};
 
-use crate::home::{Fit, Phase, Sections, Shelf, Slot};
+use crate::home::{Fit, Phase, Section, Sections, Shelf, Slot};
 use crate::message::Command;
 
 use super::{Library, Load};
@@ -52,6 +52,9 @@ impl Library {
     pub fn home_sections(&self, fit: Fit) -> Sections<'_> {
         Sections {
             dated: self.home_shelf(fit.columns),
+            // The shelf at chance has nothing to draw until its deck is filled,
+            // which no read of this frame has done yet.
+            chance: Section::Absent,
             stations: self.stations_section(),
             because: self.because_section(),
             counted: self.counted_section(),

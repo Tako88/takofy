@@ -1,5 +1,5 @@
 use super::*;
-use takofy_model::home::{HomeAnswer, HomeAsk};
+use takofy_model::home::{HomeAnswer, HomeAsk, Station};
 
 fn named(uri: &str, album: Option<&str>) -> TrackEntry {
     TrackEntry {
@@ -96,23 +96,26 @@ fn a_sent_uri_is_asked_but_not_yet_answered() {
     assert!(home.answered("spotify:track:a"), "the reply landed");
 }
 
-/// The five shelves below the dated one, each in one presence.
-const ABSENT: [Presence; 5] = [Presence::Absent; 5];
-const ONE_READY: [Presence; 5] = [
+/// The six shelves below the dated one, each in one presence.
+const ABSENT: [Presence; 6] = [Presence::Absent; 6];
+const ONE_READY: [Presence; 6] = [
+    Presence::Absent,
     Presence::Ready,
     Presence::Absent,
     Presence::Absent,
     Presence::Absent,
     Presence::Absent,
 ];
-const ONE_WAITING: [Presence; 5] = [
+const ONE_WAITING: [Presence; 6] = [
+    Presence::Absent,
     Presence::Absent,
     Presence::Waiting,
     Presence::Absent,
     Presence::Absent,
     Presence::Absent,
 ];
-const ONE_FAILED: [Presence; 5] = [
+const ONE_FAILED: [Presence; 6] = [
+    Presence::Absent,
     Presence::Absent,
     Presence::Absent,
     Presence::Failed,
@@ -121,10 +124,10 @@ const ONE_FAILED: [Presence; 5] = [
 ];
 
 /// Where the release shelf sits in `others`.
-const RELEASES: usize = 3;
+const RELEASES: usize = 4;
 
 /// The five shelves with only the release shelf in `presence`.
-fn release_shelf(presence: Presence) -> [Presence; 5] {
+fn release_shelf(presence: Presence) -> [Presence; 6] {
     let mut others = ABSENT;
     others[RELEASES] = presence;
     others
@@ -230,7 +233,8 @@ fn the_day_one_invite_draws_only_beside_five_absent_shelves() {
                 Presence::Absent,
                 Presence::Absent,
                 Presence::Absent,
-                Presence::Ready
+                Presence::Ready,
+                Presence::Absent
             ]
         ),
         "a shelf at the bottom of the page is still a shelf with content"
@@ -447,4 +451,157 @@ fn a_label_answer_from_another_shelf_does_not_fill_the_dated_shelves_cards() {
         !home.answered("spotify:track:a"),
         "only the dated shelf's own read names a card"
     );
+}
+
+fn saved_album(uri: &str) -> SavedAlbum {
+    SavedAlbum {
+        uri: uri.to_owned(),
+        name: "An album".to_owned(),
+        named: true,
+        artists: String::new(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
+        year: None,
+        cover: None,
+        tracks: None,
+        saved_at: None,
+    }
+}
+
+/// Rows a station can draw four cards from: each names a different album.
+fn clean_rows(count: usize) -> Vec<TrackEntry> {
+    (0..count)
+        .map(|index| {
+            named(
+                &format!("spotify:track:{index}"),
+                Some(&format!("spotify:album:{index}")),
+            )
+        })
+        .collect()
+}
+
+/// A home whose draw shelf holds `albums` to draw from.
+fn opened_to_draw(albums: &[SavedAlbum]) -> Home {
+    let mut home = Home::default();
+    home.open(1_700_000_000_000);
+    home.chance.fill(&chance::Candidates {
+        albums,
+        ..Default::default()
+    });
+    home
+}
+
+/// The page with nothing to draw: every shelf below the dated one absent.
+fn absent_sections() -> Sections<'static> {
+    Sections {
+        dated: Shelf::Quiet,
+        chance: Section::Absent,
+        stations: Section::Absent,
+        because: Section::Absent,
+        counted: Section::Absent,
+        releases: Section::Absent,
+        episodes: Section::Absent,
+    }
+}
+
+#[test]
+fn the_draw_shelf_is_the_first_of_six_shelves_below_the_dated_one() {
+    let mut sections = absent_sections();
+    assert_eq!(sections.others(), ABSENT, "an absent shelf moved others");
+
+    sections.chance = Section::Waiting;
+
+    assert_eq!(
+        sections.others()[0],
+        Presence::Waiting,
+        "the draw shelf is not first"
+    );
+    assert_eq!(sections.others()[1..], [Presence::Absent; 5]);
+    assert!(
+        !dated_draws(&Shelf::Quiet, sections.others()),
+        "a draw shelf still coming will have content"
+    );
+}
+
+#[test]
+fn a_station_answer_lands_on_the_draw_shelf_and_not_on_the_stations() {
+    let albums = vec![saved_album("spotify:album:1")];
+    let mut home = opened_to_draw(&albums);
+    let ask = home.chance.owed().expect("the shelf owes its station");
+    home.chance.asked(ask.clone());
+    let chance::Ask::Station(seed) = ask else {
+        panic!("an album seed is asked for its station");
+    };
+
+    home.land(&HomeAnswer::Station(Station {
+        seed,
+        uri: "spotify:station:1".to_owned(),
+        title: "Radio".to_owned(),
+        subtitle: None,
+        art: None,
+        rows: clean_rows(6),
+    }));
+
+    let drawn = home
+        .chance
+        .draw()
+        .expect("the answer landed on the draw shelf");
+    assert_eq!(drawn.cards.len(), chance::CARDS);
+    assert!(!home.stations.chosen(), "the stations shelf read the seed");
+    assert!(home.stations.band().is_none());
+}
+
+#[test]
+fn a_failure_the_draw_shelf_sent_lands_there() {
+    let albums = vec![saved_album("spotify:album:1")];
+    let mut home = opened_to_draw(&albums);
+    let ask = home.chance.owed().expect("the shelf owes its station");
+    home.chance.asked(ask.clone());
+    let chance::Ask::Station(seed) = ask else {
+        panic!("an album seed is asked for its station");
+    };
+
+    home.fail(&HomeAsk::Station { seed }, Failure::Load);
+
+    assert_eq!(home.chance.failure(), Some(Failure::Load));
+    assert!(!home.chance.pending(), "a failed read was still waited on");
+}
+
+#[test]
+fn open_and_forget_both_clear_the_draw_shelf() {
+    let albums = vec![saved_album("spotify:album:1")];
+    let mut home = opened_to_draw(&albums);
+    assert!(home.chance.filled());
+
+    home.forget();
+
+    assert!(!home.chance.filled(), "the retry kept a stale deck");
+    assert!(home.chance.draw().is_none());
+
+    home.chance.fill(&chance::Candidates {
+        albums: &albums,
+        ..Default::default()
+    });
+    assert!(home.chance.filled());
+
+    home.open(1_700_000_000_001);
+
+    assert!(!home.chance.filled(), "an open kept the last deck");
+    assert!(home.chance.draw().is_none());
+}
+
+#[test]
+fn a_library_with_an_empty_deck_leaves_the_dated_shelf_quiet() {
+    let mut home = Home::default();
+    home.open(1_700_000_000_000);
+    home.chance.fill(&chance::Candidates::default());
+
+    assert!(home.chance.filled(), "an empty library is a filled deck");
+    assert_eq!(home.chance.owed(), None, "an empty deck owes no read");
+    assert!(!home.chance.pending());
+    assert!(
+        home.chance.draw().is_none(),
+        "a shelf with nothing to draw is not ready"
+    );
+    assert!(dated_draws(&Shelf::Quiet, absent_sections().others()));
 }
