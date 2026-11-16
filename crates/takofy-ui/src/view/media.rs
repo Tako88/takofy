@@ -239,6 +239,41 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Opti
     ui.painter().galley(Pos2::new(sub_left, top), sub, colour);
 
     let mut pressed = None;
+
+    // The card's own menu: the `⋯` every card offers, revealed like its play so
+    // it covers no part of the picture a reader came for. It is registered after
+    // the tile, so a press on it never also opens the card.
+    let more_id = controls::slot_id(ui, Control::CardMore, media.uri);
+    let more_focused = ui.memory(|memory| memory.focused()) == Some(more_id);
+    let menu_open = context_menu::open_opener(ui.ctx()).is_some_and(|opener| opener == more_id);
+    let live = !carry::carrying(ui.ctx());
+    if over || response.has_focus() || more_focused || menu_open {
+        let at = crate::layout::cards::corner_more(art);
+        let more = controls::plate_tile_open(
+            ui,
+            tokens,
+            Control::CardMore,
+            media.uri,
+            at,
+            Icon::More,
+            Size::of_tile(crate::layout::cards::corner_tile(art)),
+            &format!("More options for {}", media.name),
+            live,
+            menu_open,
+        );
+        let _ = ui.ctx().accesskit_node_builder(more.response.id, |node| {
+            node.set_expanded(menu_open);
+            node.set_has_popup(egui::accesskit::HasPopup::Menu);
+        });
+        if live
+            && let Some(door) = context_menu::button_door(ui, &more, at, more_id)
+                .or_else(|| key_door(ui, &response, &more, at))
+                .or_else(|| context_menu::pointer_door(ui, rect, response.id, at))
+        {
+            pressed = Some(Press::Menu(door));
+        }
+    }
+
     if media.playable && (over || response.has_focus() || play_focused) {
         let slot = controls::play_tile_keyed(
             ui,
@@ -263,7 +298,11 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Opti
             .interact_pointer_pos()
             .is_some_and(|at| tile_play_rect(rect).contains(at));
 
-    pressed.or((response.clicked() && !on_play).then_some(Press::Open))
+    // A menu is reported before the card itself, as a row's is.
+    if pressed.is_some() {
+        return pressed;
+    }
+    (response.clicked() && !on_play).then_some(Press::Open)
 }
 
 /// The height of the head's one line of text, before its padding.

@@ -59,6 +59,7 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::LibraryFilterAlbums
                 | Control::LibraryFilterPodcasts
                 | Control::LibraryMore
+                | Control::CardMore
                 | Control::LayoutGrid
                 | Control::LayoutList
                 | Control::FilterPlaylists

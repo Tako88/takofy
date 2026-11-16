@@ -234,3 +234,33 @@ fn the_kind_word_stacks_at_the_rails_width_and_below() {
         "a width the solver cannot answer takes the stacked form"
     );
 }
+
+#[test]
+fn a_cards_more_tile_sits_inside_its_pictures_upper_right() {
+    let art = Rect::from_min_size(pos2(20.0, 30.0), Vec2::splat(176.0));
+    let more = corner_more(art);
+
+    assert_eq!(more.size(), Vec2::splat(corner_tile(art)));
+    assert_close(more.right(), art.right() - space::S2);
+    assert_close(more.top(), art.top() + space::S2);
+    assert!(art.contains_rect(more), "the tile hangs off the picture");
+}
+
+#[test]
+fn a_corner_tile_keeps_its_size_between_the_floors() {
+    let small = Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(40.0));
+    let large = Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(900.0));
+
+    assert_eq!(corner_tile(small), extent::CARD_PLAY);
+    assert_eq!(corner_tile(large), extent::CARD_PLAY_MAX);
+    assert!(
+        corner_tile(area_size(250.0)) > extent::CARD_PLAY
+            && corner_tile(area_size(250.0)) < extent::CARD_PLAY_MAX,
+        "a picture between the two floors takes the proportion the design was judged at"
+    );
+}
+
+/// A square picture of `width` points.
+fn area_size(width: f32) -> Rect {
+    Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(width))
+}

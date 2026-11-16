@@ -7,7 +7,7 @@
 use egui::{Rect, Vec2, pos2, vec2};
 
 use crate::layout::cards::{self, Grid};
-use crate::theme::{extent, space};
+use crate::theme::space;
 
 /// A sole face: card size, ending where it ends rather than stretching.
 pub fn lone(available: Rect, face_w: f32, extra: f32) -> Rect {
@@ -75,42 +75,24 @@ pub fn card_art(card: Rect) -> Rect {
     Rect::from_min_size(inner.min, Vec2::splat(inner.width()))
 }
 
-/// How much of the picture a corner tile takes.
-///
-/// A fixed tile looks right on a card the size the reference draws and turns
-/// into a chip on a card twice that, because the picture grows and the tile does
-/// not. Sixteen percent keeps the proportion the design was judged at.
-const TILE_OF_ART: f32 = 0.16;
-
-/// One corner control, `space-2` in from the picture's own corner.
-///
-/// All three sit on one line at the picture's top right, play first, so the row
-/// is the same shape at every size: a control anchored to a curve has to be
-/// re-judged for each card width, and one of them always ends up looking wrong.
-fn corner(art: Rect, size: f32, steps_left: f32) -> Rect {
-    let right = art.right() - space::S2 - steps_left * (size + space::S1);
-    let top = art.top() + space::S2;
-    Rect::from_min_size(pos2(right - size, top), Vec2::splat(size))
-}
-
 /// The size of the corner tiles a picture of this width carries.
 pub fn tile(art: Rect) -> f32 {
-    (art.width() * TILE_OF_ART).clamp(extent::CARD_PLAY, extent::CARD_PLAY_MAX)
+    cards::corner_tile(art)
 }
 
 /// The `⋯` tile, outermost on the picture's upper right.
 pub fn more(art: Rect) -> Rect {
-    corner(art, tile(art), 0.0)
+    cards::corner_more(art)
 }
 
 /// The Follow tile, one step in from the `⋯`.
 pub fn follow(art: Rect) -> Rect {
-    corner(art, tile(art), 1.0)
+    cards::corner(art, tile(art), 1.0)
 }
 
 /// The play tile, innermost of the three: it is the one the eye looks for last.
 pub fn play(art: Rect) -> Rect {
-    corner(art, tile(art), 2.0)
+    cards::corner(art, tile(art), 2.0)
 }
 
 #[cfg(test)]

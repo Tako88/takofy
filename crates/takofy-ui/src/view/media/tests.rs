@@ -662,11 +662,12 @@ fn tile_rest(ctx: &egui::Context, item: &Media<'_>, at: Pos2) -> (Rect, egui::Fu
     (last.0, last.2)
 }
 
-/// Whether a frame painted the play tile in `rect`.
+/// Whether a frame painted a control filling `rect`.
 ///
-/// The tile is the only thing that paints a whole rect there: its hover eases
-/// the fill between two tones, so the fill itself is not the marker.
-fn play_painted(output: &egui::FullOutput, rect: Rect) -> bool {
+/// The play and the `⋯` plate are the only things that paint a whole rect where
+/// they sit: their hover eases the fill between two tones, so the fill itself is
+/// not the marker.
+fn control_painted(output: &egui::FullOutput, rect: Rect) -> bool {
     output.shapes.iter().any(|clipped| match &clipped.shape {
         egui::epaint::Shape::Rect(shape) => shape.rect == rect,
         _ => false,
@@ -701,7 +702,7 @@ fn a_hovered_playable_tile_draws_its_play_and_an_unplayable_one_does_not() {
     let at = Pos2::new(88.0, 88.0);
     let (rect, output) = tile_rest(&ctx, &item, at);
     assert!(
-        play_painted(&output, tile_play_rect(rect)),
+        control_painted(&output, tile_play_rect(rect)),
         "a hovered playable tile drew no play"
     );
 
@@ -711,7 +712,7 @@ fn a_hovered_playable_tile_draws_its_play_and_an_unplayable_one_does_not() {
     };
     let (rect, output) = tile_rest(&ctx, &bare, at);
     assert!(
-        !play_painted(&output, tile_play_rect(rect)),
+        !control_painted(&output, tile_play_rect(rect)),
         "an item with no play drew one"
     );
 }
@@ -754,7 +755,7 @@ fn the_play_tile_stays_drawn_while_the_pointer_is_on_it() {
     let (rect, output) = tile_rest(&ctx, &item, tile_play_rect(rect).center());
 
     assert!(
-        play_painted(&output, tile_play_rect(rect)),
+        control_painted(&output, tile_play_rect(rect)),
         "the pointer on the play took the play away"
     );
 }
@@ -782,7 +783,7 @@ fn the_wash_stays_drawn_while_the_pointer_is_on_the_play() {
 }
 
 #[test]
-fn tab_from_a_tile_reaches_its_play_and_keeps_it_drawn() {
+fn tab_from_a_tile_reaches_its_menu_then_its_play_and_keeps_each_drawn() {
     let ctx = context();
     let item = media("spotify:album:a", false, "11 tracks");
     let mut ids = None;
@@ -793,11 +794,14 @@ fn tab_from_a_tile_reaches_its_play_and_keeps_it_drawn() {
         let _ = tile(ui, rect, &item, &Tokens::DARK);
         ids = Some((
             ui.scope_id().with(("library-media", item.uri)),
-            controls::slot_id(ui, Control::CardPlay, item.uri),
+            (
+                controls::slot_id(ui, Control::CardMore, item.uri),
+                controls::slot_id(ui, Control::CardPlay, item.uri),
+            ),
         ));
     });
     output.textures_delta.clear();
-    let (tile_id, play_id) = ids.expect("a pass ran");
+    let (tile_id, (more_id, play_id)) = ids.expect("a pass ran");
 
     // The tile takes the keyboard, as its own click does.
     let (rect, _, _) = tile_pass(&ctx, &item, Vec::new());
@@ -816,13 +820,53 @@ fn tab_from_a_tile_reaches_its_play_and_keeps_it_drawn() {
 
     assert_eq!(
         ctx.memory(|memory| memory.focused()),
+        Some(more_id),
+        "Tab never reached the tile's `⋯`"
+    );
+    assert!(
+        control_painted(&output, crate::layout::cards::corner_more(art_rect(rect))),
+        "a focused `⋯` was hidden again"
+    );
+
+    let [press, release] = crate::view::test_support::tab();
+    let _ = tile_pass(&ctx, &item, vec![press]);
+    let (rect, _, output) = tile_pass(&ctx, &item, vec![release]);
+
+    assert_eq!(
+        ctx.memory(|memory| memory.focused()),
         Some(play_id),
         "Tab never reached the tile's play"
     );
     assert!(
-        play_painted(&output, tile_play_rect(rect)),
+        control_painted(&output, tile_play_rect(rect)),
         "a focused play was hidden again"
     );
+}
+
+#[test]
+fn a_tiles_more_sits_inside_its_picture_and_clear_of_its_play() {
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(176.0, 240.0));
+    let art = art_rect(rect);
+    let more = crate::layout::cards::corner_more(art);
+
+    assert_eq!(more.size(), Vec2::splat(extent::CARD_PLAY));
+    assert!(art.contains_rect(more));
+    assert!(!more.intersects(tile_play_rect(rect)));
+}
+
+#[test]
+fn a_press_on_the_tiles_more_reports_a_door_and_not_open() {
+    let ctx = context();
+    let item = media("spotify:album:a", false, "11 tracks");
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(176.0, 240.0));
+    let more = crate::layout::cards::corner_more(art_rect(rect));
+    // Hover the card first, as a reader would, so the corner is drawn and live.
+    let _ = tile_rest(&ctx, &item, art_rect(rect).center());
+    let answers = tile_run(&ctx, &item, &click_events(more.center()));
+
+    let opened_menu = door(&answers).expect("the `⋯` reported no menu");
+    assert_eq!(opened_menu.device, Device::Pointer);
+    assert!(!opened(&answers), "the `⋯` also opened the card");
 }
 
 #[test]

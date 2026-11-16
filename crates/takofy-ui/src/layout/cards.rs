@@ -16,7 +16,9 @@
 //! `space::S3`), not read here. A zero, negative or non-finite width counts as
 //! zero, as it does in `layout::table`.
 
-use egui::{Pos2, Rect, pos2, vec2};
+use egui::{Pos2, Rect, Vec2, pos2, vec2};
+
+use crate::theme::{extent, space};
 
 use super::CARD_KIND_STACK_MAX;
 
@@ -131,6 +133,33 @@ pub fn grid_capped(
     let gap = usable(gap);
     let columns = columns_for(avail, card_min, gap).min(max_columns.max(1));
     grid_fixed(available, columns, gap, card_extra_h)
+}
+
+/// How much of the picture a corner tile takes.
+///
+/// A fixed tile looks right on a card the size the reference draws and turns
+/// into a chip on a card twice that, because the picture grows and the tile does
+/// not. Sixteen percent keeps the proportion the design was judged at.
+const TILE_OF_ART: f32 = 0.16;
+
+/// One corner control, `space-2` in from the picture's own corner.
+///
+/// The tiles sit on one line at the picture's top right, and `steps_left` counts
+/// in from the outermost, so the row is the same shape at every card width.
+pub fn corner(art: Rect, size: f32, steps_left: f32) -> Rect {
+    let right = art.right() - space::S2 - steps_left * (size + space::S1);
+    let top = art.top() + space::S2;
+    Rect::from_min_size(pos2(right - size, top), Vec2::splat(size))
+}
+
+/// The size of the corner tiles a picture of this width carries.
+pub fn corner_tile(art: Rect) -> f32 {
+    (art.width() * TILE_OF_ART).clamp(extent::CARD_PLAY, extent::CARD_PLAY_MAX)
+}
+
+/// The `⋯` a picture offers, outermost on its upper right.
+pub fn corner_more(art: Rect) -> Rect {
+    corner(art, corner_tile(art), 0.0)
 }
 
 /// Whether a card's kind word stacks above its sub-line at `width` points.

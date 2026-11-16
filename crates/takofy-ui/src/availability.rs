@@ -80,6 +80,9 @@ pub enum Control {
     /// A library item's own play, in the grid and in the list. It is keyed by the
     /// item's uri, so one control serves every card and every row.
     CardPlay,
+    /// A card's `⋯`, opening the menu of the thing the card names. Keyed by the
+    /// card's uri, as its play is.
+    CardMore,
     /// A station's own play. It is keyed by the station's uri, so one control
     /// serves every station of the band.
     StationPlay,
@@ -105,7 +108,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 63] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -156,6 +159,7 @@ impl Control {
         Self::ReleaseMore,
         Self::EpisodeOrder,
         Self::CardPlay,
+        Self::CardMore,
         Self::StationPlay,
         Self::DiscoveryCard,
         Self::DiscoveryMore,
@@ -238,6 +242,7 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Ready,
+        Control::CardMore => Availability::Ready,
         // A station's rows are loaded state, so its play is a want and not a
         // read.
         Control::StationPlay => Availability::Ready,
