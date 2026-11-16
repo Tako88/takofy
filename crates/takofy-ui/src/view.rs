@@ -8,6 +8,7 @@ mod album;
 mod art;
 mod artist;
 mod artist_hero;
+mod card_menu;
 mod carry;
 mod context_menu;
 pub mod controls;

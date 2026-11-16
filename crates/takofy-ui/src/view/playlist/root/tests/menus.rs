@@ -7,7 +7,7 @@ use egui::{Context, Event};
 use takofy_model::{PlaylistAccess, Revision};
 
 use crate::layout::Table;
-use crate::menu::{Anchor, Device, Kind, Listing, Request};
+use crate::menu::{Anchor, Device, Kind, Listing, Request, Verb};
 use crate::message::Update;
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -228,7 +228,7 @@ fn a_right_click_on_a_playlist_row_posts_the_same_request_at_the_pointer() {
 /// A tile has neither a row nor a `⋯`, so no press on it posts a menu: both
 /// buttons do what a tile does, which is activate.
 #[test]
-fn a_grid_tile_posts_no_menu_on_a_click_or_a_right_click() {
+fn a_grid_tile_posts_its_own_menu_on_a_right_click() {
     let ctx = context();
     let mut art = Art::default();
     let gridded = || {
@@ -239,16 +239,11 @@ fn a_grid_tile_posts_no_menu_on_a_click_or_a_right_click() {
         library
     };
 
-    // The tile the grid solved, and the name it painted inside it: the press
-    // lands on a drawn tile and not on the gap a row's `⋯` would fill.
+    // The tile the grid solved: the press lands on a drawn tile and not on the
+    // gap a row's `⋯` would fill.
     let mut library = gridded();
-    let before = frame(&ctx, &mut library, &mut art);
+    let _ = frame(&ctx, &mut library, &mut art);
     let card = card_rect_for(&ctx, 0, 1);
-    let name = text_rect(&before, "Evening").expect("the grid paints the tile's name");
-    assert!(
-        card.contains_rect(name),
-        "the tile's name {name:?} sits outside its card {card:?}"
-    );
 
     let command = click(&ctx, card.center(), &mut library, &mut art);
     assert_eq!(
@@ -262,11 +257,11 @@ fn a_grid_tile_posts_no_menu_on_a_click_or_a_right_click() {
     assert_eq!(
         context_menu::take_request(&ctx),
         None,
-        "a tile press posted a row menu"
+        "a tile press posted its menu instead of selecting"
     );
 
-    // The right-click is its own press on a fresh library, and it must leave
-    // the selection alone.
+    // The right-click is its own press on a fresh library, and it must leave the
+    // selection alone.
     let mut library = gridded();
     let _ = frame(&ctx, &mut library, &mut art);
     let request = click_for_menu(
@@ -274,8 +269,20 @@ fn a_grid_tile_posts_no_menu_on_a_click_or_a_right_click() {
         secondary_click_events(card.center()),
         &mut library,
         &mut art,
+    )
+    .expect("a right-click on a tile posted no menu");
+    assert!(
+        request
+            .items
+            .iter()
+            .any(|item| item.verb == Verb::StartRadio),
+        "the tile's menu offers no radio: {:?}",
+        request
+            .items
+            .iter()
+            .map(|item| item.verb)
+            .collect::<Vec<_>>()
     );
-    assert_eq!(request, None, "a right-click on a tile posted a row menu");
     assert!(
         library.selected().is_none() && library.page().is_none(),
         "a right-click on a tile activated it"

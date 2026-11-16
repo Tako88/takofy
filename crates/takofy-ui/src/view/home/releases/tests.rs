@@ -274,3 +274,46 @@ fn a_waiting_shelf_draws_its_title_and_one_skeleton_row() {
         "the shelf's content moved the page when it landed"
     );
 }
+
+/// Hovers the first card, then presses its `⋯`, and answers the request posted.
+fn more_press(
+    ctx: &Context,
+    section: &Section<List<'_>>,
+    at: Rect,
+) -> Option<crate::menu::Request> {
+    use crate::view::context_menu;
+    let _ = run(ctx, vec![Event::PointerMoved(at.center())], section);
+    let mut request = None;
+    for event in click_events(at.center()) {
+        let _ = run(ctx, vec![event], section);
+        request = request.or(context_menu::take_request(ctx));
+    }
+    request
+}
+
+#[test]
+fn a_press_on_a_cards_more_posts_the_albums_menu_with_its_radio() {
+    let ctx = context();
+    let releases = releases();
+    let section = ready(&releases);
+    let card = card_rect_for(&ctx, 0);
+    let art = crate::view::media::art_rect(card);
+    let corner = crate::layout::cards::corner_more(art);
+
+    let request = more_press(&ctx, &section, corner).expect("the card posted no menu");
+    let offered: Vec<crate::menu::Verb> = request.items.iter().map(|item| item.verb).collect();
+
+    assert!(
+        offered.contains(&crate::menu::Verb::StartRadio),
+        "the release card offers no radio: {offered:?}"
+    );
+    assert!(
+        offered.contains(&crate::menu::Verb::CopyLink),
+        "the release card's menu is missing its album's verbs: {offered:?}"
+    );
+    assert_eq!(
+        request.targets,
+        Vec::new(),
+        "a card is not a pick of tracks"
+    );
+}

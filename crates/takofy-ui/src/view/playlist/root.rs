@@ -23,7 +23,8 @@ use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 use crate::verbs::{self, LibraryRights};
 use crate::view::{
-    context_menu, filter_row, hero, media, page_head, skeleton, text as recipe, view_toggle,
+    card_menu, context_menu, filter_row, hero, media, page_head, skeleton, text as recipe,
+    view_toggle,
 };
 
 /// What the root's main view shows: the cards for the chosen chip, or the state
@@ -327,7 +328,10 @@ fn grid(ui: &mut Ui, items: &[Item<'_>], layout: MediaLayout, draw: &mut MediaDr
         match media::tile(ui, rect, &media.as_media(), draw.tokens) {
             Some(media::Press::Open) => draw.activate(item, &media.uri),
             Some(media::Press::Play) => draw.want_play(&media),
-            Some(media::Press::Menu(_)) | None => {}
+            Some(media::Press::Menu(door)) => {
+                card_menu::post_thing(ui.ctx(), draw.library, &media.as_media(), door);
+            }
+            None => {}
         }
     }
 }

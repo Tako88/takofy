@@ -15,7 +15,7 @@ use crate::sidebar_kind::SidebarKind;
 use crate::theme::Tokens;
 use crate::view::playlist::root::MediaDraw;
 
-use super::super::{hero, media, section};
+use super::super::{card_menu, hero, media, section};
 use super::Pressed;
 
 /// Draws the shelf, and nothing until it has something to draw.
@@ -60,8 +60,12 @@ pub(super) fn show(
             cover: draw.art.look(card.portrait.as_ref(), want, draw.now),
             picture: hero::Picture::Cover,
         };
-        if media::tile(ui, rect, &media, tokens) == Some(media::Press::Open) {
-            *draw.open = Some(Page::Artist(card.uri.clone()));
+        match media::tile(ui, rect, &media, tokens) {
+            Some(media::Press::Open) => *draw.open = Some(Page::Artist(card.uri.clone())),
+            Some(media::Press::Menu(door)) => {
+                card_menu::post_artist(ui.ctx(), draw.library, &media, door);
+            }
+            _ => {}
         }
     }
     if super::door::show(ui, &home_door_because(row.seed_name), tokens) {

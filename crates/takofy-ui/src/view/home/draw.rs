@@ -22,7 +22,7 @@ use crate::theme::{Tokens, motion, space};
 use crate::view::list_more;
 use crate::view::playlist::root::MediaDraw;
 
-use super::super::{hero, media, row_head, section};
+use super::super::{card_menu, hero, media, row_head, section};
 use super::Pressed;
 
 /// The sweep's span: three slow steps, the reference's `--draw-wait`.
@@ -235,7 +235,11 @@ fn card_show(
             // four the shelf happens to show.
             CardKind::Track => out.rows = Some(vec![card.row.clone()]),
         },
-        Some(media::Press::Menu(_)) | None => {}
+        Some(media::Press::Menu(door)) => match card.kind {
+            CardKind::Album => card_menu::post_thing(ui.ctx(), draw.library, &words, door),
+            CardKind::Track => card_menu::post_track(ui.ctx(), draw.library, card.row, door),
+        },
+        None => {}
     }
 }
 

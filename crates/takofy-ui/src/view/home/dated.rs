@@ -15,7 +15,7 @@ use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
 use crate::view::playlist::root::MediaDraw;
 
-use super::super::text as recipe;
+use super::super::{card_menu, text as recipe};
 use super::super::{controls, hero, media, section};
 use super::{Door, Pressed, door, frame};
 
@@ -121,7 +121,10 @@ fn cards_row(ui: &mut Ui, cards: &[Card<'_>], draw: &mut MediaDraw<'_, '_>, now_
                         draw.activate(&Item::Playlist(entry), entry.uri.as_str());
                     }
                     Some(media::Press::Play) => draw.want_play(&words),
-                    Some(media::Press::Menu(_)) | None => {}
+                    Some(media::Press::Menu(door)) => {
+                        card_menu::post_thing(ui.ctx(), draw.library, &words.as_media(), door);
+                    }
+                    None => {}
                 }
             }
             Saved::Album(album) => {
@@ -132,7 +135,10 @@ fn cards_row(ui: &mut Ui, cards: &[Card<'_>], draw: &mut MediaDraw<'_, '_>, now_
                         draw.activate(&Item::Album(album), album.uri.as_str());
                     }
                     Some(media::Press::Play) => draw.want_play(&words),
-                    Some(media::Press::Menu(_)) | None => {}
+                    Some(media::Press::Menu(door)) => {
+                        card_menu::post_thing(ui.ctx(), draw.library, &words.as_media(), door);
+                    }
+                    None => {}
                 }
             }
             Saved::Track(track) => {
@@ -153,10 +159,16 @@ fn cards_row(ui: &mut Ui, cards: &[Card<'_>], draw: &mut MediaDraw<'_, '_>, now_
                     cover,
                     picture: hero::Picture::Cover,
                 };
-                if let Some(media::Press::Open) = media::tile(ui, rect, &words, draw.tokens)
-                    && let Some(album) = &track.album_uri
-                {
-                    *draw.open = Some(Page::Album(album.clone()));
+                match media::tile(ui, rect, &words, draw.tokens) {
+                    Some(media::Press::Open) => {
+                        if let Some(album) = &track.album_uri {
+                            *draw.open = Some(Page::Album(album.clone()));
+                        }
+                    }
+                    Some(media::Press::Menu(door)) => {
+                        card_menu::post_track(ui.ctx(), draw.library, track, door);
+                    }
+                    _ => {}
                 }
             }
         }

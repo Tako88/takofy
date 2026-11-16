@@ -386,6 +386,29 @@ pub fn track_items(
     items
 }
 
+/// The request a card posts when the thing it names is a song.
+///
+/// A card is one thing rather than a pick, and it sits in no list, so nothing
+/// here can remove it: the sheet is only what can be done with the track.
+pub fn track_request(
+    entry: &TrackEntry,
+    door: Door,
+    standing: Standing,
+    page: Option<Page>,
+) -> Option<Request> {
+    let targets = std::slice::from_ref(entry);
+    let items = track_items(targets, page.as_ref(), &Listing::Page, standing);
+    (!items.is_empty()).then(|| Request {
+        door,
+        items,
+        playlists: Vec::new(),
+        targets: vec![entry.clone()],
+        rows: Vec::new(),
+        listing: Listing::Page,
+        page,
+    })
+}
+
 /// What `verb` does with the snapshot it was offered on.
 ///
 /// `None` when the verb cannot apply to these rows. The menu only offers verbs

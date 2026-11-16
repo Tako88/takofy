@@ -173,3 +173,62 @@ fn a_card_says_the_artists_name_and_no_kind_word() {
         "the reference's artist card is a face and a name: {drawn:?}"
     );
 }
+
+/// The rect the shelf's first card takes: the head, then the grid.
+fn card_rect_for(ctx: &Context, row: &Row<'_>) -> Rect {
+    let tokens = Tokens::DARK;
+    let mut found = None;
+    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        section::head(
+            ui,
+            &format!("{HOME_BECAUSE_TITLE} {}", row.seed_name),
+            "",
+            &tokens,
+        );
+        found = Some(super::super::grid::solve(ui).card_rect(0));
+    });
+    output.textures_delta.clear();
+    found.expect("the shelf lays out")
+}
+
+#[test]
+fn a_press_on_a_cards_more_posts_the_artists_menu_with_its_radio() {
+    use crate::view::context_menu;
+    let ctx = context();
+    let mut art = Art::default();
+    let mut open = None;
+    let cards = vec![artist("spotify:artist:z", "Zed")];
+    let row = Row {
+        seed_name: "Aria",
+        seed_uri: "spotify:artist:aria",
+        cards: &cards,
+    };
+    let corner =
+        crate::layout::cards::corner_more(crate::view::media::art_rect(card_rect_for(&ctx, &row)));
+
+    // A reader hovers the card before its corner is drawn.
+    let _ = draw(
+        &ctx,
+        &mut art,
+        &mut open,
+        &row,
+        vec![Event::PointerMoved(corner.center())],
+    );
+    let mut request = None;
+    for event in click_events(corner.center()) {
+        let _ = draw(&ctx, &mut art, &mut open, &row, vec![event]);
+        request = request.or(context_menu::take_request(&ctx));
+    }
+
+    let request = request.expect("the card posted no menu");
+    let offered: Vec<crate::menu::Verb> = request.items.iter().map(|item| item.verb).collect();
+    assert!(
+        offered.contains(&crate::menu::Verb::StartRadio),
+        "the related artist offers no radio: {offered:?}"
+    );
+    assert!(
+        offered.contains(&crate::menu::Verb::Follow),
+        "a card nobody follows offers no follow: {offered:?}"
+    );
+    assert_eq!(open, None, "the `⋯` also opened the artist's page");
+}

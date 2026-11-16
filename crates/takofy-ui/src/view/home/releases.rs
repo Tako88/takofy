@@ -16,7 +16,7 @@ use crate::sidebar_kind::SidebarKind;
 use crate::theme::Tokens;
 use crate::view::playlist::root::MediaDraw;
 
-use super::super::{hero, media, section};
+use super::super::{card_menu, hero, media, section};
 
 /// Draws the shelf, or what it says instead.
 pub(super) fn show(
@@ -77,7 +77,10 @@ fn cards_row(ui: &mut Ui, list: &List<'_>, tokens: &Tokens, draw: &mut MediaDraw
             Some(media::Press::Play) => {
                 *draw.play = Some((release.uri.clone(), SidebarKind::Albums));
             }
-            Some(media::Press::Menu(_)) | None => {}
+            Some(media::Press::Menu(door)) => {
+                card_menu::post_thing(ui.ctx(), draw.library, &words, door);
+            }
+            None => {}
         }
     }
 }
