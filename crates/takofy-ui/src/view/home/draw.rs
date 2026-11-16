@@ -76,7 +76,8 @@ fn drawn_shelf(
     if drawn.pending {
         // The square's edge draws itself as the wait runs out, so the frame has
         // to come before the wait ends.
-        ui.ctx().request_repaint_after(Duration::from_millis(16));
+        ui.ctx()
+            .request_repaint_after(Duration::from_millis(crate::theme::eq::WAKE_MS));
     }
     // A failed draw keeps the seed and the four that last landed, but the ledger
     // is the one count it can no longer stand behind: the sentence on the foot
@@ -122,6 +123,12 @@ fn drawn_shelf(
     }
 
     ui.add_space(space::S2);
+    // A head whose station is still out holds the room its cards will take, so the
+    // shelf below does not jump a row when they land — the same wait the discovery
+    // band draws.
+    if drawn.cards.is_empty() && drawn.pending {
+        super::frame::card_band(ui, tokens);
+    }
     let block = cards(ui, drawn, stacked, tokens, draw, out);
     let sentence = match (drawn.failed.is_some(), drawn.nothing) {
         (true, _) => Some(DRAW_FAILED),

@@ -156,7 +156,10 @@ pub(super) fn home_view(
                 }
                 // The shelf at chance follows the band that finds its seeds: one
                 // item the deck drew, and the four cards its station yielded.
-                if shelves.chance.presence() != Presence::Absent {
+                if matches!(
+                    shelves.chance.presence(),
+                    Presence::Waiting | Presence::Ready
+                ) {
                     if drawn {
                         section::divide(ui, tokens);
                     }
@@ -323,7 +326,10 @@ pub(super) fn home_view(
     }
     // The draw shelf's square starts the next draw; the four on screen stay until
     // its station lands.
-    if out.another && library.press_draw(now_ms) {
+    if out.another {
+        // The draw may have ended in a sentence rather than a read, and that is
+        // still a frame the page owes.
+        library.press_draw(now_ms);
         ui.ctx().request_repaint();
     }
     // A card's play is one row, queued like the discovery band's.

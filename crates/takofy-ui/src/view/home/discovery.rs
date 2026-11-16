@@ -122,7 +122,8 @@ fn row_show(
             // The border draws itself as the wait runs out, so the frame has to
             // come before the wait ends: one wake at the end would freeze it at
             // whatever share the last repaint caught.
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+            ui.ctx()
+                .request_repaint_after(Duration::from_millis(crate::theme::eq::WAKE_MS));
         }
         // A row with nothing left to draw has no button to dim: the play keeps
         // the edge, because a box that will never come back is a promise the row

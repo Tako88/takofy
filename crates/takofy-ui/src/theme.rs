@@ -444,6 +444,9 @@ pub mod eq {
     /// The pulse is the one thing on screen that is never still, and the window's
     /// steady redraw is an order of magnitude slower than this.
     pub const FRAME: f32 = 0.016;
+    /// How soon a control that draws its own border asks for the next frame, in
+    /// whole milliseconds: the sweep is only as smooth as the frames it gets.
+    pub const WAKE_MS: u64 = (FRAME * 1_000.0) as u64;
     /// The shortest a bar gets, a quarter of its height. A bar shrinks and grows
     /// again; it never disappears.
     pub const MIN_SCALE: f32 = 0.25;

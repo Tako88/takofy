@@ -634,6 +634,70 @@ fn a_failed_name_read_on_the_first_draw_walks_on() {
 }
 
 #[test]
+fn a_press_is_a_retry_so_the_last_sentence_goes_with_it() {
+    let library = Library {
+        albums: vec![saved_album("spotify:album:1", "An album")],
+        ..Library::default()
+    };
+    let mut state = opened(&library);
+    let Ask::Station(seed) = claim(&mut state) else {
+        panic!("an album seed is asked for its station");
+    };
+    state.fail(&HomeAsk::Station { seed }, Failure::Load);
+    assert_eq!(state.failure(), Some(Failure::Load));
+
+    assert!(state.press(2_000));
+    assert_eq!(state.failure(), None, "the retry kept the old sentence");
+}
+
+#[test]
+fn a_walk_that_runs_out_on_a_kept_draw_announces_nothing() {
+    // Eight unnameable songs behind a draw that landed: the four stay, so the shelf
+    // must not print "nothing beside this one" under them (#96).
+    let songs: Vec<LikedTrack> = (0..12)
+        .map(|index| liked(&format!("spotify:track:{index}")))
+        .collect();
+    let albums = vec![saved_album("spotify:album:1", "An album")];
+    let candidates = Candidates {
+        songs: &songs,
+        albums: &albums,
+        ..Default::default()
+    };
+    let mut state = State::default();
+    state.open(seed());
+    state.fill(&candidates);
+    land_draw(&mut state, clean_rows(6));
+    assert_eq!(state.draw().expect("a draw").cards.len(), CARDS);
+
+    // Every press from here lands on the songs, whose names never come back.
+    let mut presses = 0;
+    while presses < 4 {
+        presses += 1;
+        if !state.press(2_000 + presses) {
+            break;
+        }
+        while let Some(ask) = state.owed() {
+            state.asked(ask.clone());
+            if let Ask::Name(uri) = ask {
+                state.land(&HomeAnswer::Labelled {
+                    asked: vec![uri],
+                    named: Vec::new(),
+                });
+            } else {
+                break;
+            }
+        }
+    }
+
+    let drawn = state.draw().expect("the four stay");
+    assert!(!drawn.cards.is_empty(), "the kept draw went missing");
+    assert!(
+        !drawn.nothing,
+        "the shelf announced nothing under four cards"
+    );
+}
+
+#[test]
 fn a_song_seed_costs_two_reads() {
     let library = Library {
         songs: vec![liked("spotify:track:1")],

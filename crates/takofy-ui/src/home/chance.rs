@@ -457,6 +457,8 @@ impl State {
         self.pressed_ms = Some(now_ms);
         self.skips = 0;
         self.nothing = false;
+        // A press is a retry, so the sentence the last read left goes with it.
+        self.failed = None;
         self.walk();
         !matches!(self.read, Read::Idle)
     }
@@ -643,7 +645,7 @@ impl State {
     fn walk(&mut self) {
         while self.skips < SKIPS {
             let Some(candidate) = self.deck.as_mut().and_then(Deck::draw) else {
-                self.nothing = true;
+                self.nothing = self.shown.is_none();
                 self.read = Read::Idle;
                 return;
             };
@@ -662,7 +664,9 @@ impl State {
             self.read = Read::Owed(Ask::Station(seed));
             return;
         }
-        self.nothing = true;
+        // The four on screen stay when the walk runs out on them, so the shelf has
+        // nothing to announce; only a shelf that never drew says it drew nothing.
+        self.nothing = self.shown.is_none();
         self.read = Read::Idle;
     }
 }
