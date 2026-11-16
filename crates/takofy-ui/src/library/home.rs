@@ -5,6 +5,7 @@
 //! `Library` can reach every state at once.
 
 mod because;
+mod chance;
 mod counted;
 mod dated;
 pub(super) mod discovery;
@@ -14,7 +15,7 @@ mod stations;
 
 use std::time::{Duration, Instant};
 
-use crate::home::{Fit, Phase, Section, Sections, Shelf, Slot};
+use crate::home::{Fit, Phase, Sections, Shelf, Slot};
 use crate::message::Command;
 
 use super::{Library, Load};
@@ -52,9 +53,7 @@ impl Library {
     pub fn home_sections(&self, fit: Fit) -> Sections<'_> {
         Sections {
             dated: self.home_shelf(fit.columns),
-            // The shelf at chance has nothing to draw until its deck is filled,
-            // which no read of this frame has done yet.
-            chance: Section::Absent,
+            chance: self.chance_section(),
             stations: self.stations_section(),
             because: self.because_section(),
             counted: self.counted_section(),
@@ -135,12 +134,15 @@ impl Library {
     /// The built shelves' one ask for this frame, if any.
     ///
     /// The order is the page's own, so the first shelf the reader sees is the
-    /// first read started.
+    /// first read started. The shelf at chance leads: the draw's read is the
+    /// one a press waits on, it holds no allowance, and the page's topmost band
+    /// that owns a read starts first.
     pub(crate) fn home_request(&mut self) -> Option<Command> {
         if !self.on_home() {
             return None;
         }
-        self.stations_ask()
+        self.chance_ask()
+            .or_else(|| self.stations_ask())
             .or_else(|| self.because_ask())
             .or_else(|| self.counted_ask())
             .or_else(|| self.episodes_ask())
@@ -152,6 +154,27 @@ impl Library {
             // Discovery is looked up outside, which is the one read no shelf
             // waits on: it goes last so a slow lookup delays nothing above it.
             .or_else(|| self.discovery_ask())
+    }
+
+    /// Whether every list a shelf's seeds are drawn from has settled.
+    ///
+    /// A failed rootlist is the page's own failure, so it never seeds a read
+    /// the gated page would not draw. The seeds wait for the playlists rather
+    /// than the other way round: the lists are read before the labels land, and
+    /// a seed set chosen then would be kept for the whole open without one
+    /// playlist in it.
+    pub(super) fn library_settled(&self) -> bool {
+        if matches!(phase_of(&self.playlists), Phase::Failed(_)) {
+            return false;
+        }
+        [
+            phase_of(&self.playlists),
+            phase_of(&self.saved_albums),
+            phase_of(&self.followed_artists),
+            self.likes.phase(),
+        ]
+        .into_iter()
+        .all(|phase| phase != Phase::Pending)
     }
 
     /// Every built ask this open still owes.

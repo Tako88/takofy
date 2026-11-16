@@ -194,12 +194,21 @@ fn detail(uri: &str) -> ShowDetail {
 
 /// The one related read the shelf owes, as the artist it is for.
 ///
-/// The stations shelf is asked first, so its reads are answered empty: this
-/// fixture draws no band, and the station asks do not stand in for the one this
+/// The draw shelf is asked first, and its asks have the same shape as the
+/// band's, so they are recognised by the shelf's own state and answered with
+/// nothing. The stations shelf's reads are answered empty too: this fixture
+/// draws no band, and the station asks do not stand in for the one this
 /// returns.
 fn related_ask(library: &mut Library) -> String {
     loop {
-        match library.home_request() {
+        let owed = library.home.chance.owed().is_some();
+        let out = library.home.chance.in_flight().is_some();
+        let request = library.home_request();
+        // The draw shelf leads, so the ask is its own unless a read it sent was
+        // already out when the call was made (#96).
+        let drawn = owed || (!out && library.home.chance.in_flight().is_some());
+        match request {
+            Some(Command::LoadHome(ask)) if drawn => answer_draw(library, &ask),
             Some(Command::LoadHome(HomeAsk::Related { artist })) => return artist,
             Some(Command::LoadHome(HomeAsk::Station { seed })) => {
                 library.apply(&Update::Home(HomeAnswer::Station(Station {
@@ -213,6 +222,29 @@ fn related_ask(library: &mut Library) -> String {
             }
             other => panic!("expected one related read, got {other:?}"),
         }
+    }
+}
+
+/// Answers one ask the draw shelf made with nothing, so the shelf moves on.
+fn answer_draw(library: &mut Library, ask: &HomeAsk) {
+    match ask {
+        HomeAsk::Station { seed } => {
+            library.apply(&Update::Home(HomeAnswer::Station(Station {
+                seed: seed.clone(),
+                uri: format!("spotify:station:{}", seed.uri),
+                title: seed.uri.clone(),
+                subtitle: None,
+                art: None,
+                rows: Vec::new(),
+            })));
+        }
+        HomeAsk::Labels { tracks } => {
+            library.apply(&Update::Home(HomeAnswer::Labelled {
+                asked: tracks.clone(),
+                named: Vec::new(),
+            }));
+        }
+        other => panic!("the draw shelf asked for {other:?}"),
     }
 }
 

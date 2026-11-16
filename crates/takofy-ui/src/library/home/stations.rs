@@ -46,7 +46,7 @@ impl Library {
             // The seed list is kept for the whole open, so it is chosen once the
             // feeds behind it have settled: seeding it from a half-read library
             // would drop the rest of a feed's candidates.
-            if !self.stations_settled() {
+            if !self.library_settled() {
                 return None;
             }
             let seed = self.home.seed();
@@ -121,27 +121,6 @@ impl Library {
         }
         self.home.mark_lengths(&tracks);
         Some(Command::LoadHome(HomeAsk::Labels { tracks }))
-    }
-
-    /// Whether every feed the seeds are chosen from has settled.
-    ///
-    /// A failed rootlist is the page's own failure, so it never seeds a read
-    /// the gated page would not draw. The seeds wait for the playlists rather
-    /// than the other way round: the lists are read before the labels land, and
-    /// a seed set chosen then would be kept for the whole open without one
-    /// playlist in it.
-    fn stations_settled(&self) -> bool {
-        if matches!(phase_of(&self.playlists), Phase::Failed(_)) {
-            return false;
-        }
-        [
-            phase_of(&self.playlists),
-            phase_of(&self.saved_albums),
-            phase_of(&self.followed_artists),
-            self.likes.phase(),
-        ]
-        .into_iter()
-        .all(|phase| phase != Phase::Pending)
     }
 }
 

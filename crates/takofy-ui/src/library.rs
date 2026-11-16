@@ -2052,6 +2052,14 @@ impl Library {
         self.hidden.unhide(artist);
     }
 
+    /// Takes one press of the chance shelf's quiet square for another draw.
+    ///
+    /// Whether anything moved: a press while a read is out is dropped, and a
+    /// deck with nothing left draws nothing (#96).
+    pub fn press_draw(&mut self, now_ms: u64) -> bool {
+        self.home.chance.press(now_ms)
+    }
+
     /// Moves `kind`'s row on to its next seed, at most once per cooldown.
     ///
     /// Whether it moved: a row with no seed left, one asked again too soon, or

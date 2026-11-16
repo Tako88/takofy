@@ -543,6 +543,11 @@ impl State {
         }
         self.failed = Some(failure);
         self.read = Read::Idle;
+        // A song whose name read failed has no head to paint, and the square is the
+        // shelf's only control: with nothing on screen worth keeping, walk on (#96).
+        if self.shown.is_none() && matches!(ask, HomeAsk::Labels { .. }) {
+            self.walk();
+        }
     }
 
     /// Drops the deck, the store and the four, so a retry reads everything again.

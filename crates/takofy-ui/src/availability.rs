@@ -99,11 +99,13 @@ pub enum Control {
     DiscoveryFollow,
     /// The row that turns the discovery band off and back on.
     DiscoverySwitch,
+    /// The chance shelf's quiet square, which draws the library again.
+    DrawAnother,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 61] = [
+    pub const ALL: [Self; 62] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -163,6 +165,7 @@ impl Control {
         Self::DiscoveryRowPlay,
         Self::DiscoveryFollow,
         Self::DiscoverySwitch,
+        Self::DrawAnother,
         Self::HomeSearch,
         Self::Authorize,
     ];
@@ -248,6 +251,9 @@ pub fn availability(control: Control) -> Availability {
         Control::DiscoveryRowPlay => Availability::Ready, // #90
         Control::DiscoveryFollow => Availability::Ready, // #90
         Control::DiscoverySwitch => Availability::Ready, // #90
+        // The deck is the library's own lists, and a press is a want over
+        // them, so the square is live whenever a read is not out.
+        Control::DrawAnother => Availability::Ready, // #96
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome

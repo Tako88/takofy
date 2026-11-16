@@ -568,6 +568,38 @@ fn a_library_of_unnameable_songs_ends_in_nothing_within_skips() {
 }
 
 #[test]
+fn a_failed_name_read_on_the_first_draw_walks_on() {
+    // A song's name is its head, so a name read that fails leaves nothing to paint;
+    // the square is the shelf's only control, so the draw moves on instead of
+    // stranding the deck on a seed with no head (#96).
+    let songs: Vec<LikedTrack> = (0..4)
+        .map(|index| liked(&format!("spotify:track:{index}")))
+        .collect();
+    let candidates = Candidates {
+        songs: &songs,
+        ..Default::default()
+    };
+    let mut state = State::default();
+    state.open(seed());
+    state.fill(&candidates);
+
+    let Ask::Name(uri) = claim(&mut state) else {
+        panic!("a song seed asks for its name first");
+    };
+    state.fail(
+        &HomeAsk::Labels {
+            tracks: vec![uri.clone()],
+        },
+        Failure::Load,
+    );
+
+    assert_ne!(state.owed(), None, "the failed name read stranded the deck");
+    assert_eq!(state.failure(), Some(Failure::Load));
+    assert!(state.draw().is_none(), "a nameless seed painted a head");
+    assert!(!matches!(state.owed(), Some(Ask::Name(stuck)) if stuck == uri));
+}
+
+#[test]
 fn a_song_seed_costs_two_reads() {
     let library = Library {
         songs: vec![liked("spotify:track:1")],
