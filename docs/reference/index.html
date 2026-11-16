@@ -354,15 +354,17 @@
            album are never drawn side by side — that would be the same thing twice. -->
       <section class="section draw-shelf" aria-label="Drawn from your library" data-draw>
         <div class="row-head">
+          <div class="row-head__lead">
+            <button class="row-head__action row-head__action--quiet" type="button" data-draw-press title="Draw another" aria-label="Draw another set">
+              <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
+            </button>
+          </div>
           <div class="row-head__about" aria-live="polite">
             <h2 class="row-head__seed" id="draw-seed"><a href="album.html" data-draw-title>Kestrel</a></h2>
             <p class="row-head__source" data-draw-source>From your library · a song saved in 2019</p>
           </div>
           <div class="row-head__controls">
             <p class="section__link" data-draw-ledger>2 tracks · 2 albums</p>
-            <button class="row-head__action row-head__action--quiet" type="button" data-draw-press title="Draw another" aria-label="Draw another set">
-              <svg class="icon" aria-hidden="true"><use href="#i-again"></use></svg>
-            </button>
           </div>
         </div>
 
@@ -806,8 +808,8 @@
           built from. The discovery rows ask one open outside graph — Deezer, no key, no account — which
           artist sits next to a seed; it decides nothing that is drawn here, because faces, names and
           playback are Spotify's. The shelf at chance draws one item you already keep and asks the same
-          library for four things beside it, so a press costs one call and replaces what it drew; it never
-          grows, and it never counts what it did not get. Anything you already own or follow is dropped
+          library for four things beside it: a press replaces what it drew, it never grows, and it never
+          counts what it did not get. Anything you already own or follow is dropped
           before it is shown, and a seed with no neighbour you don't already have simply has no row: the
           band is as long as its confirmed neighbours, no longer and no shorter. The two release rows are
           the library's own arithmetic, cached like the rest: thirty days back, or the day you followed the
