@@ -11,7 +11,7 @@ fn a_press_needs_a_landed_offered_row_with_hops_left() {
         "a row that has not landed has no cards to dig from"
     );
     let seed = state.next_ask().expect("the row asks");
-    land_ring(&mut state, &seed, &[1, 2]);
+    land_ring(&mut state, &seed, &[1, 2, 3, 4]);
     let owned = fresh::Owned::default();
     let hidden = hidden::Hidden::default();
 
@@ -29,12 +29,12 @@ fn a_press_needs_a_landed_offered_row_with_hops_left() {
         "a row whose ask is out cannot press again"
     );
 
-    state.land_dig(&dig(&seed, 2, ring(&[3], &[], false)), &owned, &hidden);
+    state.land_dig(&dig(&seed, 2, ring(&[5], &[], false)), &owned, &hidden);
     assert!(state.press_more(DiscoveryKind::Playlist, NOW));
     let _ = state
         .next_dig(&owned, &hidden)
         .expect("the second press mints");
-    state.land_dig(&dig(&seed, 3, ring(&[4], &[], false)), &owned, &hidden);
+    state.land_dig(&dig(&seed, 3, ring(&[6], &[], false)), &owned, &hidden);
 
     assert_eq!(state.rows[0].hops, walk::HOPS_MAX);
     assert!(

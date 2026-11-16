@@ -721,7 +721,7 @@ fn dig_asks(library: &mut Library) -> Vec<DigAsk> {
         .collect()
 }
 
-/// The playlist row's first ring, landed and ready to dig.
+/// The playlist row's first ring, landed full and ready to dig.
 fn first_ring(library: &mut Library) -> DiscoverySeed {
     let seeds = asks_on(library, today());
     let seed = seeds[0].clone();
@@ -731,6 +731,8 @@ fn first_ring(library: &mut Library) -> DiscoverySeed {
         vec![
             stamped("spotify:artist:n1", 1),
             stamped("spotify:artist:n2", 2),
+            stamped("spotify:artist:n3", 3),
+            stamped("spotify:artist:n4", 4),
         ],
     );
     seed
@@ -746,12 +748,12 @@ fn a_press_sends_exactly_one_dig_and_its_answer_appends() {
     assert_eq!(asks.len(), 1, "one press owes one dig: {asks:?}");
     assert_eq!(asks[0].seed, seed);
     assert_eq!(asks[0].hop, 2);
-    assert_eq!(asks[0].frontier.len(), 2);
+    assert_eq!(asks[0].frontier.len(), 4);
 
     library.apply(&Update::Home(dig(
         &seed,
         2,
-        vec![stamped("spotify:artist:n3", 3)],
+        vec![stamped("spotify:artist:n5", 5)],
     )));
 
     assert!(
@@ -764,7 +766,9 @@ fn a_press_sends_exactly_one_dig_and_its_answer_appends() {
         [
             "spotify:artist:n1",
             "spotify:artist:n2",
-            "spotify:artist:n3"
+            "spotify:artist:n3",
+            "spotify:artist:n4",
+            "spotify:artist:n5"
         ]
     );
 }

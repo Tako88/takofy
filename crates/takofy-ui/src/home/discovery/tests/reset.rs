@@ -68,13 +68,13 @@ fn a_rejected_seed_starts_the_dig_over() {
 fn opening_turns_a_dig_in_flight_back_offered_and_keeps_the_cards() {
     let mut state = playlists_only(today(), 4);
     let seed = state.next_ask().expect("the row asks");
-    land_ring(&mut state, &seed, &[1, 2]);
+    land_ring(&mut state, &seed, &[1, 2, 3, 4]);
     let owned = fresh::Owned::default();
     let hidden = hidden::Hidden::default();
     assert!(state.press_more(DiscoveryKind::Playlist, NOW));
     let ask = state.next_dig(&owned, &hidden).expect("the press mints");
     state.land_dig(
-        &dig(&seed, ask.hop, ring(&[3], &[], false)),
+        &dig(&seed, ask.hop, ring(&[5], &[], false)),
         &owned,
         &hidden,
     );

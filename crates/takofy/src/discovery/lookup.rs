@@ -25,12 +25,10 @@ use super::{Fetch, Outside, OutsideError, genre, wire};
 const ANCHOR_MIN: usize = 2;
 /// How many search candidates may be verified before the row is rejected.
 const VERIFY_MAX: usize = 3;
-/// How many neighbours may be tried before the row stops looking.
-const RESOLVE_MAX: usize = 8;
 /// How many neighbours a row's first ring may resolve into cards.
 const CARDS_MAX: usize = 6;
-/// How many neighbours one dig's ring may try before it stops looking.
-const DIG_ATTEMPTS_MAX: usize = 16;
+/// How many neighbours may be tried before the row stops looking.
+const ATTEMPTS_MAX: usize = 16;
 /// How many of the anchor's own titles may be compared.
 const SEED_TITLES_MAX: usize = 10;
 
@@ -43,13 +41,13 @@ struct Limits {
 /// The first ring's caps.
 const FIRST_RING: Limits = Limits {
     cards: CARDS_MAX,
-    attempts: RESOLVE_MAX,
+    attempts: ATTEMPTS_MAX,
 };
 
 /// A dig's ring: four cards, and the attempts a whole union may cost.
 const RING: Limits = Limits {
     cards: RING_CARDS,
-    attempts: DIG_ATTEMPTS_MAX,
+    attempts: ATTEMPTS_MAX,
 };
 
 /// The Spotify reads a lookup needs, faked in tests.
@@ -251,7 +249,7 @@ async fn related<F: Fetch + Sync>(
     id: i64,
 ) -> Result<Vec<wire::ArtistHit>, OutsideError> {
     let body = outside
-        .get(&format!("/artist/{id}/related?limit=10"))
+        .get(&format!("/artist/{id}/related?limit=25"))
         .await?;
     wire::related_artists(&body).map_err(|_| OutsideError::Failed)
 }

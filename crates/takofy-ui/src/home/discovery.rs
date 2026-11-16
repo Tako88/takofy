@@ -33,6 +33,13 @@ pub mod walk;
 /// button draws as its border.
 pub const REROLL_COOLDOWN_MS: u64 = 2_000;
 
+/// How many rings a row may walk to fill itself before the line is offered.
+///
+/// A lookup keeps few of the neighbours it finds, so a row that lands at one or
+/// two cards fills itself first: the reader is offered a press on a row worth
+/// pressing.
+pub const FILL_RINGS: u8 = 2;
+
 /// Whether a row's re-roll can act now, and when it can next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reroll {
@@ -90,7 +97,8 @@ pub enum Read {
 pub enum Dig {
     /// The row may be pressed for one more ring.
     Offered,
-    /// The press is waiting for the frame that mints its ask.
+    /// A ring is due and waiting for the frame that mints its ask, which is the
+    /// press itself or a fill the row owes itself.
     Wanted,
     /// The ask is out and its answer has not landed.
     Asked,
@@ -155,6 +163,12 @@ pub struct Row {
     landed_ms: Option<u64>,
     /// How far from the seed the row has dug, the first lookup being hop one.
     hops: u8,
+    /// How many fill rings this row has walked, which are not its presses.
+    fills: u8,
+    /// Whether the ring in hand is a fill, so it may not count as a press.
+    filling: bool,
+    /// Whether this seed has been sized once, so only its first landing fills.
+    settled: bool,
     /// Where the cards of the last landed ring start in the row's held cards.
     ring_start: usize,
     /// The outside ids the last empty press tried and drew nothing from.
@@ -172,6 +186,9 @@ impl Default for Row {
             read: Read::Idle,
             landed_ms: None,
             hops: 0,
+            fills: 0,
+            filling: false,
+            settled: false,
             ring_start: 0,
             passed: Vec::new(),
             dig: Dig::Offered,
@@ -199,9 +216,25 @@ impl Row {
     /// Forgets the ring a previous seed grew, so the next one starts at the top.
     fn reset_dig(&mut self) {
         self.hops = 0;
+        self.fills = 0;
+        self.filling = false;
+        self.settled = false;
         self.ring_start = 0;
         self.passed.clear();
         self.dig = Dig::Offered;
+    }
+
+    /// Sends a row the reader can see too few cards on after its next ring.
+    ///
+    /// A fill is not their press: it spends none of their hops and never says
+    /// what it found, so the line stays inert rather than narrating a thin row.
+    fn fill(&mut self, kept: usize, exhausted: bool) {
+        if self.dig != Dig::Offered || kept >= RING_CARDS || exhausted || self.fills >= FILL_RINGS {
+            return;
+        }
+        self.fills += 1;
+        self.filling = true;
+        self.dig = Dig::Wanted;
     }
 
     /// Moves a note that has shown its whole window to what follows.
@@ -307,6 +340,7 @@ impl State {
             }
             if matches!(row.dig, Dig::Wanted | Dig::Asked) {
                 row.dig = Dig::Offered;
+                row.filling = false;
             }
         }
     }
@@ -433,19 +467,28 @@ impl State {
         kept
     }
 
-    /// Spends the one re-seed a landed row has when nothing it found is fresh.
+    /// Spends the one re-seed a landed row has when nothing it found is fresh,
+    /// and sends a row the reader can see too few cards on after its next fill.
+    ///
+    /// Only a seed's first landing fills: a ring that a press asked for answers
+    /// for itself, so a press that adds nothing is never filled behind its note.
     pub fn settle(&mut self, fresh_counts: [usize; 3]) {
         for (row, fresh) in self.rows.iter_mut().zip(fresh_counts) {
-            if !matches!(row.read, Read::Landed { .. }) || fresh > 0 || row.hops > 1 {
+            if !matches!(row.read, Read::Landed { .. }) || row.settled {
                 continue;
             }
-            if row.reseeds_left == 0 {
-                row.at = row.pool.len();
-                row.read = Read::Gone;
+            row.settled = true;
+            if fresh == 0 {
+                if row.reseeds_left == 0 {
+                    row.at = row.pool.len();
+                    row.read = Read::Gone;
+                } else {
+                    row.reseeds_left -= 1;
+                    row.advance();
+                }
                 continue;
             }
-            row.reseeds_left -= 1;
-            row.advance();
+            row.fill(fresh, false);
         }
     }
 
@@ -571,6 +614,7 @@ impl State {
             let row = &mut self.rows[index];
             if frontier.is_empty() {
                 row.dig = Dig::Spent;
+                row.filling = false;
                 continue;
             }
             let Some(seed) = row.pool.get(row.at).cloned() else {
@@ -596,71 +640,89 @@ impl State {
         let HomeAnswer::Dig(answer) = answer else {
             return;
         };
+        let index = answer.seed.kind.index();
         let all_held: HashSet<OutsideId> = self.held_ids().into_iter().collect();
-        let row = &mut self.rows[answer.seed.kind.index()];
-        let Some(seed) = row.pool.get(row.at).cloned() else {
-            return;
-        };
-        if !matches!(row.read, Read::Landed { .. })
-            || seed.kind != answer.seed.kind
-            || seed.uri != answer.seed.uri
-            || row.dig != Dig::Asked
-            || answer.hop != row.hops.saturating_add(1)
+        let mut ring_exhausted = None;
         {
-            return;
-        }
-        let anchor = seed.anchor;
-        match &answer.outcome {
-            DigOutcome::Off => row.dig = Dig::Offered,
-            DigOutcome::Unreachable => {
-                row.dig = Dig::Quiet {
-                    note: walk::Note::Unreachable,
-                    at_ms: None,
-                    then: After::Offered,
-                };
+            let row = &mut self.rows[index];
+            let Some(seed) = row.pool.get(row.at).cloned() else {
+                return;
+            };
+            if !matches!(row.read, Read::Landed { .. })
+                || seed.kind != answer.seed.kind
+                || seed.uri != answer.seed.uri
+                || row.dig != Dig::Asked
+                || answer.hop != row.hops.saturating_add(1)
+            {
+                return;
             }
-            DigOutcome::Ring {
-                cards,
-                passed,
-                exhausted,
-            } => {
-                let mut held = all_held;
-                held.extend(row.passed.iter().copied());
-                let (appended, dropped) =
-                    walk::gather(cards, &held, anchor.as_ref(), owned, hidden);
-                if appended.is_empty() {
-                    row.passed.extend(passed.iter().copied());
-                    row.passed.extend(dropped);
-                    row.dig = if *exhausted {
-                        Dig::Quiet {
-                            note: walk::Note::Nothing,
-                            at_ms: None,
-                            then: After::Spent,
-                        }
+            let anchor = seed.anchor;
+            let filling = row.filling;
+            row.filling = false;
+            row.settled = true;
+            match &answer.outcome {
+                DigOutcome::Off => row.dig = Dig::Offered,
+                DigOutcome::Unreachable => {
+                    row.dig = Dig::Quiet {
+                        note: walk::Note::Unreachable,
+                        at_ms: None,
+                        then: After::Offered,
+                    };
+                }
+                DigOutcome::Ring {
+                    cards,
+                    passed,
+                    exhausted,
+                } => {
+                    ring_exhausted = Some(*exhausted);
+                    let mut held = all_held;
+                    held.extend(row.passed.iter().copied());
+                    let (appended, dropped) =
+                        walk::gather(cards, &held, anchor.as_ref(), owned, hidden);
+                    if appended.is_empty() {
+                        row.passed.extend(passed.iter().copied());
+                        row.passed.extend(dropped);
+                        row.dig = match (filling, *exhausted) {
+                            // A fill says nothing: it either goes on filling or
+                            // stops where the row is.
+                            (true, true) => Dig::Spent,
+                            (true, false) => Dig::Offered,
+                            (false, true) => Dig::Quiet {
+                                note: walk::Note::Nothing,
+                                at_ms: None,
+                                then: After::Spent,
+                            },
+                            (false, false) => Dig::Quiet {
+                                note: walk::Note::Sparse,
+                                at_ms: None,
+                                then: After::Offered,
+                            },
+                        };
                     } else {
-                        Dig::Quiet {
-                            note: walk::Note::Sparse,
-                            at_ms: None,
-                            then: After::Offered,
+                        let Read::Landed { cards, .. } = &mut row.read else {
+                            return;
+                        };
+                        let old = cards.len();
+                        cards.extend(appended);
+                        row.ring_start = old;
+                        if !filling {
+                            row.hops = answer.hop;
                         }
-                    };
-                } else {
-                    let Read::Landed { cards, .. } = &mut row.read else {
-                        return;
-                    };
-                    let old = cards.len();
-                    cards.extend(appended);
-                    row.ring_start = old;
-                    row.hops = answer.hop;
-                    row.passed.clear();
-                    row.dig = if row.hops >= walk::HOPS_MAX {
-                        Dig::Spent
-                    } else {
-                        Dig::Offered
-                    };
+                        row.passed.clear();
+                        row.dig = if row.hops >= walk::HOPS_MAX {
+                            Dig::Spent
+                        } else {
+                            Dig::Offered
+                        };
+                    }
                 }
             }
         }
+        let Some(exhausted) = ring_exhausted else {
+            return;
+        };
+        let kept = self.kept(owned, hidden)[index].len();
+        self.rows[index].fill(kept, exhausted);
     }
 
     /// What `kind`'s row offers about digging further now.

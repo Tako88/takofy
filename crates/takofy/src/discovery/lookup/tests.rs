@@ -678,16 +678,16 @@ async fn the_call_count_stays_within_the_stated_worst_case() {
     fetch.ok("3001/top", no_overlap());
     fetch.ok("3002/top", no_overlap());
     fetch.ok("3003/top", TOP.as_bytes().to_vec());
-    let related = (0..8)
+    let related = (0..16)
         .map(|index| format!(r#"{{"id":{},"name":"Neighbour {index}"}}"#, 4000 + index))
         .collect::<Vec<_>>()
         .join(",");
     fetch.ok(
         "3003/related",
-        format!(r#"{{"_synthetic":"synthetic","data":[{related}],"next":null,"total":8}}"#)
+        format!(r#"{{"_synthetic":"synthetic","data":[{related}],"next":null,"total":16}}"#)
             .into_bytes(),
     );
-    for index in 0..8 {
+    for index in 0..16 {
         fetch.ok(
             &format!("{}/top", 4000 + index),
             one_title(&format!("Track {index}")),
@@ -707,10 +707,34 @@ async fn the_call_count_stays_within_the_stated_worst_case() {
         }
         other => panic!("expected neighbours, got {other:?}"),
     }
-    // 1 identify + 3 verify + 1 related + 8 neighbour tops + 1 albums + 1 genre
-    // table: the row's stated worst case.
-    assert_eq!(fetch.count(), 15);
+    // 1 identify + 3 verify + 1 related + 16 neighbour tops + 1 albums + 1
+    // genre table: the row's stated worst case.
+    assert_eq!(fetch.count(), 23);
     assert!(spotify.asked_cards().is_empty());
+}
+
+#[tokio::test]
+async fn the_related_read_asks_for_a_pool_wide_enough_to_fill_the_row() {
+    let fetch = FakeFetch::new();
+    fetch.ok("search/artist", SEARCH.as_bytes().to_vec());
+    fetch.ok("1001/top", TOP.as_bytes().to_vec());
+    fetch.ok("1001/related?limit=25", RELATED.as_bytes().to_vec());
+    for (id, title) in [("2002", "Window"), ("2003", "Plains"), ("2004", "Fracture")] {
+        fetch.ok(&format!("{id}/top"), one_title(title));
+    }
+    fetch.ok("1001/albums", ALBUMS.as_bytes().to_vec());
+    fetch.ok("/genre", GENRE.as_bytes().to_vec());
+    let spotify = spotify_happy(&["Signal Fire", "Night Watch"]);
+    let outside = outside(&fetch, true);
+
+    let (_, outcome) = lookup(&spotify, &outside, artist_seed()).await;
+
+    match outcome {
+        DiscoveryOutcome::Neighbours { cards, .. } => {
+            assert_eq!(cards.len(), 3, "the wider pool is what the row reads");
+        }
+        other => panic!("expected neighbours, got {other:?}"),
+    }
 }
 
 #[test]
