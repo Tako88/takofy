@@ -136,11 +136,14 @@ missing token, not a reason to write the literal.
 Target is desktop only: Windows and Linux. Responsive means the window was
 resized, never a phone, so there are no touch affordances.
 
-Breakpoints live in `crates/takofy-ui/src/layout.rs` and nowhere else. Region
-visibility is resolved by `layout::regions_for` and, once the user chooses,
-`layout::regions_with`, so no view measures the window and there is nothing to
-keep in sync. A preference never opens a pane the width hides. `layout::shell_for`
-is the only place a region width appears, and it expresses that width in tokens.
+Breakpoints live in `crates/takofy-ui/src/layout.rs` and nowhere else, and they
+answer two different questions. Which regions exist is `layout::regions_for`,
+and `layout::regions_with` once the user chooses: a view never decides a pane,
+so there is nothing to keep in sync. How much room a column gives what it holds
+— a title's size, a card's sub-line, a row's density — is a tier, and a view may
+ask layout for one but never answer it itself. A preference never opens a pane
+the width hides. `layout::shell_for` is the only place a region width appears,
+and it expresses that width in tokens.
 
 ## Secrets
 
