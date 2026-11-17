@@ -176,6 +176,9 @@ pub enum Failure {
     NoRefreshToken,
     /// No audio output device is available.
     NoAudioDevice,
+    /// The player could not play this: the device refused it, or the player
+    /// thread ended. Distinct from the missing device, which is its own state.
+    Playback,
     /// The library could not be loaded.
     Load,
     /// A write the user asked for did not stick.

@@ -1176,7 +1176,7 @@ fn a_not_playable_track_leaves_the_device_playable() {
             .expect("play");
         assert_eq!(
             ui_end.updates.recv().expect("play failed"),
-            Update::Transport(TransportUpdate::Failed(Failure::Other))
+            Update::Transport(TransportUpdate::Failed(Failure::Playback))
         );
     });
 

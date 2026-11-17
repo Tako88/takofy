@@ -29,6 +29,7 @@ pub(crate) fn playback_failure(error: &SessionError) -> Failure {
     log::warn!("playback failure: {}", error.kind());
     match error {
         SessionError::Playback(PlaybackError::NoAudioDevice) => Failure::NoAudioDevice,
+        SessionError::Playback(_) => Failure::Playback,
         SessionError::LinkLost => Failure::Reconnect,
         _ => Failure::Other,
     }

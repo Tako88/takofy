@@ -190,7 +190,6 @@ fn changing_the_state_moves_nothing_in_the_now_column() {
         TransportState::Unavailable,
         TransportState::Reconnecting,
         TransportState::Stopped,
-        TransportState::Failed(crate::message::Failure::Load),
     ] {
         transport.state = state;
         let (output, _) = bar_frame(
@@ -365,15 +364,41 @@ fn no_state_word_is_painted() {
                 "{state:?}: the bar painted the state word {word:?}"
             );
         }
-        for failure in [
-            crate::message::Failure::Load,
-            crate::message::Failure::Other,
-        ] {
-            let message = crate::signin::failure_message(failure);
-            assert!(
-                !texts.contains(&message.to_owned()),
-                "{state:?}: the bar painted the failure {message:?}"
-            );
-        }
+    }
+}
+
+/// A failure is the one state the bar does name: the pane holds the same
+/// sentence, but the pane can be hidden or too narrow to exist, and then this
+/// line is the only place a play that failed is mentioned at all.
+#[test]
+fn a_failed_transport_is_named_in_the_second_line() {
+    let tokens = Tokens::DARK;
+    for failure in [
+        crate::message::Failure::NoAudioDevice,
+        crate::message::Failure::Playback,
+        crate::message::Failure::Reconnect,
+    ] {
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+        transport.state = TransportState::Failed(failure);
+        let (output, _) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let texts = text_inside(&output, heart_bar());
+        let message = crate::signin::failure_message(failure);
+
+        assert!(
+            texts.contains(&message.to_owned()),
+            "{failure:?}: the bar said nothing about a failed play: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"Nils Aker".to_owned()),
+            "{failure:?}: the artist's line was kept beside the failure"
+        );
     }
 }

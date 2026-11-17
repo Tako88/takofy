@@ -910,7 +910,7 @@ fn a_load_failure_pauses_the_window_it_just_adopted() {
     );
     assert_eq!(
         updates[1],
-        Update::Transport(TransportUpdate::Failed(Failure::Other)),
+        Update::Transport(TransportUpdate::Failed(Failure::Playback)),
         "the track that could not be loaded is reported"
     );
     assert_eq!(
@@ -949,7 +949,7 @@ fn a_failed_release_after_a_load_failure_is_not_silent() {
     assert_eq!(
         &updates[1..],
         [
-            Update::Transport(TransportUpdate::Failed(Failure::Other)),
+            Update::Transport(TransportUpdate::Failed(Failure::Playback)),
             Update::Transport(TransportUpdate::Failed(Failure::Other)),
             Update::Remote(RemoteUpdate::Lost { epoch: 1 }),
         ],

@@ -273,14 +273,23 @@ fn a_slow_load_that_never_started_is_suspect() {
     );
     assert_eq!(
         head.judge_unavailable(generation, at(base, 1_500)),
+        Verdict::Forward,
+        "the key request's own timeout is not a dead link"
+    );
+    assert_eq!(
+        head.judge_unavailable(generation, at(base, 3_999)),
+        Verdict::Forward
+    );
+    assert_eq!(
+        head.judge_unavailable(generation, at(base, 4_000)),
         Verdict::Suspect,
-        "past the key timeout nothing but a dead link explains the failure"
+        "well past the key timeout nothing but a dead link explains it"
     );
     assert_eq!(
         head.judge_unavailable(generation, at(base, 60_000)),
         Verdict::Suspect
     );
-    assert_eq!(SLOW_LOAD, Duration::from_millis(1_500));
+    assert_eq!(SLOW_LOAD, Duration::from_millis(4_000));
 }
 
 #[test]
@@ -319,13 +328,13 @@ fn a_down_flag_reads_as_a_lost_link() {
 fn judging_keeps_the_resume_point() {
     let base = Instant::now();
     let head = reloaded(base);
-    let before = head.resume_point(at(base, 2_000));
+    let before = head.resume_point(at(base, 4_100));
 
     assert_eq!(
-        head.judge_unavailable(head.generation(), at(base, 2_000)),
+        head.judge_unavailable(head.generation(), at(base, 4_100)),
         Verdict::Suspect
     );
-    assert_eq!(head.resume_point(at(base, 2_000)), before);
+    assert_eq!(head.resume_point(at(base, 4_100)), before);
 }
 
 #[test]

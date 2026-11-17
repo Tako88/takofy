@@ -73,7 +73,8 @@ fn playback_failure_names_a_missing_device() {
     );
     assert_eq!(
         playback_failure(&SessionError::Playback(PlaybackError::NoAudioBackend)),
-        Failure::Other
+        Failure::Playback,
+        "a build with no backend is the build's fault, not the sign-in's"
     );
 }
 

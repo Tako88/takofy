@@ -42,13 +42,17 @@ use takofy_ui::signin::failure_message;
 
 use crate::keychain::KeychainStore;
 
-const USAGE: &str = "usage: takofy [--headless [--paste] [--context <uri>]]";
+const USAGE: &str = "usage: takofy [--headless [--paste] [--context <uri>]] | takofy --probe-audio";
 
 /// Which entry point the flags select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Window,
     Headless,
+    /// Opens the audio device once and says what happened. No login, no window:
+    /// the first question a silent install asks is whether this machine can
+    /// produce sound at all.
+    ProbeAudio,
 }
 
 /// What the command line asked for.
@@ -59,6 +63,8 @@ struct Flags {
     context: Option<String>,
     /// Use the terminal driver instead of the window.
     headless: bool,
+    /// Report the audio device rather than opening a window.
+    probe_audio: bool,
 }
 
 fn main() -> ExitCode {
@@ -72,6 +78,7 @@ fn main() -> ExitCode {
     match mode_for(&flags) {
         Ok(Mode::Window) => run_window(&flags),
         Ok(Mode::Headless) => run_headless(flags),
+        Ok(Mode::ProbeAudio) => run_probe_audio(),
         Err(()) => usage_error(),
     }
 }
@@ -84,6 +91,14 @@ fn usage_error() -> ExitCode {
 /// The window has no terminal to prompt on, so the paste fallback and a chosen
 /// context only make sense headless.
 fn mode_for(flags: &Flags) -> Result<Mode, ()> {
+    if flags.probe_audio {
+        // It reads nothing else, so any other flag beside it is a typo.
+        return if flags.headless || flags.context.is_some() {
+            Err(())
+        } else {
+            Ok(Mode::ProbeAudio)
+        };
+    }
     if !flags.headless && (flags.redirect == RedirectMode::Paste || flags.context.is_some()) {
         return Err(());
     }
@@ -195,6 +210,29 @@ fn run_window(flags: &Flags) -> ExitCode {
     }
 }
 
+/// Opens the output device and says what happened, in one line, without a
+/// session.
+///
+/// The exit code is the answer: 0 for a device that opened, 1 for one that did
+/// not. A machine where this succeeds and Takofy is still silent has told us the
+/// fault is above the device.
+fn run_probe_audio() -> ExitCode {
+    let started = std::time::Instant::now();
+    match takofy_core::playback::probe_device() {
+        Ok(()) => {
+            println!(
+                "audio device: opened in {} ms",
+                started.elapsed().as_millis()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            println!("audio device: {}", error);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -206,6 +244,7 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
         redirect: RedirectMode::Loopback,
         context: None,
         headless: false,
+        probe_audio: false,
     };
     let mut args = args;
     while let Some(arg) = args.next() {
@@ -213,6 +252,7 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
             "--headless" => flags.headless = true,
             "--paste" => flags.redirect = RedirectMode::Paste,
             "--context" => flags.context = Some(args.next().ok_or(())?),
+            "--probe-audio" => flags.probe_audio = true,
             _ => return Err(()),
         }
     }
@@ -222,6 +262,10 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
 fn logger_builder() -> env_logger::Builder {
     let mut builder = env_logger::Builder::new();
     builder.filter_level(LevelFilter::Warn);
+    // Read after the default, so `RUST_LOG` raises what this build prints, and
+    // before the filters below, so the two modules that can log a credential or
+    // a track keep their silence whatever the environment says.
+    builder.parse_default_env();
     // librespot-oauth logs tokens and auth codes at trace level.
     builder.filter_module(OAUTH_LOG_TARGET, LevelFilter::Off);
     // The player logs a track's URI and title when it skips one. The whole

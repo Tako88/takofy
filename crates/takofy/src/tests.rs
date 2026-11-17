@@ -117,6 +117,7 @@ fn no_arguments_means_loopback_and_the_rootlist() {
             redirect: RedirectMode::Loopback,
             context: None,
             headless: false,
+            probe_audio: false,
         })
     );
 }
@@ -230,4 +231,25 @@ fn repeated_flags_are_accepted_and_the_last_context_wins() {
 fn no_arguments_select_the_window() {
     let flags = parse_flags(args(&[])).expect("flags parse");
     assert_eq!(mode_for(&flags), Ok(Mode::Window));
+}
+
+#[test]
+fn probe_audio_is_a_flag_of_its_own() {
+    let flags = parse_flags(args(&["--probe-audio"])).expect("flags parse");
+    assert!(flags.probe_audio);
+    assert!(!flags.headless);
+    assert_eq!(flags.context, None);
+}
+
+#[test]
+fn probe_audio_refuses_flags_it_would_ignore() {
+    for extra in [
+        vec!["--probe-audio", "--headless"],
+        vec!["--probe-audio", "--context", "spotify:album:x"],
+    ] {
+        let flags = parse_flags(args(&extra)).expect("flags parse");
+        assert_eq!(mode_for(&flags), Err(()), "{extra:?}");
+    }
+    let flags = parse_flags(args(&["--probe-audio"])).expect("flags parse");
+    assert_eq!(mode_for(&flags), Ok(Mode::ProbeAudio));
 }

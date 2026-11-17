@@ -186,8 +186,11 @@ fn hold_watch(shared: &FakeState) -> tokio::sync::oneshot::Sender<()> {
     release
 }
 
-/// Long enough for a load to pass librespot's key timeout.
-const PRE_DETECTION: Duration = Duration::from_millis(1_600);
+/// Past the point a failed load is read as a lost link, rather than a number of
+/// its own that the threshold can drift away from.
+fn pre_detection() -> Duration {
+    crate::playhead::SLOW_LOAD + Duration::from_millis(100)
+}
 
 #[test]
 fn a_drop_while_playing_retires_then_connects_then_reloads_in_place() {
@@ -1320,7 +1323,7 @@ fn a_play_inside_the_pre_detection_window_costs_one_rebuild_only() {
         until("the load that will not start", || {
             watched.plays.load(Ordering::SeqCst) == 2
         });
-        std::thread::sleep(PRE_DETECTION);
+        std::thread::sleep(pre_detection());
         events(&watched)
             .send(PlaybackEvent::Unavailable)
             .expect("unavailable");

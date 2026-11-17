@@ -93,6 +93,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --locked -p takofy
+      # Nothing else on CI ever runs the Windows binary, so a packaging or link
+      # break would ship silently. The runner has no sound card, so the audio
+      # probe is expected to report a failure here; what is checked is that the
+      # exe starts and reaches its audio backend at all.
+      - name: Smoke
+        shell: pwsh
+        run: |
+          $out = & .\target\release\takofy.exe --probe-audio 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'audio device:') {
+            throw 'the binary did not reach its audio backend'
+          }
       - name: Pack
         shell: pwsh
         run: |

@@ -139,6 +139,7 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::Keychain => keychain_message(),
         Failure::NoRefreshToken => "Spotify did not return a refresh token. Try again.",
         Failure::NoAudioDevice => "No audio output device is available.",
+        Failure::Playback => "That track could not be played. Try the next one.",
         Failure::Load => "Could not load the library. Check your connection and try again.",
         Failure::Save => "Could not save that change. Try again.",
         Failure::Rename => "Could not rename that playlist. Try again.",

@@ -149,6 +149,41 @@ pub enum PlaybackError {
     NotPlayable(String),
 }
 
+/// How long a device may take to open before it is reported as missing.
+///
+/// Opening a device is the one call in this stack that can block on a driver
+/// that has stopped answering, and it happens on the task that serves every
+/// other command. A bound turns a wedged driver into a sentence instead of a
+/// window that draws and does nothing.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Opens the output device once and closes it, without a session or a player.
+///
+/// Rodio's `open` unwraps inside the player thread, so a missing device would
+/// panic there and take the thread with it, silently. Probing in a throwaway
+/// thread turns that into an error this side can draw, and the non-`Send` stream
+/// never crosses threads.
+///
+/// This is also what `--probe-audio` reports: it answers "can this machine open
+/// an output device at all" without a login, which is the first question a
+/// silent install asks.
+pub fn probe_device() -> Result<(), PlaybackError> {
+    let build: SinkBuilder = audio_backend::find(None).ok_or(PlaybackError::NoAudioBackend)?;
+    let format = AudioFormat::default();
+    let (done, opened) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // A panic here is the missing device; the join would carry it, and a
+        // channel carries it without making the caller wait forever.
+        drop(build(None, format));
+        let _ = done.send(());
+    });
+    match opened.recv_timeout(PROBE_TIMEOUT) {
+        Ok(()) => Ok(()),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(PlaybackError::NoAudioDevice),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(PlaybackError::NoAudioDevice),
+    }
+}
+
 /// Drains mapped events, reporting each one, and returns the terminal outcome.
 ///
 /// Blocks the calling thread; call off the runtime (e.g. via `spawn_blocking`).
@@ -209,13 +244,7 @@ impl Playback {
         let format = AudioFormat::default();
         let sink_builder = move || build(None, format);
 
-        // Rodio's `open` unwraps inside the player thread, so a missing device
-        // would panic there. Probe in a throwaway thread first, whose panic
-        // `join` catches and the non-`Send` stream never crosses threads.
-        let probe = std::thread::spawn(move || drop(build(None, format))).join();
-        if probe.is_err() {
-            return Err(PlaybackError::NoAudioDevice);
-        }
+        probe_device()?;
 
         let player = Player::new(
             PlayerConfig::default(),

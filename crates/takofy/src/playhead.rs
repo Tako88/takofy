@@ -12,8 +12,13 @@ use std::time::{Duration, Instant};
 use takofy_core::playback::PlaybackEvent;
 
 /// How long a load may go without starting before a failed one is read as a
-/// lost link. librespot's key request gives up after this long.
-pub const SLOW_LOAD: Duration = Duration::from_millis(1_500);
+/// lost link.
+///
+/// It has to sit well past librespot's key request, which gives up after 1.5 s:
+/// a load that fails at exactly that mark is the timeout, not a dead link, and
+/// blaming the link there costs a session rebuild and one more key request on an
+/// account that may already be answering slowly.
+pub const SLOW_LOAD: Duration = Duration::from_millis(4_000);
 
 /// Where a rebuild reloads the track, and whether it plays.
 #[derive(Debug, Clone, PartialEq, Eq)]

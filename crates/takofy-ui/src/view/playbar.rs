@@ -535,6 +535,13 @@ fn now_column(
     };
     let second: Option<(&str, Option<Target<'_>>)> = match remote {
         Some(remote) => (!remote.line.is_empty()).then_some((remote.line, None)),
+        // A transport that failed says so here, in the line that already carries
+        // what is going on instead of the artist. The pane names the same state,
+        // but the pane can be hidden or too narrow to exist, and then this line
+        // is the only place in the window a failed play is ever mentioned.
+        None if matches!(transport.state, TransportState::Failed(_)) => {
+            Some((transport.state.label(), None))
+        }
         None => playing.and_then(|now| {
             (!now.artists.is_empty()).then(|| {
                 (

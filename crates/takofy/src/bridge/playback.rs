@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use takofy_core::playback::PlaybackEvent;
-use takofy_ui::message::{Command, TransportUpdate, Update};
+use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::covers::Drains;
@@ -114,6 +114,17 @@ pub(super) fn spawn_drain(
             playhead.observe(generation, &event, now);
             notifier.send(transport_of(&event));
         }
+        // The channel closing is the player thread ending: a panic inside the
+        // sink took it, or the device went away. Nothing else will arrive, so a
+        // window left waiting for a load would wait for the rest of the session.
+        // A retired drain belongs to a player that was replaced on purpose.
+        if retired.load(Ordering::SeqCst) {
+            return;
+        }
+        log::warn!("the player thread ended while the session still wanted it");
+        notifier.send(Update::Transport(TransportUpdate::Failed(
+            Failure::Playback,
+        )));
     });
 }
 
