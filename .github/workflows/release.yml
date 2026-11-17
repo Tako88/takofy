@@ -105,6 +105,9 @@ jobs:
           if ($out -notmatch 'audio device:') {
             throw 'the binary did not reach its audio backend'
           }
+          # The probe's own exit code says whether a device opened, which on a
+          # runner it will not. The step's answer is the line above.
+          exit 0
       - name: Pack
         shell: pwsh
         run: |
