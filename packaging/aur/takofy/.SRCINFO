@@ -1,6 +1,6 @@
 pkgbase = takofy
 	pkgdesc = A fast, lean Spotify client for Windows and Linux
-	pkgver = 0.3.1
+	pkgver = 0.3.2
 	pkgrel = 1
 	url = https://github.com/Tako88/takofy
 	arch = x86_64
@@ -13,7 +13,7 @@ pkgbase = takofy
 	provides = takofy
 	conflicts = takofy-bin
 	options = !lto
-	source = takofy-0.3.1.tar.gz::https://github.com/Tako88/takofy/archive/refs/tags/v0.3.1.tar.gz
-	sha256sums = 966f0510a70f57c0a43c7e4b8bde8cf73c2838de075ab2a2501a0f91735fa995
+	source = takofy-0.3.2.tar.gz::https://github.com/Tako88/takofy/archive/refs/tags/v0.3.2.tar.gz
+	sha256sums = b5d74a3a11ce532e0149096c4d0f153f3c236a4ef75ebedb9e2c8982b61663f0
 
 pkgname = takofy
