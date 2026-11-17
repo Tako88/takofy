@@ -6,6 +6,31 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-11-17
+
+### Added
+
+- **A one-line check of the sound.** `takofy --probe-audio` opens the output
+  device and says whether this machine can play anything at all — no sign-in, no
+  window. It is the first thing to try when a machine is silent, and it is what a
+  bug report should start with.
+
+### Fixed
+
+- **A play that fails says why.** When the audio device is missing, or the player
+  stops, the playbar's second line now carries the reason. Before, the bar showed
+  a play button that did nothing, and the only sentence in the window lived in the
+  Now Playing pane — which does not exist on a narrow window.
+- **A playback failure no longer reports itself as a sign-in failure.** It used to
+  say "Sign-in failed. Try again, or run with --headless for details."
+- **Tracks that all fail stop and say so.** Five in a row with nothing playing
+  between them used to leave the bar silent; it now reads "Nothing would play
+  here."
+- **Fewer interruptions when Spotify is slow.** A track that took longer than a
+  second and a half to start, and then failed, was treated as a lost connection:
+  the client reconnected and asked for the track again. Spotify's own key request
+  times out at that same mark, so the two were indistinguishable.
+
 ## [0.3.1] — 2026-11-16
 
 ### Added
@@ -96,7 +121,8 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
   instead of telling you that you are offline
   ([#79](https://github.com/Tako88/takofy/issues/79)).
 
-[Unreleased]: https://github.com/Tako88/takofy/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Tako88/takofy/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/Tako88/takofy/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Tako88/takofy/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Tako88/takofy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Tako88/takofy/compare/v0.1.3...v0.2.0
