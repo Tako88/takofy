@@ -1000,6 +1000,10 @@ impl Queue {
         if cause == Cause::Unavailable || matches!(hop, Hop::Wrap | Hop::Replay) {
             self.skips = self.skips.saturating_add(1);
             if self.skips > MAX_CONSECUTIVE_SKIPS {
+                // Five laps with nothing playing between them. A refusal and a
+                // throttle look the same from here, so the sentence says only
+                // what happened and stops asking.
+                transport.state = TransportState::Failed(crate::message::Failure::NothingPlays);
                 return None;
             }
         }

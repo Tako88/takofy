@@ -779,13 +779,10 @@ fn a_failed_track_at_the_skip_cap_still_lists_the_rest() {
         panel.transport.apply(&update);
         let _ = panel.queue.apply(&update, &mut panel.transport);
     }
-    assert!(
-        matches!(
-            panel.transport.state,
-            crate::player::TransportState::Unavailable
-        ),
-        "the run must have stopped on a failure: {:?}",
-        panel.transport.state
+    assert_eq!(
+        panel.transport.state,
+        crate::player::TransportState::Failed(crate::message::Failure::NothingPlays),
+        "the run must have stopped on one sentence"
     );
 
     let upcoming: Vec<String> = panel

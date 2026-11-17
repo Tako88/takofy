@@ -296,3 +296,50 @@ fn a_manual_next_after_a_cap_stop_gets_a_full_fresh_streak() {
     }
     assert_eq!(skip(&mut queue, &mut transport), None);
 }
+
+#[test]
+fn a_run_of_laps_that_played_nothing_ends_with_one_sentence() {
+    let tracks = tracks(16);
+    let mut queue = Queue::default();
+    let mut transport = Transport::default();
+    let _ = queue.start(&tracks, 0, None, &mut transport);
+
+    for lap in 0..=MAX_CONSECUTIVE_SKIPS {
+        assert_ne!(
+            transport.state,
+            TransportState::Failed(Failure::NothingPlays),
+            "the run gave up on lap {lap}, before the cap"
+        );
+        skip(&mut queue, &mut transport);
+    }
+
+    assert_eq!(
+        transport.state,
+        TransportState::Failed(Failure::NothingPlays),
+        "five laps played nothing and the queue said nothing about it"
+    );
+    assert_eq!(skip(&mut queue, &mut transport), None);
+}
+
+#[test]
+fn the_sentence_a_capped_run_leaves_clears_when_the_user_plays_again() {
+    let tracks = tracks(16);
+    let mut queue = Queue::default();
+    let mut transport = Transport::default();
+    let _ = queue.start(&tracks, 0, None, &mut transport);
+    for _ in 0..=MAX_CONSECUTIVE_SKIPS {
+        skip(&mut queue, &mut transport);
+    }
+    assert_eq!(
+        transport.state,
+        TransportState::Failed(Failure::NothingPlays)
+    );
+
+    assert_eq!(queue.next(&mut transport), Some(play("t6")));
+
+    assert_ne!(
+        transport.state,
+        TransportState::Failed(Failure::NothingPlays),
+        "the bar kept saying the run had stopped after the user played"
+    );
+}

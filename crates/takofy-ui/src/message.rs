@@ -179,6 +179,9 @@ pub enum Failure {
     /// The player could not play this: the device refused it, or the player
     /// thread ended. Distinct from the missing device, which is its own state.
     Playback,
+    /// Enough laps in a row played nothing that the run has stopped. It names
+    /// no cause, because a refusal and a throttle are indistinguishable here.
+    NothingPlays,
     /// The library could not be loaded.
     Load,
     /// A write the user asked for did not stick.
