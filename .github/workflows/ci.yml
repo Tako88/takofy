@@ -47,3 +47,12 @@ jobs:
         run: cargo build --workspace --locked
       - name: Test
         run: cargo test --workspace --locked
+      # Every test above hands the player a fake. This is the only step that
+      # puts the real Windows audio stack in front of the binary, so it reports
+      # rather than enforces: a runner may have no sound card, and "no device"
+      # is a legitimate answer there.
+      - name: The audio device, as this machine sees it
+        continue-on-error: true
+        run: |
+          .\target\debug\takofy.exe --probe-audio
+          echo "exit: $LASTEXITCODE"
