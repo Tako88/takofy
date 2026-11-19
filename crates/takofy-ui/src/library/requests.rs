@@ -78,6 +78,9 @@ impl Library {
     /// nothing.
     pub(super) fn settle(&mut self) -> Option<Command> {
         match self.history.current() {
+            // Settings asks for nothing: its rows come from the host and the
+            // preferences, not from a load.
+            Some(Page::Settings) => None,
             Some(Page::Playlist(playlist)) => {
                 let playlist = playlist.clone();
                 if self.wanted.as_deref() == Some(playlist.as_str())

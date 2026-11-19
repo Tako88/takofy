@@ -1,7 +1,7 @@
 //! The library's current page, and the history that moves between pages.
 //!
-//! A page is Home or one of the four kinds the main panel can show; `None` is
-//! the library root, the playlists grid. Nothing here draws or fetches.
+//! A page is Home, Settings or one of the kinds a link names; `None` is the
+//! library root, the playlists grid. Nothing here draws or fetches.
 
 use takofy_model::uri::{UriKind, parse};
 
@@ -13,6 +13,12 @@ pub enum Page {
     /// It carries no payload, because there is one Home and nothing names it.
     /// It is a page rather than the root, which is the playlists grid.
     Home,
+    /// Settings: the engine, the Soloist setup and the autoplay preference.
+    ///
+    /// It carries no payload, because there is one Settings and nothing names
+    /// it. The offer in #97 opens it and reveals the missing setup step through
+    /// the page's own state, so opening it never has to say which row to show.
+    Settings,
     /// A playlist, by URI.
     Playlist(String),
     /// An album, by URI.
@@ -50,12 +56,12 @@ impl Page {
     ///
     /// A search page's payload is a query and not a URI; it is returned here
     /// because it is the page's identity, the one string the history and the
-    /// reads are keyed by. Home names no URI and answers the empty string, so
-    /// nothing may read this to decide what a page is: the variant decides
-    /// that, and Home has no address to read.
+    /// reads are keyed by. Home and Settings name no URI and answer the empty
+    /// string, so nothing may read this to decide what a page is: the variant
+    /// decides that, and neither has an address to read.
     pub fn uri(&self) -> &str {
         match self {
-            Page::Home => "",
+            Page::Home | Page::Settings => "",
             Page::Playlist(uri)
             | Page::Album(uri)
             | Page::Artist(uri)
@@ -68,6 +74,7 @@ impl Page {
     pub fn kind(&self) -> &'static str {
         match self {
             Page::Home => "Home",
+            Page::Settings => "Settings",
             Page::Playlist(_) => "Playlist",
             Page::Album(_) => "Album",
             Page::Artist(_) => "Artist",

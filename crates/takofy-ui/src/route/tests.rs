@@ -16,6 +16,10 @@ fn home() -> Option<Page> {
     Some(Page::Home)
 }
 
+fn settings() -> Option<Page> {
+    Some(Page::Settings)
+}
+
 #[test]
 fn a_show_uri_credits_a_show_page() {
     assert_eq!(
@@ -128,6 +132,7 @@ fn the_cap_drops_the_oldest_entry() {
 fn a_page_names_its_uri_and_kind() {
     let cases = [
         (Page::Home, "", "Home"),
+        (Page::Settings, "", "Settings"),
         (Page::Playlist("p".to_owned()), "p", "Playlist"),
         (Page::Album("a".to_owned()), "a", "Album"),
         (Page::Artist("r".to_owned()), "r", "Artist"),
@@ -151,6 +156,66 @@ fn a_search_query_that_spells_a_uri_is_still_a_search() {
     assert_eq!(page.kind(), "Search");
     assert_eq!(page.uri(), "spotify:playlist:x");
     assert_ne!(page, Page::Playlist("spotify:playlist:x".to_owned()));
+}
+
+/// Settings is an ordinary move: Back and Forward reach it and leave it, and
+/// it is where going to it again changes nothing.
+#[test]
+fn settings_round_trips_through_back_and_forward() {
+    let mut history = History::starting_at(Page::Home);
+    assert!(history.go(settings()));
+
+    assert_eq!(history.current(), settings().as_ref());
+    assert!(history.back());
+    assert_eq!(history.current(), home().as_ref());
+    assert!(history.forward());
+    assert_eq!(history.current(), settings().as_ref());
+}
+
+#[test]
+fn go_to_settings_from_settings_is_a_no_op() {
+    let mut history = History::starting_at(Page::Home);
+    history.go(settings());
+
+    assert!(!history.go(settings()));
+
+    // The single move left only Home behind it, so the no-op added nothing.
+    assert!(history.back());
+    assert_eq!(history.current(), home().as_ref());
+    assert!(!history.can_back(), "the no-op must not grow back");
+}
+
+#[test]
+fn opening_settings_clears_forward() {
+    let mut history = History::default();
+    history.go(playlist("a"));
+    history.go(album("b"));
+    assert!(history.back());
+    assert!(history.can_forward());
+
+    assert!(history.go(settings()));
+
+    assert!(!history.can_forward());
+    assert!(!history.forward());
+}
+
+/// Settings is trimmed like any other page once the history grows past its
+/// cap.
+#[test]
+fn settings_counts_toward_the_history_cap() {
+    let mut history = History::default();
+    for index in 0..MAX {
+        history.go(playlist(&format!("p{index}")));
+    }
+    assert!(history.go(settings()));
+
+    let mut steps = 0;
+    while history.back() {
+        steps += 1;
+    }
+
+    assert_eq!(steps, MAX, "the history is capped at {MAX}");
+    assert_eq!(history.current(), playlist("p0").as_ref());
 }
 
 /// A history that starts on a page has nowhere behind it: the page is where

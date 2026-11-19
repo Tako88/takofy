@@ -228,7 +228,7 @@ fn target_of(page: &Page) -> Option<Target<'_>> {
         Page::Playlist(uri) => Some(Target::Playlist(uri)),
         Page::Album(uri) => Some(Target::Album(uri)),
         Page::Artist(uri) => Some(Target::Credit(uri)),
-        Page::Home | Page::Show(_) | Page::Search(_) => None,
+        Page::Home | Page::Show(_) | Page::Search(_) | Page::Settings => None,
     }
 }
 

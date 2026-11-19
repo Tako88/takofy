@@ -92,6 +92,9 @@ pub fn tracks_view(
                 ui, table, library, transport, queue, art, now, tokens,
             );
         }
+        MainPage::Settings => {
+            return super::inner(ui, |ui| super::settings::settings_view(ui, tokens));
+        }
         MainPage::Playlist => {}
     }
 
@@ -680,6 +683,8 @@ enum MainPage {
     Artist,
     /// A show's band and its episodes.
     Show,
+    /// The settings page.
+    Settings,
     /// A search's results, under their query's heading.
     Search,
 }
@@ -693,6 +698,7 @@ fn main_page(library: &Library) -> MainPage {
         Some(Page::Album(_)) => MainPage::Album,
         Some(Page::Artist(_)) => MainPage::Artist,
         Some(Page::Show(_)) => MainPage::Show,
+        Some(Page::Settings) => MainPage::Settings,
         Some(Page::Search(_)) => MainPage::Search,
     }
 }

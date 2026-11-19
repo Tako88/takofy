@@ -46,6 +46,7 @@ mod search_cards;
 mod search_menu;
 mod search_results;
 mod section;
+mod settings;
 mod shell;
 mod show;
 pub mod sidebar;

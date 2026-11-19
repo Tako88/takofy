@@ -24,9 +24,12 @@ impl Library {
     pub fn page_search_query(&self) -> Option<&str> {
         match self.history.current()? {
             Page::Search(query) => Some(query),
-            Page::Home | Page::Playlist(_) | Page::Album(_) | Page::Artist(_) | Page::Show(_) => {
-                None
-            }
+            Page::Home
+            | Page::Playlist(_)
+            | Page::Album(_)
+            | Page::Artist(_)
+            | Page::Show(_)
+            | Page::Settings => None,
         }
     }
 
@@ -40,7 +43,12 @@ impl Library {
     pub fn selected(&self) -> Option<&str> {
         match self.history.current()? {
             Page::Playlist(uri) => Some(uri),
-            Page::Home | Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => None,
+            Page::Home
+            | Page::Album(_)
+            | Page::Artist(_)
+            | Page::Show(_)
+            | Page::Search(_)
+            | Page::Settings => None,
         }
     }
 
