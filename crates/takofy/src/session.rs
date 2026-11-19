@@ -13,7 +13,7 @@ use librespot::core::SessionConfig;
 use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{DiscoveryReads, Engine, EngineError, Orders, RootlistRead};
-use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
+use takofy_core::playback::{PlaybackError, PlaybackEvent, Sound, SoundEngine, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
 use takofy_core::{ReadFailed, Resolution, TransferPlan};
@@ -101,6 +101,7 @@ impl SessionError {
                 PlaybackError::PlayerShared => "player shared",
                 PlaybackError::PlayerClosed => "player closed",
                 PlaybackError::NotPlayable(_) => "not playable",
+                PlaybackError::Soloist(_) => "soloist",
             },
         }
     }
@@ -528,7 +529,7 @@ pub(crate) async fn stop_or<T>(
 pub(crate) struct LiveSession {
     cfg: SessionConfig,
     engine: Option<Engine>,
-    playback: Option<Playback>,
+    playback: Option<Box<dyn Sound>>,
     events: Option<UnboundedReceiver<PlaybackEvent>>,
     /// The watch's stream, kept until the drain thread takes it.
     devices: Option<UnboundedReceiver<ClusterEvent>>,
@@ -579,16 +580,19 @@ impl LiveSession {
 
     /// Starts the player on first use, keeping its event stream so the one drain
     /// thread can be handed it once.
-    fn ensure_player(&mut self) -> Result<&Playback, SessionError> {
+    fn ensure_player(&mut self) -> Result<&dyn Sound, SessionError> {
         if self.playback.is_none() {
             let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
             let (playback, events) = engine
-                .playback(self.volume.clone())
+                .playback(self.volume.clone(), SoundEngine::BuiltIn)
                 .map_err(SessionError::Playback)?;
             self.playback = Some(playback);
             self.events = Some(events);
         }
-        self.playback.as_ref().ok_or(SessionError::NotConnected)
+        match self.playback.as_deref() {
+            Some(playback) => Ok(playback),
+            None => Err(SessionError::NotConnected),
+        }
     }
 }
 

@@ -57,6 +57,31 @@ impl fmt::Debug for AccessToken {
     }
 }
 
+/// The Soloist daemon's API key. Redacted on `Debug`; deliberately no `Display`.
+#[derive(Clone)]
+pub struct SoloistKey(String);
+
+impl SoloistKey {
+    /// `None` for empty or whitespace-only input.
+    pub fn new(value: String) -> Option<Self> {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(Self(value))
+        }
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SoloistKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SoloistKey(<redacted>)")
+    }
+}
+
 /// Failure of a [`CredentialStore`] operation.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -75,12 +100,19 @@ pub trait CredentialStore: Send + Sync {
     fn clear(&self) -> Result<(), StoreError>;
 }
 
+/// Persistence port for the Soloist API key.
+pub trait SoloistKeyStore: Send + Sync {
+    fn load(&self) -> Result<Option<SoloistKey>, StoreError>;
+    fn save(&self, key: &SoloistKey) -> Result<(), StoreError>;
+    fn clear(&self) -> Result<(), StoreError>;
+}
+
 #[cfg(test)]
 pub(crate) mod fake {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::{CredentialStore, RefreshToken, StoreError};
+    use super::{CredentialStore, RefreshToken, SoloistKey, SoloistKeyStore, StoreError};
 
     #[derive(Default)]
     pub(crate) struct FakeStore {
@@ -145,6 +177,59 @@ pub(crate) mod fake {
         fn clear(&self) -> Result<(), StoreError> {
             let mut guard = self
                 .token
+                .lock()
+                .map_err(|_| StoreError::Other("lock poisoned"))?;
+            *guard = None;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    pub(crate) struct FakeKeyStore {
+        key: Mutex<Option<SoloistKey>>,
+        fail_load: AtomicBool,
+        saves: AtomicUsize,
+    }
+
+    impl FakeKeyStore {
+        pub(crate) fn new() -> Self {
+            Self::default()
+        }
+
+        pub(crate) fn fail_load(&self) {
+            self.fail_load.store(true, Ordering::SeqCst);
+        }
+
+        pub(crate) fn save_count(&self) -> usize {
+            self.saves.load(Ordering::SeqCst)
+        }
+    }
+
+    impl SoloistKeyStore for FakeKeyStore {
+        fn load(&self) -> Result<Option<SoloistKey>, StoreError> {
+            if self.fail_load.load(Ordering::SeqCst) {
+                return Err(StoreError::Unavailable);
+            }
+            let guard = self
+                .key
+                .lock()
+                .map_err(|_| StoreError::Other("lock poisoned"))?;
+            Ok(guard.clone())
+        }
+
+        fn save(&self, key: &SoloistKey) -> Result<(), StoreError> {
+            let mut guard = self
+                .key
+                .lock()
+                .map_err(|_| StoreError::Other("lock poisoned"))?;
+            *guard = Some(key.clone());
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clear(&self) -> Result<(), StoreError> {
+            let mut guard = self
+                .key
                 .lock()
                 .map_err(|_| StoreError::Other("lock poisoned"))?;
             *guard = None;

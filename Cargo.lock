@@ -5207,6 +5207,7 @@ dependencies = [
  "takofy-model",
  "takofy-ui",
  "tokio",
+ "tokio-tungstenite",
  "winresource",
 ]
 

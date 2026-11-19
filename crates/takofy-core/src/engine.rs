@@ -16,7 +16,7 @@ use crate::followed::FollowedError;
 use crate::hold;
 use crate::latest::Latest;
 use crate::lyrics::LyricsError;
-use crate::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
+use crate::playback::{self, Playback, PlaybackError, PlaybackEvent, Sound, SoundEngine, Volume};
 use crate::playlist_edit::{self, PlaylistError};
 use crate::presence::Presence;
 use crate::registry::{Registry, Verdict};
@@ -384,20 +384,24 @@ impl Engine {
             .pop()
     }
 
-    /// Starts a player over this session.
+    /// Starts a player over this session, unless another engine was handed in.
     ///
     /// Needs an active Tokio runtime: the event forwarder is spawned on it.
     pub fn playback(
         &self,
         volume: Volume,
+        sound: SoundEngine,
     ) -> Result<
         (
-            Playback,
+            Box<dyn Sound>,
             tokio::sync::mpsc::UnboundedReceiver<PlaybackEvent>,
         ),
         PlaybackError,
     > {
-        Playback::start(self.session.clone(), volume)
+        playback::choose(sound, || {
+            Playback::start(self.session.clone(), volume)
+                .map(|(player, events)| (Box::new(player) as Box<dyn Sound>, events))
+        })
     }
 
     /// A paged, labelled view of a playlist's tracks.

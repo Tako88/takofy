@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use tokio::sync::mpsc::UnboundedReceiver;
+
 use librespot::core::SpotifyUri;
 use librespot::metadata::artist::ArtistsWithRole;
 use librespot::metadata::audio::{AudioFiles, AudioItem, UniqueFields};
@@ -9,8 +11,8 @@ use librespot::playback::player::PlayerEvent;
 use librespot::playback::mixer::VolumeGetter;
 
 use super::{
-    Outcome, PLAYBACK_LOG_TARGET, PlaybackError, PlaybackEvent, Volume, attenuation, drive,
-    duration_of, forward, into_sole, map_event, playable_track,
+    Outcome, PLAYBACK_LOG_TARGET, PlaybackError, PlaybackEvent, Sound, SoundEngine, Volume,
+    attenuation, choose, drive, duration_of, forward, into_sole, map_event, playable_track,
 };
 
 /// The player reads the getter it was built with, so the cell behind it is
@@ -414,4 +416,98 @@ fn the_log_target_is_the_module_that_logs() {
         Some(PLAYBACK_LOG_TARGET),
         "the line's target must be the module that logs it"
     );
+}
+
+/// A stand-in for a sound engine: the tests below need the trait's shape, not a
+/// device.
+struct FakeSound;
+
+impl Sound for FakeSound {
+    fn load(&self, _uri: &str, _position_ms: u32, _play: bool) -> Result<(), PlaybackError> {
+        Ok(())
+    }
+
+    fn play(&self, _uri: &str) -> Result<(), PlaybackError> {
+        Ok(())
+    }
+
+    fn seek(&self, _position_ms: u32) {}
+
+    fn pause(&self) {}
+
+    fn resume(&self) {}
+
+    fn stop(&self) {}
+
+    fn set_volume(&self, _percent: u16) {}
+
+    fn shutdown(
+        self: Box<Self>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PlaybackError>> + Send>>
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn silent() -> UnboundedReceiver<PlaybackEvent> {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    rx
+}
+
+/// A boxed trait object holds an engine the trait was written for.
+#[test]
+fn a_boxed_sound_holds_an_engine() {
+    let sound: Box<dyn Sound> = Box::new(FakeSound);
+    assert!(sound.load("spotify:track:x", 0, true).is_ok());
+    assert!(sound.play("spotify:track:x").is_ok());
+    sound.seek(1_000);
+    sound.pause();
+    sound.resume();
+    sound.stop();
+    sound.set_volume(40);
+}
+
+/// The built-in path opens an audio device, so an external engine must never
+/// reach it: the closure is the device path.
+#[test]
+fn an_external_engine_never_starts_the_builtin_one() {
+    let started = std::cell::Cell::new(0_u32);
+    let engine = SoundEngine::External((Box::new(FakeSound) as Box<dyn Sound>, silent()));
+    let chosen = choose(engine, || {
+        started.set(started.get() + 1);
+        Err(PlaybackError::NoAudioDevice)
+    });
+    assert!(
+        chosen.is_ok(),
+        "the external engine is handed back untouched"
+    );
+    assert_eq!(started.get(), 0, "the device path must not run");
+}
+
+#[test]
+fn the_builtin_engine_starts_the_builtin_one() {
+    let started = std::cell::Cell::new(0_u32);
+    let chosen = choose(SoundEngine::BuiltIn, || {
+        started.set(started.get() + 1);
+        Ok((Box::new(FakeSound) as Box<dyn Sound>, silent()))
+    });
+    assert!(chosen.is_ok());
+    assert_eq!(started.get(), 1);
+}
+
+#[test]
+fn a_builtin_failure_is_handed_back() {
+    let chosen = choose(SoundEngine::BuiltIn, || Err(PlaybackError::NoAudioDevice));
+    assert!(matches!(chosen, Err(PlaybackError::NoAudioDevice)));
+}
+
+/// The fault's sentence is drawn in the window, so it may name neither a key,
+/// an argv nor a track.
+#[test]
+fn a_soloist_fault_names_no_secret_and_no_track() {
+    let inherited = PlaybackError::Soloist(crate::soloist::SoloistFault::Missing);
+    let shown = inherited.to_string();
+    assert!(!shown.is_empty());
+    assert!(!shown.contains("spotify:"));
+    assert!(!shown.contains("-k"));
 }
