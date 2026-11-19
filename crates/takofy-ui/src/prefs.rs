@@ -21,9 +21,12 @@ use crate::volume::{self, Volume};
 /// A drag moves the level every frame; a pause this long is the value at rest.
 pub const QUIET: Duration = Duration::from_millis(400);
 
-/// The device name a Soloist daemon announces, which must not be the name the
-/// Connect client announces: the account would list two identical devices.
-pub const SOLOIST_NAME: &str = "Takofy Soloist";
+/// The device name a Soloist daemon announces.
+///
+/// It is what a listener looks for in the phone's device list, so it is the
+/// app's own name. The window announces nothing while this engine is chosen, so
+/// the two only collide if a daemon outlives a switch back to the built-in one.
+pub const SOLOIST_NAME: &str = "Takofy";
 
 /// Which of the two sound paths plays what the app loads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

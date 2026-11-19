@@ -210,6 +210,18 @@ fn a_soloist_pair_is_a_mode_of_its_own() {
 }
 
 #[test]
+fn the_daemon_and_the_window_share_one_name_on_purpose() {
+    // The phone's device list is where a listener has to recognise us. The
+    // window announces nothing while the Soloist engine is chosen, so the two
+    // names can agree, and they must: two spellings is one choice too many.
+    assert_eq!(
+        takofy_ui::prefs::SOLOIST_NAME,
+        takofy_core::connect::DEVICE_NAME,
+        "one name for the app, whichever engine plays"
+    );
+}
+
+#[test]
 fn usage_mentions_every_flag() {
     for flag in [
         "--headless",

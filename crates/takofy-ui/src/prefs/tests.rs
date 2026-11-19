@@ -42,7 +42,7 @@ fn prefs_round_trip() {
 fn default_prefs_render_the_documented_file() {
     assert_eq!(
         Prefs::default().render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy Soloist\n",
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
         "the file is one fixed line per key in a fixed order with a trailing newline"
     );
 }
@@ -53,7 +53,7 @@ fn a_discovery_off_round_trips() {
 
     assert_eq!(
         off.render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=false\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy Soloist\n",
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=false\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
         "the discovery value keeps its place ahead of the sound keys"
     );
     assert_eq!(
@@ -803,11 +803,13 @@ fn the_built_in_engine_is_the_default() {
 }
 
 #[test]
-fn the_soloist_name_is_not_the_connect_device_name() {
-    assert_ne!(
+fn the_daemon_is_named_what_the_listener_looks_for() {
+    // One name in the phone's device list is worth more than a disambiguated
+    // one, and the window announces nothing while this engine is chosen.
+    assert_eq!(
         Prefs::default().soloist_name(),
         "Takofy",
-        "the account must not be shown two devices under one name"
+        "the daemon carries the app's own name, not a qualified one"
     );
 }
 
@@ -820,7 +822,7 @@ fn a_file_without_the_sound_keys_reads_their_defaults() {
     assert_eq!(parsed.soloist_path(), None, "no path to a program");
     assert_eq!(
         parsed.soloist_name(),
-        "Takofy Soloist",
+        "Takofy",
         "and the name the daemon announces"
     );
 }
@@ -829,7 +831,7 @@ fn a_file_without_the_sound_keys_reads_their_defaults() {
 fn every_sound_setting_round_trips() {
     for engine in [SoundChoice::BuiltIn, SoundChoice::Soloist] {
         for path in [None, Some("/opt/soloist/soloist")] {
-            for name in ["Takofy Soloist", "Desk"] {
+            for name in ["Takofy", "Desk"] {
                 let prefs = Prefs::default().with_soloist(engine, path, name);
 
                 assert_eq!(prefs.engine(), engine, "the engine comes back");
@@ -933,7 +935,7 @@ fn a_value_of_two_lines_is_never_written() {
     );
     assert_eq!(
         prefs.soloist_name(),
-        "Takofy Soloist",
+        "Takofy",
         "a name that is not one line keeps the one already there"
     );
     assert_eq!(
@@ -949,7 +951,7 @@ fn an_empty_name_keeps_the_one_already_there() {
 
     assert_eq!(
         prefs.soloist_name(),
-        "Takofy Soloist",
+        "Takofy",
         "an empty name is no name, so the default stands"
     );
 }
@@ -962,7 +964,7 @@ fn a_changed_path_settles_before_it_is_written() {
     let changed =
         written
             .clone()
-            .with_soloist(SoundChoice::BuiltIn, Some("/opt/soloist"), "Takofy Soloist");
+            .with_soloist(SoundChoice::BuiltIn, Some("/opt/soloist"), "Takofy");
 
     assert_ne!(
         changed, written,
