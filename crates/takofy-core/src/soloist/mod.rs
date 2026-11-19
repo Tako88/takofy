@@ -6,6 +6,22 @@
 
 use std::fmt;
 
+pub mod discovery;
+pub mod ending;
+pub mod expiry;
+pub mod frames;
+pub mod position;
+pub mod sequence;
+pub mod sound;
+pub mod state;
+
+pub use sound::{Connection, SoloistSound};
+
+/// The log target every Soloist line is filed under.
+///
+/// Lines carry a fault kind only: never a frame, a track URI or a key.
+pub const SOLOIST_LOG_TARGET: &str = "takofy_core::soloist";
+
 /// Why Soloist could not play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoloistFault {
