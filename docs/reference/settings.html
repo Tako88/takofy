@@ -1,0 +1,436 @@
+<!doctype html>
+<!--
+  Settings — the states sheet.
+
+  Unlike the other reference pages this one draws four frames rather than one
+  page, because a settings page's test is its states: not set up, ready,
+  pairing, and the playbar line that leads here. Everything is a token from
+  styles/tokens.css; nothing on it is a one-off value.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Takofy — settings, sound</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  /* Mockup only. Every value below is a reference token; nothing new is
+     invented here, because the implementation draws through the same tokens. */
+  body { margin: 0; background: #101012; padding: 24px; }
+  .frame {
+    width: 1240px; height: 1150px;
+    display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    gap: var(--space-2); padding: var(--space-2);
+    background: var(--color-window); border-radius: var(--radius-lg);
+    margin-bottom: 32px; position: relative; overflow: hidden;
+  }
+  .frame .app__main { grid-column: 2; grid-row: 1; }
+  .frame .m-side { grid-column: 1; grid-row: 1; }
+  .caption { font: 500 var(--text-2xs)/1.4 var(--font-mono); letter-spacing: var(--tracking-caps);
+             text-transform: uppercase; color: var(--color-text-subtle); margin: 0 0 8px 2px; }
+
+  /* Sidebar, drawn plainly: only its presence matters here. */
+  .m-side { display: flex; flex-direction: column; gap: var(--space-3);
+            background: var(--color-panel); border: 1px solid var(--color-border);
+            border-radius: var(--radius-lg); padding: var(--space-3); overflow: hidden; }
+  .m-lib { display: flex; flex-direction: column; gap: 1px; margin-top: var(--space-1); }
+  .m-lib-row { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: var(--space-3);
+               align-items: center; padding: 6px 4px; border-radius: var(--radius-sm); }
+  .m-lib-row--on { background: var(--color-row-selected); }
+  .m-lib-art { width: 24px; height: 24px; border-radius: var(--radius-xs);
+               background: var(--color-surface-hover); }
+  .m-lib-name { font-size: var(--text-base); color: var(--color-text); }
+  .m-lib-sub { font: 500 var(--text-2xs)/1 var(--font-mono); letter-spacing: var(--tracking-wide);
+               color: var(--color-text-subtle); text-transform: uppercase; }
+
+  /* Page furniture */
+  .m-section { padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
+  .m-section:first-of-type { border-top: 0; padding-top: 0; }
+  .m-section__note { font: 500 var(--text-2xs)/1.5 var(--font-mono); letter-spacing: var(--tracking-wide);
+                     color: var(--color-text-subtle); margin: 2px 0 var(--space-4); max-width: 46ch; }
+
+  /* An engine row: a marker, a name, a line, and a status on the right. */
+  .m-engine { display: grid; grid-template-columns: 16px minmax(0,1fr) auto; gap: var(--space-3);
+              align-items: start; padding: var(--space-3) var(--space-3);
+              border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+              background: var(--color-surface); }
+  .m-engine + .m-engine { margin-top: var(--space-2); }
+  .m-engine--on { border-color: var(--color-border-strong); background: var(--color-surface-raised); }
+  .m-marker { width: 12px; height: 12px; margin-top: 3px; border: 1px solid var(--color-border-strong);
+              border-radius: var(--radius-xs); }
+  .m-marker--on { background: var(--color-text); border-color: var(--color-text); }
+  .m-engine__name { display: block; font-size: var(--text-md); font-weight: 600; letter-spacing: var(--tracking-tight); }
+  .m-engine__line { display: block; font-size: var(--text-sm); color: var(--color-text-muted); margin-top: 3px; max-width: 52ch; }
+  .m-status { font: 500 var(--text-2xs)/1 var(--font-mono); letter-spacing: var(--tracking-caps);
+              text-transform: uppercase; color: var(--color-text-subtle); white-space: nowrap; padding-top: 4px; }
+  .m-status--on { color: var(--color-text); }
+
+  /* The setup block: a panel inside the page, not a dialog. No scrim: this app
+     never covers its own window to ask something. */
+  .m-setup { margin-top: var(--space-3); border: 1px solid var(--color-border);
+             border-radius: var(--radius); background: var(--color-panel); padding: var(--space-4); }
+  .m-step { display: grid; grid-template-columns: 2rem minmax(0,1fr); gap: var(--space-3);
+            padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+  .m-step:first-child { border-top: 0; padding-top: 0; }
+  .m-step__no { font: 500 var(--text-2xs)/1.6 var(--font-mono); letter-spacing: var(--tracking-caps);
+                color: var(--color-text-subtle); }
+  .m-step__title { font-size: var(--text-base); font-weight: 600; }
+  .m-step__line { font-size: var(--text-sm); color: var(--color-text-muted); margin: 4px 0 var(--space-3);
+                  max-width: 58ch; }
+  .m-step__row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+  .m-step--ahead { opacity: 0.45; }
+
+  .m-field { display: flex; align-items: center; gap: var(--space-2); flex: 1; min-width: 18rem;
+             height: 28px; padding: 0 var(--space-3); border: 1px solid var(--color-border-strong);
+             border-radius: var(--radius-sm); background: var(--color-surface-sunken); }
+  .m-field input { flex: 1; min-width: 0; border: 0; background: none; color: var(--color-text);
+                   font: 400 var(--text-sm)/1 var(--font-mono); outline: none; }
+  .m-field input::placeholder { color: var(--color-text-subtle); }
+  .m-found { font: 400 var(--text-sm)/1.4 var(--font-mono); color: var(--color-text);
+             background: var(--color-surface-sunken); border: 1px solid var(--color-border);
+             border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
+  .m-found b { font-weight: 500; color: var(--color-text); }
+  .m-hint { font: 400 var(--text-2xs)/1.5 var(--font-mono); color: var(--color-text-subtle); margin-top: var(--space-2); }
+  .m-wait { display: inline-flex; align-items: center; gap: var(--space-2);
+            font: 500 var(--text-2xs)/1 var(--font-mono); letter-spacing: var(--tracking-caps);
+            text-transform: uppercase; color: var(--color-text); }
+  .m-wait__dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--color-text); }
+  .m-done { font: 500 var(--text-2xs)/1 var(--font-mono); letter-spacing: var(--tracking-caps);
+            text-transform: uppercase; color: var(--color-text-subtle); }
+
+  /* One switch: a square thumb on a hairline track. Nothing is round here. */
+  .m-switch { width: 34px; height: 18px; border: 1px solid var(--color-border-strong);
+              border-radius: var(--radius-xs); padding: 2px; display: flex; }
+  .m-switch--on { background: var(--color-text); border-color: var(--color-text); justify-content: flex-end; }
+  .m-thumb { width: 12px; height: 12px; background: var(--color-text-muted); border-radius: 1px; }
+  .m-switch--on .m-thumb { background: var(--color-text-inverse); }
+
+  .m-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: var(--space-4);
+           align-items: center; padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+  .m-row:first-of-type { border-top: 0; }
+  .m-row__name { font-size: var(--text-base); font-weight: 600; }
+  .m-row__line { font-size: var(--text-sm); color: var(--color-text-muted); margin-top: 2px; max-width: 56ch; }
+
+  /* The playbar's second line is where a failure already speaks. */
+  .m-bar { grid-column: 1 / -1; display: grid; grid-template-columns: 40px minmax(0,1fr) auto;
+           gap: var(--space-3); align-items: center; padding: 0 var(--space-3);
+           border: 1px solid var(--color-border); border-radius: var(--radius-lg);
+           background: var(--color-panel); height: var(--playbar-h); }
+  .m-bar__art { width: 40px; height: 40px; border-radius: var(--radius-sm);
+                background: var(--color-surface-raised); border: 1px solid var(--color-border); }
+  .m-bar__title { font-size: var(--text-sm); font-weight: 600; }
+  .m-bar__line { font-size: var(--text-xs); color: var(--color-text); margin-top: 1px; }
+</style>
+</head>
+<body>
+
+<p class="caption">1 · Settings — Spotify Soloist chosen, not set up yet</p>
+<div class="frame">
+  <aside class="m-side">
+    <div class="chips">
+      <button class="chip" aria-pressed="false">Playlists</button>
+      <button class="chip" aria-pressed="false">Artists</button>
+      <button class="chip" aria-pressed="false">Albums</button>
+      <button class="chip" aria-pressed="false">Podcasts</button>
+    </div>
+    <div class="m-lib">
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Liked Songs</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Windows Down</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Night Buses</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Slow Kitchen</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Paper Radio</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Long Way Home</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Deep Cuts</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Sunday Tapes</span></div>
+    </div>
+  </aside>
+
+  <div class="app__main">
+    <header class="topbar">
+      <div class="topbar__nav">
+        <button class="round-button" aria-label="Back">←</button>
+        <button class="round-button" aria-label="Forward">→</button>
+      </div>
+      <form class="searchbar" onsubmit="return false">
+        <input type="search" placeholder="Artists, albums or tracks" aria-label="Search" />
+      </form>
+    </header>
+
+    <main class="view">
+      <div class="view__inner">
+        <div class="page-head">
+          <h1 class="page-head__title">Settings</h1>
+          <p class="page-head__note">Sound · playback</p>
+        </div>
+
+        <section class="m-section">
+          <div class="section__head">
+            <h2 class="section__title">Sound</h2>
+          </div>
+          <p class="m-section__note">Where the sound comes out. Everything you see — the library, the pages, search — comes from Takofy either way.</p>
+
+          <div class="m-engine">
+            <span class="m-marker"></span>
+            <span>
+              <span class="m-engine__name">Takofy</span>
+              <span class="m-engine__line">Plays on this machine. It cannot play this account's tracks.</span>
+            </span>
+            <span class="m-status">Switch to it</span>
+          </div>
+
+          <div class="m-engine m-engine--on">
+            <span class="m-marker m-marker--on"></span>
+            <span>
+              <span class="m-engine__name">Spotify Soloist</span>
+              <span class="m-engine__line">Spotify's own player. Needed when Spotify will not unlock the audio for this app.</span>
+            </span>
+            <span class="m-status m-status--on">Not set up</span>
+          </div>
+
+          <div class="m-setup">
+            <div class="m-step">
+              <span class="m-step__no">01</span>
+              <div>
+                <div class="m-step__title">Get Spotify Soloist</div>
+                <p class="m-step__line">Spotify does not let Takofy ship it, so download it once and unpack it. Takofy finds it by itself — it is looking in your Downloads folder.</p>
+                <div class="m-step__row">
+                  <button class="button">Open the download page</button>
+                  <span class="m-found">Not found in Downloads</span>
+                </div>
+                <div class="m-step__row" style="margin-top: var(--space-3);">
+                  <span class="m-field"><input placeholder="Moved it? Paste the folder or the program here" /></span>
+                  <button class="button--ghost button">Look again</button>
+                </div>
+                <p class="m-hint">Downloaded but not extracted? Right-click the file → Extract, then look again. Or drag the file onto this window.</p>
+              </div>
+            </div>
+
+            <div class="m-step m-step--ahead">
+              <span class="m-step__no">02</span>
+              <div>
+                <div class="m-step__title">Get your key</div>
+                <p class="m-step__line">One key, from your own Spotify developer page. It is yours alone — it cannot be shared, and Takofy cannot make one for you.</p>
+                <div class="m-step__row">
+                  <button class="button">Open the key page</button>
+                  <span class="m-field"><input placeholder="Paste the key" /></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="m-step m-step--ahead">
+              <span class="m-step__no">03</span>
+              <div>
+                <div class="m-step__title">Pair it with your phone</div>
+                <p class="m-step__line">Open Spotify on your phone, tap the device list, and pick <b>Takofy</b>. Once is enough — it will remember.</p>
+                <div class="m-step__row"><button class="button">Start pairing</button></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="m-section" style="margin-top: var(--space-6);">
+          <div class="section__head"><h2 class="section__title">Playback</h2></div>
+          <div class="m-row">
+            <div>
+              <div class="m-row__name">Keep playing after the queue ends</div>
+              <div class="m-row__line">When a playlist runs out, carry on with something near it.</div>
+            </div>
+            <span class="m-switch m-switch--on"><span class="m-thumb"></span></span>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<p class="caption">2 · Settings — ready, paired, with the expiry it owes the listener</p>
+<div class="frame">
+  <aside class="m-side">
+    <div class="chips">
+      <button class="chip" aria-pressed="false">Playlists</button>
+      <button class="chip" aria-pressed="false">Artists</button>
+      <button class="chip" aria-pressed="false">Albums</button>
+      <button class="chip" aria-pressed="false">Podcasts</button>
+    </div>
+    <div class="m-lib">
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Liked Songs</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Windows Down</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Night Buses</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Slow Kitchen</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Paper Radio</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Long Way Home</span></div>
+    </div>
+  </aside>
+
+  <div class="app__main">
+    <header class="topbar">
+      <div class="topbar__nav">
+        <button class="round-button" aria-label="Back">←</button>
+        <button class="round-button" aria-label="Forward">→</button>
+      </div>
+      <form class="searchbar" onsubmit="return false">
+        <input type="search" placeholder="Artists, albums or tracks" aria-label="Search" />
+      </form>
+    </header>
+
+    <main class="view">
+      <div class="view__inner">
+        <div class="page-head">
+          <h1 class="page-head__title">Settings</h1>
+          <p class="page-head__note">Sound · playback</p>
+        </div>
+
+        <section class="m-section">
+          <div class="section__head"><h2 class="section__title">Sound</h2></div>
+
+          <div class="m-engine">
+            <span class="m-marker"></span>
+            <span>
+              <span class="m-engine__name">Takofy</span>
+              <span class="m-engine__line">Plays on this machine.</span>
+            </span>
+            <span class="m-status">Switch to it</span>
+          </div>
+
+          <div class="m-engine m-engine--on">
+            <span class="m-marker m-marker--on"></span>
+            <span>
+              <span class="m-engine__name">Spotify Soloist</span>
+              <span class="m-engine__line">Spotify's own player, running beside Takofy as <b>Takofy</b>.</span>
+            </span>
+            <span class="m-status m-status--on">Ready · paired</span>
+          </div>
+
+          <div class="m-setup">
+            <div class="m-step" style="grid-template-columns: minmax(0,1fr);">
+              <div>
+                <div class="m-step__row" style="justify-content: space-between;">
+                  <span class="m-found">~/Downloads/soloist · build 12 Nov 2026 · fresh</span>
+                  <span style="display:flex; gap: var(--space-3);">
+                    <button class="button">Recheck</button>
+                    <button class="button--ghost button">Change the program</button>
+                  </span>
+                </div>
+                <p class="m-hint">The key is stored in your system keychain. Paired once; it stays paired.</p>
+              </div>
+            </div>
+            <div class="m-step" style="grid-template-columns: minmax(0,1fr);">
+              <div>
+                <div class="m-step__title">This download expires on 10 February</div>
+                <p class="m-step__line">Spotify's builds stop working 90 days after they were made. Download a newer one before then; Takofy will keep using the old one until it stops.</p>
+                <div class="m-step__row"><button class="button">Open the download page</button></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="m-section" style="margin-top: var(--space-6);">
+          <div class="section__head"><h2 class="section__title">Playback</h2></div>
+          <div class="m-row">
+            <div>
+              <div class="m-row__name">Keep playing after the queue ends</div>
+              <div class="m-row__line">When a playlist runs out, carry on with something near it.</div>
+            </div>
+            <span class="m-switch m-switch--on"><span class="m-thumb"></span></span>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<p class="caption">3 · Pairing — the one step that waits on something outside the app</p>
+<div class="frame">
+  <aside class="m-side">
+    <div class="chips">
+      <button class="chip" aria-pressed="false">Playlists</button>
+      <button class="chip" aria-pressed="false">Artists</button>
+      <button class="chip" aria-pressed="false">Albums</button>
+      <button class="chip" aria-pressed="false">Podcasts</button>
+    </div>
+    <div class="m-lib">
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Liked Songs</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Windows Down</span></div>
+      <div class="m-lib-row"><span class="m-lib-art"></span><span class="m-lib-name">Night Buses</span></div>
+    </div>
+  </aside>
+
+  <div class="app__main">
+    <header class="topbar">
+      <div class="topbar__nav">
+        <button class="round-button" aria-label="Back">←</button>
+        <button class="round-button" aria-label="Forward">→</button>
+      </div>
+      <form class="searchbar" onsubmit="return false">
+        <input type="search" placeholder="Artists, albums or tracks" aria-label="Search" />
+      </form>
+    </header>
+
+    <main class="view">
+      <div class="view__inner">
+        <div class="page-head">
+          <h1 class="page-head__title">Settings</h1>
+          <p class="page-head__note">Sound · playback</p>
+        </div>
+
+        <section class="m-section">
+          <div class="section__head"><h2 class="section__title">Sound</h2></div>
+
+          <div class="m-engine m-engine--on">
+            <span class="m-marker m-marker--on"></span>
+            <span>
+              <span class="m-engine__name">Spotify Soloist</span>
+              <span class="m-engine__line">Spotify's own player, running beside Takofy as <b>Takofy</b>.</span>
+            </span>
+            <span class="m-status">Pairing</span>
+          </div>
+
+          <div class="m-setup">
+            <div class="m-step" style="grid-template-columns: minmax(0,1fr);">
+              <div>
+                <div class="m-step__row" style="justify-content: space-between;">
+                  <span class="m-found">~/Downloads/soloist · build 12 Nov 2026</span>
+                  <span class="m-done">Program · done</span>
+                </div>
+                <div class="m-step__row" style="justify-content: space-between; margin-top: var(--space-3);">
+                  <span class="m-found">key stored in your system keychain</span>
+                  <span class="m-done">Key · done</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="m-step" style="grid-template-columns: 2rem minmax(0,1fr);">
+              <span class="m-step__no">03</span>
+              <div>
+                <div class="m-step__title">Pick Takofy in your Spotify app</div>
+                <p class="m-step__line">On your phone: open Spotify, tap the device list at the bottom of the player, and pick <b>Takofy</b>. Takofy is waiting — it will close this step by itself.</p>
+                <div class="m-step__row">
+                  <span class="m-wait"><span class="m-wait__dot"></span>Waiting for your phone</span>
+                  <span style="margin-left: var(--space-4);"><button class="button--ghost button">Stop</button></span>
+                </div>
+                <p class="m-hint">On a computer instead? The same list is in the Spotify app's bottom bar.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<p class="caption">4 · The entry point — the playbar's second line, once the queue has stopped</p>
+<div class="frame" style="height: 120px; grid-template-rows: var(--playbar-h); align-content: center;">
+  <div class="m-bar">
+    <span class="m-bar__art"></span>
+    <span>
+      <div class="m-bar__title">Windowlicker</div>
+      <div class="m-bar__line">Spotify is not unlocking the audio for this app.</div>
+    </span>
+    <span style="display: flex; align-items: center; gap: var(--space-4);">
+      <button class="button">Use Spotify's own player</button>
+      <button class="button--ghost button">Not now</button>
+    </span>
+  </div>
+</div>
+
+</body>
+</html>
