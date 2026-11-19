@@ -64,6 +64,7 @@ enum Key {
     Mute,
     Shuffle,
     Repeat,
+    Autoplay,
     Discovery,
     Engine,
     SoloistPath,
@@ -72,11 +73,12 @@ enum Key {
 
 impl Key {
     /// Every key, in the order the file lists them.
-    const ALL: [Key; 8] = [
+    const ALL: [Key; 9] = [
         Key::Volume,
         Key::Mute,
         Key::Shuffle,
         Key::Repeat,
+        Key::Autoplay,
         Key::Discovery,
         Key::Engine,
         Key::SoloistPath,
@@ -90,6 +92,7 @@ impl Key {
             Key::Mute => "mute",
             Key::Shuffle => "shuffle",
             Key::Repeat => "repeat",
+            Key::Autoplay => "autoplay",
             Key::Discovery => "discovery",
             Key::Engine => "engine",
             Key::SoloistPath => "soloist_path",
@@ -140,14 +143,15 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// Volume, mute, shuffle, repeat, discovery and the sound path, as the file
-/// holds them.
+/// Volume, mute, shuffle, repeat, autoplay, discovery and the sound path, as
+/// the file holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prefs {
     volume: u16,
     muted: bool,
     shuffle: bool,
     repeat: Repeat,
+    autoplay: bool,
     discovery: bool,
     engine: SoundChoice,
     soloist_path: Option<String>,
@@ -161,6 +165,7 @@ impl Default for Prefs {
             muted: false,
             shuffle: false,
             repeat: Repeat::Off,
+            autoplay: true,
             discovery: true,
             engine: SoundChoice::BuiltIn,
             soloist_path: None,
@@ -177,6 +182,7 @@ impl Prefs {
             muted: volume.muted() && volume.level() > 0,
             shuffle: queue.shuffle(),
             repeat: queue.repeat(),
+            autoplay: queue.autoplay(),
             ..Self::default()
         }
     }
@@ -231,19 +237,26 @@ impl Prefs {
         Volume::restored(self.volume, self.muted)
     }
 
+    /// Whether a finished queue carries on with rows near the ones it played.
+    pub fn autoplay(&self) -> bool {
+        self.autoplay
+    }
+
     /// Applies the saved modes to a queue that is not playing yet.
     pub fn seed_queue(&self, queue: &mut Queue) {
         queue.restore_modes(self.repeat, self.shuffle);
+        queue.set_autoplay(self.autoplay);
     }
 
     /// The file's lines, one per key, in a fixed order.
     pub fn render(&self) -> String {
         format!(
-            "volume={}\nmute={}\nshuffle={}\nrepeat={}\ndiscovery={}\nengine={}\nsoloist_path={}\nsoloist_name={}\n",
+            "volume={}\nmute={}\nshuffle={}\nrepeat={}\nautoplay={}\ndiscovery={}\nengine={}\nsoloist_path={}\nsoloist_name={}\n",
             self.volume,
             self.muted,
             self.shuffle,
             self.repeat.key(),
+            self.autoplay,
             self.discovery,
             self.engine.key(),
             self.soloist_path.as_deref().unwrap_or_default(),
@@ -301,6 +314,7 @@ impl Prefs {
             Setting::Mute(muted) => self.muted = muted,
             Setting::Shuffle(shuffle) => self.shuffle = shuffle,
             Setting::Repeat(repeat) => self.repeat = repeat,
+            Setting::Autoplay(autoplay) => self.autoplay = autoplay,
             Setting::Discovery(discovery) => self.discovery = discovery,
             Setting::Engine(engine) => self.engine = engine,
             Setting::SoloistPath(path) => self.soloist_path = path,
@@ -315,6 +329,7 @@ enum Setting {
     Mute(bool),
     Shuffle(bool),
     Repeat(Repeat),
+    Autoplay(bool),
     Discovery(bool),
     Engine(SoundChoice),
     SoloistPath(Option<String>),
@@ -328,6 +343,7 @@ fn read_value(key: Key, text: &str) -> Option<Setting> {
         Key::Mute => flag(text).map(Setting::Mute),
         Key::Shuffle => flag(text).map(Setting::Shuffle),
         Key::Repeat => Repeat::from_key(text).map(Setting::Repeat),
+        Key::Autoplay => flag(text).map(Setting::Autoplay),
         Key::Discovery => flag(text).map(Setting::Discovery),
         Key::Engine => SoundChoice::from_key(text).map(Setting::Engine),
         Key::SoloistPath => single_line(text)

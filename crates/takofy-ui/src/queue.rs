@@ -34,6 +34,9 @@
 //! are ahead of the current one, and it is not repeating, it asks for more that
 //! continue from what it has played, and appends the ones it does not already
 //! hold. A phone's queue never asks, and one ask is in flight at a time.
+//!
+//! Autoplay off ends that: a queue that runs out stops. A station never ends,
+//! so its rows keep asking whatever the switch says.
 
 mod drift;
 
@@ -103,6 +106,16 @@ pub enum Step {
     Down,
 }
 
+/// Whether a queue that runs out of rows may ask for more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Autoplay {
+    /// The queue carries on with rows near the ones it has played.
+    #[default]
+    On,
+    /// A queue that runs out stops.
+    Off,
+}
+
 /// The queue and the index it is on, when it is on one.
 #[derive(Debug, Clone, Default)]
 pub struct Queue {
@@ -162,6 +175,13 @@ pub struct Queue {
     /// The token the newest drift ask carried. Never reset, so an answer to a
     /// cancelled ask names one no queue is waiting on.
     drift_asks: u64,
+    /// Whether this queue may ask for rows once its own run out.
+    autoplay: Autoplay,
+    /// Whether these rows came from a station.
+    ///
+    /// A station never ends, so it keeps asking whatever autoplay says. The flag
+    /// is cleared by every start: the next list is its own.
+    station: bool,
 }
 
 impl Queue {
@@ -217,6 +237,7 @@ impl Queue {
         self.refocus = None;
         self.origin = origin.map(str::to_owned);
         self.index = None;
+        self.station = false;
         self.drift = drift::Drift::Ready;
         let first = self.start_shuffled(index);
         self.goto(first, transport)
@@ -412,6 +433,7 @@ impl Queue {
         self.selection.clear();
         self.refocus = None;
         self.label_asked.clear();
+        self.station = false;
         self.leave_drift();
         // A mode the landing names is taken; one it names not at all is the mode
         // the queue already has, not a mode read back as off.
@@ -479,6 +501,7 @@ impl Queue {
         self.selection.clear();
         self.refocus = None;
         self.label_asked.clear();
+        self.station = false;
         self.leave_drift();
         // The drawn order belonged to the rows the window just replaced.
         self.snapshot.clear();
@@ -900,6 +923,30 @@ impl Queue {
     /// Whether shuffle is on.
     pub fn shuffle(&self) -> bool {
         self.shuffle
+    }
+
+    /// Whether a queue that runs out may ask for more rows.
+    pub fn autoplay(&self) -> bool {
+        self.autoplay == Autoplay::On
+    }
+
+    /// Turns autoplay on or off, which an ask already out obeys when it lands.
+    pub fn set_autoplay(&mut self, autoplay: bool) {
+        self.autoplay = if autoplay {
+            Autoplay::On
+        } else {
+            Autoplay::Off
+        };
+    }
+
+    /// Whether these rows came from a station.
+    pub fn station(&self) -> bool {
+        self.station
+    }
+
+    /// Says these rows are a station's, which keeps asking while autoplay is off.
+    pub fn set_station(&mut self, station: bool) {
+        self.station = station;
     }
 
     /// The newest queue revision the phone published, empty when it published

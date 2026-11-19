@@ -42,7 +42,7 @@ fn prefs_round_trip() {
 fn default_prefs_render_the_documented_file() {
     assert_eq!(
         Prefs::default().render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\nautoplay=true\ndiscovery=true\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
         "the file is one fixed line per key in a fixed order with a trailing newline"
     );
 }
@@ -53,7 +53,7 @@ fn a_discovery_off_round_trips() {
 
     assert_eq!(
         off.render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=false\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\nautoplay=true\ndiscovery=false\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
         "the discovery value keeps its place ahead of the sound keys"
     );
     assert_eq!(
@@ -74,6 +74,66 @@ fn a_file_without_the_discovery_key_reads_it_on() {
         prefs(80).discovery(),
         "the default is the setting on, so a missing line adds nothing rather than removing it"
     );
+}
+
+#[test]
+fn autoplay_is_on_by_default() {
+    assert!(
+        Prefs::default().autoplay(),
+        "a value built without the setting keeps autoplay on"
+    );
+    assert_eq!(
+        Prefs::parse("volume=80\n").map(|prefs| prefs.autoplay()),
+        Ok(true),
+        "a file written before the key existed keeps the documented default"
+    );
+}
+
+#[test]
+fn autoplay_round_trips() {
+    for autoplay in [true, false] {
+        let prefs = Prefs {
+            autoplay,
+            ..Prefs::default()
+        };
+
+        assert!(
+            prefs.render().contains(&format!("autoplay={autoplay}\n")),
+            "the file spells the value it holds: {autoplay}"
+        );
+        assert_eq!(
+            Prefs::parse(&prefs.render()),
+            Ok(prefs.clone()),
+            "a rendered file parses back to the value it came from: {autoplay}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_autoplay_value_refuses_the_whole_file() {
+    let refusal = Prefs::parse("volume=80\nautoplay=maybe\n")
+        .expect_err("a value outside the table is refused");
+
+    assert_eq!(refusal.line, 2, "the refused line is named");
+    assert_eq!(
+        refusal.reason,
+        Reason::BadValue(Key::Autoplay),
+        "the key at fault is named"
+    );
+    assert_eq!(
+        refusal.to_string(),
+        "line 2: bad value for `autoplay`",
+        "the message names the line and the key, and nothing else"
+    );
+}
+
+#[test]
+fn a_duplicate_autoplay_key_is_refused() {
+    let refusal = Prefs::parse("autoplay=true\nautoplay=false\n")
+        .expect_err("two values for one key have no honest winner");
+
+    assert_eq!(refusal.line, 2, "the second line is the duplicate");
+    assert_eq!(refusal.reason, Reason::Duplicate(Key::Autoplay));
 }
 
 #[test]
@@ -482,6 +542,39 @@ fn prefs_of_reads_a_volume_and_a_queue() {
 }
 
 #[test]
+fn prefs_of_records_the_autoplay_setting() {
+    let mut queue = Queue::seeded(5);
+    queue.set_autoplay(false);
+
+    let saved = Prefs::of(&Volume::muted_at(70), &queue);
+
+    assert!(
+        !saved.autoplay(),
+        "the file records the switch the queue holds"
+    );
+    assert_eq!(
+        Prefs::parse(&saved.render()),
+        Ok(saved.clone()),
+        "what `of` records is what `parse` reads back"
+    );
+}
+
+#[test]
+fn seed_queue_restores_the_autoplay_setting() {
+    let saved = Prefs {
+        autoplay: false,
+        ..Prefs::default()
+    };
+
+    let mut queue = Queue::seeded(3);
+    assert!(queue.autoplay(), "a fresh queue starts with autoplay on");
+
+    saved.seed_queue(&mut queue);
+
+    assert!(!queue.autoplay(), "the saved switch comes back");
+}
+
+#[test]
 fn prefs_of_leaves_the_discovery_setting_on() {
     let saved = Prefs::of(&Volume::muted_at(50), &Queue::seeded(1));
 
@@ -854,7 +947,7 @@ fn the_sound_keys_follow_the_older_ones_in_a_fixed_order() {
 
     assert_eq!(
         prefs.render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\nengine=soloist\nsoloist_path=/usr/bin/soloist\nsoloist_name=Desk\n",
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\nautoplay=true\ndiscovery=true\nengine=soloist\nsoloist_path=/usr/bin/soloist\nsoloist_name=Desk\n",
         "the older values keep their place and the sound keys follow in this order"
     );
 }

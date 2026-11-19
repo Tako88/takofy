@@ -9,6 +9,7 @@ use takofy_model::TrackEntry;
 use takofy_model::uri::{UriKind, parse};
 
 use crate::message::Command;
+use crate::queue::Autoplay;
 use crate::repeat::Repeat;
 
 use super::Queue;
@@ -45,6 +46,12 @@ impl Queue {
         {
             return None;
         }
+        // An ordinary queue stops at its end when the switch is off. A station
+        // keeps asking: it was started from a menu and running dry is not the
+        // same as the listener having finished.
+        if self.autoplay == Autoplay::Off && !self.station {
+            return None;
+        }
         let context = self.current()?.uri.clone();
         if !track_uri(&context) {
             return None;
@@ -72,6 +79,12 @@ impl Queue {
     /// user removed from the upcoming list can come back.
     pub fn land_drift(&mut self, ask: u64, rows: &[TrackEntry]) {
         if self.drift != Drift::Asked(ask) {
+            return;
+        }
+        // The switch went off while the ask was out: the rows are dropped, and
+        // the queue is ready to ask again if it is turned back on.
+        if self.autoplay == Autoplay::Off && !self.station {
+            self.drift = Drift::Ready;
             return;
         }
         let mut known: HashSet<String> =
