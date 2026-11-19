@@ -1,10 +1,12 @@
 use super::super::playback::transport_of;
 use super::super::*;
+use super::devices::PlayScript;
 use super::test_support::*;
 use crate::session::SessionError;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
+use takofy_ui::prefs::SoundChoice;
 
 #[test]
 fn transport_of_maps_every_event() {
@@ -119,6 +121,79 @@ fn a_second_play_does_not_start_a_second_player() {
     assert_eq!(shared.plays.load(Ordering::SeqCst), 2);
     assert_eq!(shared.players.load(Ordering::SeqCst), 1);
     assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_missing_daemon_is_this_machine_unable_to_play() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()))
+        .with_sound(SoundChoice::Soloist);
+    let shared = Arc::clone(&host.shared);
+    *shared.play_script.lock().expect("lock") = PlayScript::Soloist;
+
+    run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::Play {
+                uri: TRACK.to_owned(),
+            })
+            .expect("play");
+        assert_eq!(
+            ui_end.updates.recv().expect("play failed"),
+            Update::Transport(TransportUpdate::Failed(Failure::Playback))
+        );
+    });
+
+    assert_eq!(
+        calls(&shared),
+        vec![Call::Play(TRACK.to_owned()), Call::SetPlayable(false)],
+        "no daemon is no sound on this machine, so it is not offered"
+    );
+}
+
+#[test]
+fn a_soloist_engine_never_starts_the_built_in_player() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()))
+        .with_sound(SoundChoice::Soloist);
+    let shared = Arc::clone(&host.shared);
+
+    run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::Play {
+                uri: TRACK.to_owned(),
+            })
+            .expect("play");
+        // Reload is processed after the play, so it is the barrier that says
+        // the play is done rather than merely queued.
+        ui_end
+            .commands
+            .send(Command::ReloadLibrary)
+            .expect("reload");
+        loop {
+            if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                break;
+            }
+        }
+    });
+
+    assert_eq!(
+        calls(&shared),
+        vec![Call::Play(TRACK.to_owned()), Call::SetPlayable(true)],
+        "the play was taken"
+    );
+    assert_eq!(
+        shared.players.load(Ordering::SeqCst),
+        0,
+        "the daemon's own player sounds, so the built-in one, and the device it opens, never starts"
+    );
 }
 
 #[test]

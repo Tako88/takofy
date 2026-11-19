@@ -237,6 +237,44 @@ fn an_off_discovery_setting_is_written_back_off() {
 }
 
 #[test]
+fn the_sound_path_survives_a_write_back() {
+    let (log, sink) = recording();
+    let written = Prefs::parse(
+        "volume=40\nengine=soloist\nsoloist_path=/opt/soloist/soloist\nsoloist_name=Desk\n",
+    )
+    .expect("valid prefs");
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+    assert!(
+        app.transport.volume.set_fraction(0.6),
+        "arrange: the level moved, so a write is owed"
+    );
+
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    let saved = log.lock().expect("the sink log").clone();
+    assert_eq!(saved.len(), 1, "the change was written once");
+    for prefs in &saved {
+        assert_eq!(
+            prefs.engine(),
+            SoundChoice::Soloist,
+            "a level change must not drop the chosen engine"
+        );
+        assert_eq!(
+            prefs.soloist_path(),
+            Some("/opt/soloist/soloist"),
+            "nor forget the program it runs"
+        );
+        assert_eq!(
+            prefs.soloist_name(),
+            "Desk",
+            "nor the name its daemon announces"
+        );
+    }
+}
+
+#[test]
 fn an_untouched_session_never_writes() {
     let (log, sink) = recording();
     let written = Prefs::parse("volume=40\nshuffle=true\nrepeat=all\n").expect("valid prefs");

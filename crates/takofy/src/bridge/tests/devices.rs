@@ -53,6 +53,9 @@ pub(super) enum PlayScript {
     NoAudioDevice,
     /// One track the player refuses; the player itself is fine.
     NotPlayable,
+    /// The daemon a Soloist engine needs is not on this machine, so nothing
+    /// here can play at all.
+    Soloist,
 }
 
 /// The other device every scripted device answer names.

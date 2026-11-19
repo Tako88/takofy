@@ -25,6 +25,7 @@ use takofy_core::engine::{EngineError, RootlistRead};
 use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::rootlist::{RootEntry, Walked};
+use takofy_core::soloist::SoloistFault;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{
     ArtistReleases, Day, DigAnswer, DigAsk, DigOutcome, DiscoveryOutcome, DiscoverySeed, Station,
@@ -35,6 +36,7 @@ use takofy_model::{
     Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal,
     Report, RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
 };
+use takofy_ui::prefs::SoundChoice;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -822,6 +824,9 @@ impl Drop for InFlight<'_> {
 #[derive(Clone)]
 pub(super) struct FakeHost {
     pub(super) shared: Arc<FakeState>,
+    /// The sound path this host models. Soloist's sound is the daemon's own
+    /// player, so the built-in one is never the one that starts.
+    sound: SoundChoice,
 }
 
 impl FakeHost {
@@ -847,6 +852,7 @@ impl FakeHost {
         labels: Vec<LabelScript>,
     ) -> Self {
         Self {
+            sound: SoundChoice::BuiltIn,
             shared: Arc::new(FakeState {
                 connect_scripts: Mutex::new(connect),
                 rootlist_scripts: Mutex::new(roots),
@@ -858,6 +864,13 @@ impl FakeHost {
         }
     }
 
+    /// The sound path this host answers for, which is the engine the window
+    /// chose at startup.
+    pub(super) fn with_sound(mut self, sound: SoundChoice) -> Self {
+        self.sound = sound;
+        self
+    }
+
     /// The account the fake session connects as.
     pub(super) fn with_account(self, account: Account) -> Self {
         *self.shared.account.lock().expect("lock") = Some(account);
@@ -865,6 +878,15 @@ impl FakeHost {
     }
 
     /// Builds the fake player once, holding the event stream a drain takes.
+    /// Starts the built-in player, which is the path that opens the audio
+    /// device. A Soloist window sounds through the daemon's own player, so it
+    /// never reaches this one.
+    fn start_builtin(&self) {
+        if self.sound == SoundChoice::BuiltIn {
+            self.start_player();
+        }
+    }
+
     fn start_player(&self) {
         if self.shared.player_started.swap(true, Ordering::SeqCst) {
             return;
@@ -1962,8 +1984,13 @@ impl SessionHost for FakeHost {
                     uri.to_owned(),
                 )));
             }
+            PlayScript::Soloist => {
+                return Err(SessionError::Playback(PlaybackError::Soloist(
+                    SoloistFault::Missing,
+                )));
+            }
         }
-        self.start_player();
+        self.start_builtin();
         if let Some(tx) = self.shared.play_started.lock().expect("lock").take() {
             let _ = tx.send(());
         }
@@ -1982,7 +2009,7 @@ impl SessionHost for FakeHost {
         }
         match *self.shared.prepare_script.lock().expect("lock") {
             PrepareScript::Ok => {
-                self.start_player();
+                self.start_builtin();
                 Ok(())
             }
             PrepareScript::NoAudioDevice => {
@@ -2163,6 +2190,10 @@ impl SessionHost for FakeHost {
 
     fn is_down(&self) -> bool {
         self.shared.down.load(Ordering::SeqCst)
+    }
+
+    fn sounds_externally(&self) -> bool {
+        self.sound == SoundChoice::Soloist
     }
 
     fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
