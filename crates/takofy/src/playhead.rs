@@ -44,6 +44,8 @@ pub enum Verdict {
 pub struct Playhead {
     state: Arc<Mutex<State>>,
     down: Arc<AtomicBool>,
+    /// Whether a load that never started says anything about librespot's link.
+    suppress_suspect: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -158,6 +160,11 @@ impl Playhead {
         if self.is_down() {
             return Verdict::Link;
         }
+        // A sound that is not librespot's says nothing about its socket, so its
+        // failures are the track's, not the link's.
+        if self.suppress_suspect.load(Ordering::SeqCst) {
+            return Verdict::Forward;
+        }
         if !state.proven || state.started {
             return Verdict::Forward;
         }
@@ -191,6 +198,12 @@ impl Playhead {
 
     pub fn set_down(&self, down: bool) {
         self.down.store(down, Ordering::SeqCst);
+    }
+
+    /// Says whether a load's failure may be read as librespot's link being
+    /// down. On for the built-in player, which is the default.
+    pub fn set_suppress_suspect(&self, suppress: bool) {
+        self.suppress_suspect.store(suppress, Ordering::SeqCst);
     }
 
     pub fn is_down(&self) -> bool {

@@ -21,6 +21,7 @@ mod session;
 mod small_file;
 mod snapshot;
 mod snapshot_format;
+mod soloist;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -35,14 +36,17 @@ use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::receive::RECEIVE_LOG_TARGET;
 
 use crate::bridge::{LANDING_LOG_TARGET, STARTUP_LOG_TARGET};
+use crate::preferences::Loaded;
+use crate::soloist::{SoloistHost, SoloistPrefs};
 use takofy_ui::cover::COVER_LOG_TARGET;
 use takofy_ui::message::Failure;
+use takofy_ui::prefs::{Prefs, SoundChoice};
 use takofy_ui::remote::REMOTE_LOG_TARGET;
 use takofy_ui::signin::failure_message;
 
 use crate::keychain::{KeychainStore, SoloistKeychain};
 
-const USAGE: &str = "usage: takofy [--headless [--paste] [--context <uri>]] | takofy --probe-audio | takofy --soloist-key";
+const USAGE: &str = "usage: takofy [--headless [--paste] [--context <uri>]] | takofy --probe-audio | takofy --soloist-key | takofy --soloist-pair";
 
 /// Which entry point the flags select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +60,8 @@ enum Mode {
     /// Reads a Soloist API key from a line of stdin into the keychain, so the
     /// secret never lands in a shell history or an argv of ours.
     SoloistKey,
+    /// Runs the daemon once with `--pair`, which signs it in to the account.
+    SoloistPair,
 }
 
 /// What the command line asked for.
@@ -70,6 +76,8 @@ struct Flags {
     probe_audio: bool,
     /// Read a Soloist API key from stdin and store it.
     soloist_key: bool,
+    /// Pair the daemon with the account, once.
+    soloist_pair: bool,
 }
 
 fn main() -> ExitCode {
@@ -83,8 +91,9 @@ fn main() -> ExitCode {
     match mode_for(&flags) {
         Ok(Mode::Window) => run_window(&flags),
         Ok(Mode::Headless) => run_headless(flags),
-        Ok(Mode::ProbeAudio) => run_probe_audio(),
+        Ok(Mode::ProbeAudio) => run_probe_audio(stored_prefs().engine()),
         Ok(Mode::SoloistKey) => run_soloist_key(),
+        Ok(Mode::SoloistPair) => run_soloist_pair(),
         Err(()) => usage_error(),
     }
 }
@@ -101,9 +110,23 @@ fn mode_for(flags: &Flags) -> Result<Mode, ()> {
         // It reads one line and touches nothing else, so any other flag is a typo.
         let alone = !flags.headless
             && !flags.probe_audio
+            && !flags.soloist_pair
             && flags.redirect == RedirectMode::Loopback
             && flags.context.is_none();
         return if alone { Ok(Mode::SoloistKey) } else { Err(()) };
+    }
+    if flags.soloist_pair {
+        // It runs the daemon once and exits, so it takes nothing else either.
+        let alone = !flags.headless
+            && !flags.probe_audio
+            && !flags.soloist_key
+            && flags.redirect == RedirectMode::Loopback
+            && flags.context.is_none();
+        return if alone {
+            Ok(Mode::SoloistPair)
+        } else {
+            Err(())
+        };
     }
     if flags.probe_audio {
         // It reads nothing else, so any other flag beside it is a typo.
@@ -177,13 +200,6 @@ fn run_window(flags: &Flags) -> ExitCode {
     // window unopened: the host then has no outside service to look up with.
     let outside = discovery::http::Http::new()
         .map(|http| Arc::new(discovery::Outside::new(http, Arc::clone(&gate))));
-    let host = match &outside {
-        Some(outside) => session::LiveSession::new(cfg).with_outside(Arc::clone(outside)),
-        None => session::LiveSession::new(cfg),
-    };
-    let (hidden, hidden_sync) = hidden_file::open();
-    let (cached, snapshots) = snapshot::open();
-
     let runtime = match build_runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -191,6 +207,30 @@ fn run_window(flags: &Flags) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let engine = engine_of(&loaded);
+    // The daemon is started only by the engine that uses it: a window on the
+    // built-in player never runs a second sound path.
+    let soloist = match engine.engine() {
+        SoundChoice::Soloist => soloist_data_dir().map(|dir| {
+            Arc::new(SoloistHost::start(
+                runtime.handle().clone(),
+                SoloistPrefs {
+                    path: engine.soloist_path().map(std::path::PathBuf::from),
+                    name: engine.soloist_name().to_owned(),
+                },
+                Arc::new(SoloistKeychain),
+                dir,
+            ))
+        }),
+        SoundChoice::BuiltIn => None,
+    };
+    let host = match &outside {
+        Some(outside) => session::LiveSession::new(cfg).with_outside(Arc::clone(outside)),
+        None => session::LiveSession::new(cfg),
+    }
+    .with_sound(engine.engine(), soloist);
+    let (hidden, hidden_sync) = hidden_file::open();
+    let (cached, snapshots) = snapshot::open();
 
     let result = bridge::run_window(runtime, host, store, source, move |ui_end, slot| {
         eframe::run_native(
@@ -224,13 +264,23 @@ fn run_window(flags: &Flags) -> ExitCode {
     }
 }
 
-/// Opens the output device and says what happened, in one line, without a
-/// session.
+/// Answers for the engine the preference chose, in one line, without a session.
 ///
 /// The exit code is the answer: 0 for a device that opened, 1 for one that did
 /// not. A machine where this succeeds and Takofy is still silent has told us the
 /// fault is above the device.
-fn run_probe_audio() -> ExitCode {
+fn run_probe_audio(engine: SoundChoice) -> ExitCode {
+    match engine {
+        SoundChoice::BuiltIn => run_probe_device(),
+        SoundChoice::Soloist => run_probe_soloist(),
+    }
+}
+
+/// Opens the output device and says what happened.
+///
+/// The built-in player is the only engine that opens one, so this is the whole
+/// answer for it.
+fn run_probe_device() -> ExitCode {
     let started = std::time::Instant::now();
     match takofy_core::playback::probe_device() {
         Ok(()) => {
@@ -247,6 +297,40 @@ fn run_probe_audio() -> ExitCode {
     }
 }
 
+/// Reports the daemon's program and build, and never opens an audio device.
+///
+/// Soloist owns the output, so a device this process opened would prove
+/// nothing about whether sound can come out.
+fn run_probe_soloist() -> ExitCode {
+    let prefs = stored_prefs();
+    let found = soloist::locate::find(
+        prefs.soloist_path().map(std::path::Path::new),
+        std::env::var_os("PATH").as_deref(),
+        soloist::locate::exists,
+    );
+    let Some(exe) = found.path() else {
+        println!("soloist: not found");
+        return ExitCode::FAILURE;
+    };
+    let build = soloist::launch::Launch::version(exe)
+        .map(|output| takofy_core::soloist::expiry::classify(&output, soloist::now_unix()))
+        .unwrap_or(takofy_core::soloist::expiry::Build::Unknown);
+    let words = match build {
+        takofy_core::soloist::expiry::Build::Fresh => "fresh".to_owned(),
+        takofy_core::soloist::expiry::Build::Expiring { days_left } => {
+            format!("expiring in {days_left} days")
+        }
+        takofy_core::soloist::expiry::Build::Expired => "expired".to_owned(),
+        takofy_core::soloist::expiry::Build::Unknown => "unknown".to_owned(),
+    };
+    println!("soloist: found at {}, build {words}", exe.display());
+    if build.playable() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn build_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -260,6 +344,7 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
         headless: false,
         probe_audio: false,
         soloist_key: false,
+        soloist_pair: false,
     };
     let mut args = args;
     while let Some(arg) = args.next() {
@@ -269,6 +354,7 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
             "--context" => flags.context = Some(args.next().ok_or(())?),
             "--probe-audio" => flags.probe_audio = true,
             "--soloist-key" => flags.soloist_key = true,
+            "--soloist-pair" => flags.soloist_pair = true,
             _ => return Err(()),
         }
     }
@@ -296,6 +382,89 @@ fn run_soloist_key() -> ExitCode {
         }
         Err(error) => {
             eprintln!("could not save the key: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The engine and its own values, as the file holds them.
+fn engine_of(loaded: &Loaded) -> Prefs {
+    match loaded {
+        Loaded::Found(prefs) => prefs.clone(),
+        Loaded::Absent => Prefs::default(),
+        Loaded::Refused(_) | Loaded::Unreadable => Prefs::default(),
+    }
+}
+
+/// Reads the preferences without starting the writer a window would need.
+fn stored_prefs() -> Prefs {
+    let Some(path) = preferences::config_file(cfg!(windows), |key| std::env::var_os(key)) else {
+        return Prefs::default();
+    };
+    engine_of(&preferences::load(&path))
+}
+
+/// The daemon's own directory, beside the preferences file, so its port file
+/// is where this window looks for it.
+fn soloist_data_dir() -> Option<std::path::PathBuf> {
+    Some(preferences::config_dir(cfg!(windows), |key| std::env::var_os(key))?.join("soloist"))
+}
+
+/// Runs the daemon once so it can sign in to the account, and says only how
+/// that ended.
+///
+/// Soloist has no sign-in of its own: without this a fresh install stays
+/// signed out for ever, and only the exit code is printed so nothing of the
+/// run leaks into a terminal.
+fn run_soloist_pair() -> ExitCode {
+    let prefs = stored_prefs();
+    let Some(data_dir) = soloist_data_dir() else {
+        eprintln!("no configuration directory");
+        return ExitCode::FAILURE;
+    };
+    let key = match SoloistKeychain.load() {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            eprintln!("no key stored: run --soloist-key first");
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("could not read the key: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let found = soloist::locate::find(
+        prefs.soloist_path().map(std::path::Path::new),
+        std::env::var_os("PATH").as_deref(),
+        soloist::locate::exists,
+    );
+    let Some(exe) = found.path() else {
+        eprintln!("soloist: not found");
+        return ExitCode::FAILURE;
+    };
+    if std::fs::create_dir_all(&data_dir).is_err() {
+        eprintln!("the soloist directory could not be made");
+        return ExitCode::FAILURE;
+    }
+    let launch = soloist::launch::Launch::pair(exe, prefs.soloist_name(), &key, &data_dir);
+    let mut child = match launch.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match child.wait() {
+        Ok(status) if status.success() => {
+            println!("paired");
+            ExitCode::SUCCESS
+        }
+        Ok(status) => {
+            println!("{}", status.code().unwrap_or(-1));
+            ExitCode::FAILURE
+        }
+        Err(_) => {
+            eprintln!("the daemon could not be waited for");
             ExitCode::FAILURE
         }
     }
@@ -333,6 +502,10 @@ fn logger_builder() -> env_logger::Builder {
     builder.filter_module(COVER_LOG_TARGET, LevelFilter::Info);
     // Per-stage startup durations and counts, never a name or URI.
     builder.filter_module(STARTUP_LOG_TARGET, LevelFilter::Info);
+    // What the daemon is doing, in kinds: never a URI, a frame, a key or an
+    // argv.
+    builder.filter_module("takofy::soloist", LevelFilter::Info);
+    builder.filter_module("takofy_core::soloist", LevelFilter::Info);
     builder
 }
 

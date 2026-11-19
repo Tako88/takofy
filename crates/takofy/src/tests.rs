@@ -33,6 +33,14 @@ fn oauth_log_target_is_silenced() {
 }
 
 #[test]
+fn the_soloist_lines_show_at_info_and_their_neighbours_do_not() {
+    let logger = logger_builder().build();
+    assert!(logger.matches(&record("takofy::soloist", Level::Info)));
+    assert!(logger.matches(&record("takofy_core::soloist", Level::Info)));
+    assert!(!logger.matches(&record("takofy::session", Level::Info)));
+}
+
+#[test]
 fn the_receiver_summary_is_the_one_info_line_that_shows() {
     let logger = logger_builder().build();
     assert!(logger.matches(&record(RECEIVE_LOG_TARGET, Level::Info)));
@@ -119,6 +127,7 @@ fn no_arguments_means_loopback_and_the_rootlist() {
             headless: false,
             probe_audio: false,
             soloist_key: false,
+            soloist_pair: false,
         })
     );
 }
@@ -179,6 +188,28 @@ fn the_soloist_key_reads_one_line_and_nothing_else() {
 }
 
 #[test]
+fn a_soloist_pair_is_a_mode_of_its_own() {
+    let flags = parse_flags(args(&["--soloist-pair"])).expect("flags parse");
+    assert!(flags.soloist_pair);
+    assert_eq!(mode_for(&flags), Ok(Mode::SoloistPair));
+
+    for extra in [
+        vec!["--headless"],
+        vec!["--probe-audio"],
+        vec!["--soloist-key"],
+        vec!["--context", "spotify:artist:x"],
+    ] {
+        let mut argv = vec!["--soloist-pair"];
+        argv.extend(extra.iter().copied());
+        let flags = parse_flags(args(&argv)).expect("flags parse");
+        assert!(
+            mode_for(&flags).is_err(),
+            "{extra:?} beside --soloist-pair must be refused"
+        );
+    }
+}
+
+#[test]
 fn usage_mentions_every_flag() {
     for flag in [
         "--headless",
@@ -186,6 +217,7 @@ fn usage_mentions_every_flag() {
         "--context",
         "--probe-audio",
         "--soloist-key",
+        "--soloist-pair",
     ] {
         assert!(
             USAGE.contains(flag),

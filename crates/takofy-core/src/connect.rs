@@ -25,6 +25,15 @@ use crate::registry::Ack;
 /// The name this client announces itself under.
 pub const DEVICE_NAME: &str = "Takofy";
 
+/// Whether a device on the account is the sound this window started.
+///
+/// Soloist announces itself under its own name, which is the only thing that
+/// ties it to this window: such a device is neither a loss of the sound nor a
+/// row the picker may offer.
+pub fn is_own_sound_device(name: &str, configured: &str) -> bool {
+    !configured.trim().is_empty() && name == configured
+}
+
 /// The spirc version the picker reads on every body this client announces.
 const SPIRC_VERSION: &str = "3.2.4";
 

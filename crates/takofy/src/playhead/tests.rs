@@ -418,3 +418,40 @@ fn a_stale_judge_forwards() {
         "the same failure on the live generation is a lost link"
     );
 }
+
+#[test]
+fn a_sound_that_is_not_librespots_forwards_its_own_failures() {
+    let base = Instant::now();
+    let head = reloaded(base);
+    head.set_suppress_suspect(true);
+
+    let generation = head.generation();
+    assert_eq!(
+        head.judge_unavailable(generation, at(base, 1_499)),
+        Verdict::Forward
+    );
+    assert_eq!(
+        head.judge_unavailable(generation, at(base, 10_000)),
+        Verdict::Forward,
+        "a track Soloist cannot play is no evidence about librespot's socket"
+    );
+
+    // A dead link is still the link, whatever makes the sound.
+    head.set_down(true);
+    assert_eq!(
+        head.judge_unavailable(generation, at(base, 10_000)),
+        Verdict::Link
+    );
+}
+
+#[test]
+fn the_default_head_still_suspects_a_dead_link() {
+    let base = Instant::now();
+    let head = reloaded(base);
+
+    assert_eq!(
+        head.judge_unavailable(head.generation(), at(base, 4_000)),
+        Verdict::Suspect,
+        "the built-in player keeps today's behaviour"
+    );
+}
