@@ -1,11 +1,23 @@
 use std::error::Error;
 use std::io;
 
-use super::map_error;
-use takofy_core::credentials::StoreError;
+use super::{SOLOIST_USER, SoloistKeychain, USER, map_error};
+use takofy_core::credentials::{SoloistKeyStore, StoreError};
 
 fn platform(message: &str) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::other(message))
+}
+
+#[test]
+fn the_soloist_key_gets_its_own_entry() {
+    assert_eq!(SOLOIST_USER, "soloist-api-key");
+    assert_ne!(SOLOIST_USER, USER);
+}
+
+#[test]
+fn soloist_keychain_is_a_key_store() {
+    fn takes_store(_: &dyn SoloistKeyStore) {}
+    takes_store(&SoloistKeychain);
 }
 
 #[test]

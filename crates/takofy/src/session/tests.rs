@@ -349,3 +349,109 @@ async fn each_new_host_call_before_sign_in_returns_not_connected() {
         "a window with no session holds nothing"
     );
 }
+
+/// A sound whose life a test can watch without a device or a daemon.
+#[derive(Clone, Default)]
+struct FakeSound {
+    level: Arc<std::sync::atomic::AtomicU16>,
+    closed: Arc<AtomicBool>,
+}
+
+impl takofy_core::playback::Sound for FakeSound {
+    fn load(
+        &self,
+        _uri: &str,
+        _position_ms: u32,
+        _play: bool,
+    ) -> Result<(), takofy_core::playback::PlaybackError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(takofy_core::playback::PlaybackError::PlayerClosed);
+        }
+        Ok(())
+    }
+
+    fn play(&self, uri: &str) -> Result<(), takofy_core::playback::PlaybackError> {
+        self.load(uri, 0, true)
+    }
+
+    fn seek(&self, _position_ms: u32) {}
+
+    fn pause(&self) {}
+
+    fn resume(&self) {}
+
+    fn stop(&self) {}
+
+    fn set_volume(&self, percent: u16) {
+        self.level.store(percent, Ordering::SeqCst);
+    }
+
+    fn shutdown(
+        self: Box<Self>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), takofy_core::playback::PlaybackError>>
+                + Send,
+        >,
+    > {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[test]
+fn soloist_never_announces_this_window_as_a_player() {
+    let live = LiveSession::new(SessionConfig::default())
+        .with_sound(takofy_ui::prefs::SoundChoice::Soloist, None);
+    SessionHost::set_playable(&live, true);
+
+    assert!(
+        !live.playable.load(Ordering::SeqCst),
+        "the account must show only the daemon's own device"
+    );
+
+    let built_in = LiveSession::new(SessionConfig::default());
+    SessionHost::set_playable(&built_in, true);
+    assert!(
+        built_in.playable.load(Ordering::SeqCst),
+        "the built-in player is still a player"
+    );
+}
+
+#[test]
+fn a_level_change_reaches_the_sound_as_well_as_the_player() {
+    let mut live = LiveSession::new(SessionConfig::default());
+    let fake = FakeSound::default();
+    live.playback = Some(Box::new(fake.clone()));
+
+    live.set_volume(40);
+
+    assert_eq!(fake.level.load(Ordering::SeqCst), 40);
+    assert_eq!(live.level.load(Ordering::SeqCst), 40);
+}
+
+#[test]
+fn a_closed_stream_is_dropped_so_the_next_press_builds_another() {
+    let mut live = LiveSession::new(SessionConfig::default());
+    let fake = FakeSound::default();
+    fake.closed.store(true, Ordering::SeqCst);
+    live.playback = Some(Box::new(fake));
+    live.events = Some(tokio::sync::mpsc::unbounded_channel().1);
+
+    // The load reports a stream that ended, and the retry finds no engine to
+    // build a new one on: the dead sound is gone rather than reused.
+    let error = SessionHost::load(&mut live, "spotify:track:x", 0, true)
+        .expect_err("a closed stream cannot play");
+    assert!(matches!(error, SessionError::NotConnected));
+    assert!(live.playback.is_none(), "the dead sound is taken out");
+    assert!(live.events.is_none());
+}
+
+#[test]
+fn only_the_daemon_counts_as_a_sound_of_this_windows_own() {
+    let soloist = LiveSession::new(SessionConfig::default())
+        .with_sound(takofy_ui::prefs::SoundChoice::Soloist, None);
+    assert!(SessionHost::sounds_externally(&soloist));
+
+    let built_in = LiveSession::new(SessionConfig::default());
+    assert!(!SessionHost::sounds_externally(&built_in));
+}

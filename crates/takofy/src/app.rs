@@ -18,7 +18,7 @@ use takofy_ui::library::{HOME_HOLD, Library};
 use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, RemoteUpdate, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
-use takofy_ui::prefs::Prefs;
+use takofy_ui::prefs::{Prefs, SoundChoice};
 use takofy_ui::queue::Queue;
 use takofy_ui::remote::react;
 use takofy_ui::report::Reporter;
@@ -77,6 +77,36 @@ fn window_icon() -> Option<egui::IconData> {
     })
 }
 
+/// The sound path the file named: which engine plays, the program it runs, and
+/// the name its daemon announces.
+///
+/// No frame changes these yet — the page that does is #81 — so they are read
+/// once at startup and handed back to every write. A fresh `Prefs` starts at
+/// the defaults, so a value left out of one is dropped back to one.
+struct SoundPath {
+    engine: SoundChoice,
+    path: Option<String>,
+    name: String,
+}
+
+impl SoundPath {
+    /// The sound path `loaded` names, or the defaults when it names none.
+    ///
+    /// A file this version cannot read plays through the built-in player: it is
+    /// the default, and pointing the window at a program nobody chose is worse.
+    fn loaded(loaded: &Loaded) -> Self {
+        let prefs = match loaded {
+            Loaded::Found(prefs) => prefs.clone(),
+            Loaded::Absent | Loaded::Refused(_) | Loaded::Unreadable => Prefs::default(),
+        };
+        Self {
+            engine: prefs.engine(),
+            path: prefs.soloist_path().map(str::to_owned),
+            name: prefs.soloist_name().to_owned(),
+        }
+    }
+}
+
 /// The window and its end of the bridge.
 pub(crate) struct TakofyApp {
     state: SignIn,
@@ -104,6 +134,8 @@ pub(crate) struct TakofyApp {
     since: Option<Instant>,
     /// The values that survive a restart, and the thread that saves them.
     prefs: PrefsSync,
+    /// The sound path the file named, which every write of those values carries.
+    sound: SoundPath,
     /// The last session's library, and the thread that saves this one's.
     snapshots: SnapshotSync,
     /// The discovery setting, shared with the lookup that reads it before any
@@ -180,6 +212,7 @@ impl TakofyApp {
             options.input_options.line_scroll_speed = scroll::POINTS_PER_LINE;
         });
         let (transport, queue) = Self::restored_state(&loaded);
+        let sound = SoundPath::loaded(&loaded);
         let mut library = Library::starting_home(wall_clock_ms());
         if let Cached::Found(snapshot) = cached {
             library.restore(snapshot);
@@ -206,10 +239,22 @@ impl TakofyApp {
             art: Art::new(),
             since: None,
             prefs,
+            sound,
             snapshots,
             gate,
             hidden: hidden_sync,
         }
+    }
+
+    /// The values the file should hold once they settle.
+    fn current_prefs(&self) -> Prefs {
+        Prefs::of(&self.transport.volume, &self.queue)
+            .with_discovery(self.library.discovery_enabled())
+            .with_soloist(
+                self.sound.engine,
+                self.sound.path.as_deref(),
+                &self.sound.name,
+            )
     }
 
     /// The transport and queue the file names.
@@ -388,10 +433,8 @@ impl eframe::App for TakofyApp {
 
     // Glow's exit hook carries the GL context; nothing here needs it.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.prefs.close(
-            &Prefs::of(&self.transport.volume, &self.queue)
-                .with_discovery(self.library.discovery_enabled()),
-        );
+        let values = self.current_prefs();
+        self.prefs.close(&values);
         self.hidden.close(self.library.hidden());
         self.snapshots.close(|| self.library.snapshot());
     }
@@ -436,8 +479,7 @@ impl eframe::App for TakofyApp {
         }
         // After the drain, so the value the frame drew is the one that settles.
         // The wake keeps a value written while the window is otherwise idle.
-        let values = Prefs::of(&self.transport.volume, &self.queue)
-            .with_discovery(self.library.discovery_enabled());
+        let values = self.current_prefs();
         if let Some(wake) = self.prefs.observe(now, &values) {
             ui.ctx().request_repaint_after(wake.max(WAKE_FLOOR));
         }

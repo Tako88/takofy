@@ -5,7 +5,7 @@
 //! thin: a call-through or one `Option` check.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -13,9 +13,10 @@ use librespot::core::SessionConfig;
 use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{DiscoveryReads, Engine, EngineError, Orders, RootlistRead};
-use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
+use takofy_core::playback::{PlaybackError, PlaybackEvent, Sound, SoundEngine, VOLUME_MAX, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::rootlist::Walked;
+use takofy_core::soloist::SoloistFault;
 use takofy_core::{ReadFailed, Resolution, TransferPlan};
 use takofy_model::home::{
     ArtistReleases, Day, DigAnswer, DigAsk, DiscoveryArtist, DiscoveryCard, DiscoveryOutcome,
@@ -32,6 +33,8 @@ use tokio::sync::oneshot::Receiver;
 use crate::discovery::Outside;
 use crate::discovery::http::Http;
 use crate::discovery::lookup::{self, Spotify};
+use crate::soloist::SoloistHost;
+use takofy_ui::prefs::SoundChoice;
 
 /// How long a rebuild waits for the dead session's player thread before going
 /// ahead without it.
@@ -101,6 +104,7 @@ impl SessionError {
                 PlaybackError::PlayerShared => "player shared",
                 PlaybackError::PlayerClosed => "player closed",
                 PlaybackError::NotPlayable(_) => "not playable",
+                PlaybackError::Soloist(_) => "soloist",
             },
         }
     }
@@ -502,6 +506,12 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
     /// connected has no link to lose.
     fn is_down(&self) -> bool;
 
+    /// Whether the sound comes from a program of this window's own rather than
+    /// from librespot's player.
+    fn sounds_externally(&self) -> bool {
+        false
+    }
+
     fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     /// Ends the dead session: its engine, its streams and its player.
@@ -528,7 +538,7 @@ pub(crate) async fn stop_or<T>(
 pub(crate) struct LiveSession {
     cfg: SessionConfig,
     engine: Option<Engine>,
-    playback: Option<Playback>,
+    playback: Option<Box<dyn Sound>>,
     events: Option<UnboundedReceiver<PlaybackEvent>>,
     /// The watch's stream, kept until the drain thread takes it.
     devices: Option<UnboundedReceiver<ClusterEvent>>,
@@ -537,6 +547,14 @@ pub(crate) struct LiveSession {
     /// The level the player will read, kept here so a change before the player
     /// exists is still the level it starts with.
     volume: Volume,
+    /// The engine that makes sound, read once at startup: a change of
+    /// preference takes effect on the next launch.
+    sound: SoundChoice,
+    /// The daemon, when the engine is Soloist.
+    soloist: Option<Arc<SoloistHost>>,
+    /// The level as a percentage, kept so a daemon started later begins where
+    /// the slider is.
+    level: AtomicU16,
     /// Whether this device announced it can play, kept so a rebuilt engine can
     /// be told again.
     playable: AtomicBool,
@@ -557,6 +575,9 @@ impl LiveSession {
             devices: None,
             inbound: None,
             volume: Volume::default(),
+            sound: SoundChoice::BuiltIn,
+            soloist: None,
+            level: AtomicU16::new(VOLUME_MAX),
             playable: AtomicBool::new(false),
             report: Mutex::new(None),
             outside: None,
@@ -570,6 +591,18 @@ impl LiveSession {
         self
     }
 
+    /// Chooses where the sound comes from, once, at startup: a change of
+    /// preference takes effect on the next launch.
+    pub(crate) fn with_sound(
+        mut self,
+        sound: SoundChoice,
+        soloist: Option<Arc<SoloistHost>>,
+    ) -> Self {
+        self.sound = sound;
+        self.soloist = soloist;
+        self
+    }
+
     fn held_report(&self) -> Option<Report> {
         self.report
             .lock()
@@ -579,16 +612,38 @@ impl LiveSession {
 
     /// Starts the player on first use, keeping its event stream so the one drain
     /// thread can be handed it once.
-    fn ensure_player(&mut self) -> Result<&Playback, SessionError> {
+    fn ensure_player(&mut self) -> Result<&dyn Sound, SessionError> {
         if self.playback.is_none() {
-            let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
-            let (playback, events) = engine
-                .playback(self.volume.clone())
-                .map_err(SessionError::Playback)?;
+            let (playback, events) = match self.sound {
+                SoundChoice::BuiltIn => {
+                    let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
+                    engine
+                        .playback(self.volume.clone(), SoundEngine::BuiltIn)
+                        .map_err(SessionError::Playback)?
+                }
+                SoundChoice::Soloist => {
+                    let host = self.soloist.as_ref().ok_or(SessionError::Playback(
+                        PlaybackError::Soloist(SoloistFault::Missing),
+                    ))?;
+                    host.sound(self.level.load(Ordering::SeqCst))
+                        .map_err(|fault| SessionError::Playback(PlaybackError::Soloist(fault)))?
+                }
+            };
             self.playback = Some(playback);
             self.events = Some(events);
         }
-        self.playback.as_ref().ok_or(SessionError::NotConnected)
+        match self.playback.as_deref() {
+            Some(playback) => Ok(playback),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    /// Takes the sound out, so a closed stream is rebuilt rather than reused.
+    ///
+    /// The event stream goes with it, because nothing else will arrive on it.
+    pub(crate) fn retire_sound(&mut self) {
+        self.playback = None;
+        self.events = None;
     }
 }
 
@@ -602,6 +657,15 @@ impl SessionHost for LiveSession {
         // A fresh engine starts with an empty stage and no report, so what the
         // window already said is told again before anything reads it.
         engine.restore(self.playable.load(Ordering::SeqCst), self.held_report());
+        // Soloist is the account's own device, so this window joins the account
+        // as a listener: nothing announces a second player, and a device left
+        // behind by an earlier run is deleted. The delete runs before the watch
+        // starts, so the listener's own streams survive it.
+        if self.sound == SoundChoice::Soloist
+            && let Err(error) = engine.withdraw_devices().await
+        {
+            log::warn!("device withdraw: {}", SessionError::Engine(error).kind());
+        }
         self.engine = Some(engine);
         Ok(())
     }
@@ -989,6 +1053,11 @@ impl SessionHost for LiveSession {
     }
 
     fn set_playable(&self, playable: bool) {
+        // Soloist is the account's own device: this window must not join it as
+        // a second, silent one.
+        if playable && self.sound == SoundChoice::Soloist {
+            return;
+        }
         self.playable.store(playable, Ordering::SeqCst);
         if let Some(engine) = &self.engine {
             engine.set_playable(playable);
@@ -1082,9 +1151,18 @@ impl SessionHost for LiveSession {
         if self.is_down() {
             return Err(SessionError::LinkLost);
         }
-        self.ensure_player()?
-            .load(uri, position_ms, play)
-            .map_err(SessionError::Playback)
+        match self.ensure_player()?.load(uri, position_ms, play) {
+            Ok(()) => Ok(()),
+            // A stream that ended is rebuilt rather than reused, so one dead
+            // socket does not make every later press fail the same way.
+            Err(PlaybackError::PlayerClosed) => {
+                self.retire_sound();
+                self.ensure_player()?
+                    .load(uri, position_ms, play)
+                    .map_err(SessionError::Playback)
+            }
+            Err(error) => Err(SessionError::Playback(error)),
+        }
     }
 
     async fn release_sound(&self) -> Result<(), SessionError> {
@@ -1143,6 +1221,12 @@ impl SessionHost for LiveSession {
 
     fn set_volume(&self, percent: u16) {
         self.volume.set(percent);
+        self.level.store(percent, Ordering::SeqCst);
+        // librespot reads the shared level, but a daemon of our own has to be
+        // told.
+        if let Some(playback) = &self.playback {
+            playback.set_volume(percent);
+        }
     }
 
     fn stop(&self) {
@@ -1155,9 +1239,16 @@ impl SessionHost for LiveSession {
         self.engine.as_ref().is_some_and(Engine::is_down)
     }
 
+    fn sounds_externally(&self) -> bool {
+        self.sound == SoundChoice::Soloist
+    }
+
     async fn shutdown(self) -> Result<(), SessionError> {
         // Consuming the player is what joins its thread; the engine drops with
-        // the adapter.
+        // the adapter. The daemon goes with the window that started it.
+        if let Some(host) = &self.soloist {
+            host.shutdown();
+        }
         match self.playback {
             Some(playback) => playback.shutdown().await.map_err(SessionError::Playback),
             None => Ok(()),

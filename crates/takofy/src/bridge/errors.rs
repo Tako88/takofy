@@ -19,7 +19,11 @@ pub(super) fn related_failure(error: &SessionError) -> Failure {
 pub(super) fn ends_playability(error: &SessionError) -> bool {
     matches!(
         error,
-        SessionError::NotConnected | SessionError::Playback(PlaybackError::NoAudioDevice)
+        SessionError::NotConnected
+            | SessionError::Playback(PlaybackError::NoAudioDevice)
+            // A missing, unpaired or expired daemon is this machine's whole
+            // sound, unlike one track that will not play.
+            | SessionError::Playback(PlaybackError::Soloist(_))
     )
 }
 

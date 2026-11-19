@@ -60,6 +60,7 @@ pub(super) fn test_window_restored(
         library.restore(snapshot);
     }
     let gate = Arc::new(AtomicBool::new(library.discovery_enabled()));
+    let sound = SoundPath::loaded(&loaded);
     let app = TakofyApp {
         state: SignIn::default(),
         library,
@@ -76,6 +77,7 @@ pub(super) fn test_window_restored(
         art: Art::new(),
         since: None,
         prefs,
+        sound,
         snapshots,
         gate,
         hidden: HiddenSync::off(),

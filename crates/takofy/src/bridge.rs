@@ -136,6 +136,8 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     // A playback drain names the generation whose failure it judged, so a
     // signal from a retired drain cannot start a rebuild for the live one.
     let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Read before the host moves into the task, because the drain needs it.
+    let external = host.sounds_externally();
     let slot = WakeSlot::default();
     let startup = Arc::new(Startup::new());
     let notifier = Notifier {
@@ -174,6 +176,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let mut token: Option<AccessToken> = None;
         let mut recovery = Recovery::new(pacing);
         let mut drains = Drains::new(signal_tx);
+        drains.playhead.set_suppress_suspect(external);
         // Whether an engine is up. A dead engine is still up until it is
         // retired, and a retired one is gone even though the account is signed
         // in.

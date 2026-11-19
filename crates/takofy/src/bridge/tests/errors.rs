@@ -88,3 +88,31 @@ fn authorize_update_maps_the_outcomes() {
         Update::SignInFailed(Failure::Other)
     );
 }
+
+#[test]
+fn a_daemon_fault_ends_playability_but_one_track_does_not() {
+    use crate::bridge::errors::ends_playability;
+    use crate::session::SessionError;
+    use takofy_core::playback::PlaybackError;
+    use takofy_core::soloist::SoloistFault;
+
+    for fault in [
+        SoloistFault::Missing,
+        SoloistFault::NotRunning,
+        SoloistFault::NoSocket,
+        SoloistFault::Unpaired,
+        SoloistFault::Expired,
+    ] {
+        assert!(
+            ends_playability(&SessionError::Playback(PlaybackError::Soloist(fault))),
+            "{fault:?} means this machine cannot play at all"
+        );
+    }
+
+    assert!(
+        !ends_playability(&SessionError::Playback(PlaybackError::NotPlayable(
+            "spotify:track:x".to_owned()
+        ))),
+        "one unplayable track leaves the device as it was"
+    );
+}

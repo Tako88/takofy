@@ -33,6 +33,14 @@ fn oauth_log_target_is_silenced() {
 }
 
 #[test]
+fn the_soloist_lines_show_at_info_and_their_neighbours_do_not() {
+    let logger = logger_builder().build();
+    assert!(logger.matches(&record("takofy::soloist", Level::Info)));
+    assert!(logger.matches(&record("takofy_core::soloist", Level::Info)));
+    assert!(!logger.matches(&record("takofy::session", Level::Info)));
+}
+
+#[test]
 fn the_receiver_summary_is_the_one_info_line_that_shows() {
     let logger = logger_builder().build();
     assert!(logger.matches(&record(RECEIVE_LOG_TARGET, Level::Info)));
@@ -118,6 +126,8 @@ fn no_arguments_means_loopback_and_the_rootlist() {
             context: None,
             headless: false,
             probe_audio: false,
+            soloist_key: false,
+            soloist_pair: false,
         })
     );
 }
@@ -153,8 +163,74 @@ fn flags_combine() {
 }
 
 #[test]
+fn a_soloist_key_is_a_mode_of_its_own() {
+    let flags = parse_flags(args(&["--soloist-key"])).expect("flags parse");
+    assert!(flags.soloist_key);
+    assert_eq!(mode_for(&flags), Ok(Mode::SoloistKey));
+}
+
+#[test]
+fn the_soloist_key_reads_one_line_and_nothing_else() {
+    for extra in [
+        vec!["--headless"],
+        vec!["--paste"],
+        vec!["--probe-audio"],
+        vec!["--context", "spotify:artist:x"],
+    ] {
+        let mut argv = vec!["--soloist-key"];
+        argv.extend(extra.iter().copied());
+        let flags = parse_flags(args(&argv)).expect("flags parse");
+        assert!(
+            mode_for(&flags).is_err(),
+            "{extra:?} beside --soloist-key must be refused"
+        );
+    }
+}
+
+#[test]
+fn a_soloist_pair_is_a_mode_of_its_own() {
+    let flags = parse_flags(args(&["--soloist-pair"])).expect("flags parse");
+    assert!(flags.soloist_pair);
+    assert_eq!(mode_for(&flags), Ok(Mode::SoloistPair));
+
+    for extra in [
+        vec!["--headless"],
+        vec!["--probe-audio"],
+        vec!["--soloist-key"],
+        vec!["--context", "spotify:artist:x"],
+    ] {
+        let mut argv = vec!["--soloist-pair"];
+        argv.extend(extra.iter().copied());
+        let flags = parse_flags(args(&argv)).expect("flags parse");
+        assert!(
+            mode_for(&flags).is_err(),
+            "{extra:?} beside --soloist-pair must be refused"
+        );
+    }
+}
+
+#[test]
+fn the_daemon_and_the_window_share_one_name_on_purpose() {
+    // The phone's device list is where a listener has to recognise us. The
+    // window announces nothing while the Soloist engine is chosen, so the two
+    // names can agree, and they must: two spellings is one choice too many.
+    assert_eq!(
+        takofy_ui::prefs::SOLOIST_NAME,
+        takofy_core::connect::DEVICE_NAME,
+        "one name for the app, whichever engine plays"
+    );
+}
+
+#[test]
 fn usage_mentions_every_flag() {
-    for flag in ["--headless", "--paste", "--context"] {
+    for flag in [
+        "--headless",
+        "--paste",
+        "--context",
+        "--probe-audio",
+        "--soloist-key",
+        "--soloist-pair",
+    ] {
         assert!(
             USAGE.contains(flag),
             "{flag} is missing from the usage line"

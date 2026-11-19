@@ -1,5 +1,5 @@
-//! The five values that survive a restart, the file that holds them, and the
-//! rule for when that file is written.
+//! The values that survive a restart, the file that holds them, and the rule
+//! for when that file is written.
 //!
 //! The file is a hand-parsed `key=value` list, so a later version can add a key
 //! without corrupting an older one. Unknown keys are ignored; a value this
@@ -21,6 +21,42 @@ use crate::volume::{self, Volume};
 /// A drag moves the level every frame; a pause this long is the value at rest.
 pub const QUIET: Duration = Duration::from_millis(400);
 
+/// The device name a Soloist daemon announces.
+///
+/// It is what a listener looks for in the phone's device list, so it is the
+/// app's own name. The window announces nothing while this engine is chosen, so
+/// the two only collide if a daemon outlives a switch back to the built-in one.
+pub const SOLOIST_NAME: &str = "Takofy";
+
+/// Which of the two sound paths plays what the app loads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoundChoice {
+    /// The audio device, through librespot.
+    #[default]
+    BuiltIn,
+    /// Spotify Soloist, through its own daemon.
+    Soloist,
+}
+
+impl SoundChoice {
+    /// The spelling a preferences file stores, which is not the display text.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::BuiltIn => "builtin",
+            Self::Soloist => "soloist",
+        }
+    }
+
+    /// The engine `key` names, or `None` for any other spelling.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "builtin" => Some(Self::BuiltIn),
+            "soloist" => Some(Self::Soloist),
+            _ => None,
+        }
+    }
+}
+
 /// A key the file knows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
@@ -29,16 +65,22 @@ enum Key {
     Shuffle,
     Repeat,
     Discovery,
+    Engine,
+    SoloistPath,
+    SoloistName,
 }
 
 impl Key {
     /// Every key, in the order the file lists them.
-    const ALL: [Key; 5] = [
+    const ALL: [Key; 8] = [
         Key::Volume,
         Key::Mute,
         Key::Shuffle,
         Key::Repeat,
         Key::Discovery,
+        Key::Engine,
+        Key::SoloistPath,
+        Key::SoloistName,
     ];
 
     /// The spelling in the file, which is also the spelling a reader matches.
@@ -49,6 +91,9 @@ impl Key {
             Key::Shuffle => "shuffle",
             Key::Repeat => "repeat",
             Key::Discovery => "discovery",
+            Key::Engine => "engine",
+            Key::SoloistPath => "soloist_path",
+            Key::SoloistName => "soloist_name",
         }
     }
 
@@ -95,7 +140,8 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// Volume, mute, shuffle, repeat and discovery, as the file holds them.
+/// Volume, mute, shuffle, repeat, discovery and the sound path, as the file
+/// holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prefs {
     volume: u16,
@@ -103,6 +149,9 @@ pub struct Prefs {
     shuffle: bool,
     repeat: Repeat,
     discovery: bool,
+    engine: SoundChoice,
+    soloist_path: Option<String>,
+    soloist_name: String,
 }
 
 impl Default for Prefs {
@@ -113,6 +162,9 @@ impl Default for Prefs {
             shuffle: false,
             repeat: Repeat::Off,
             discovery: true,
+            engine: SoundChoice::BuiltIn,
+            soloist_path: None,
+            soloist_name: SOLOIST_NAME.to_owned(),
         }
     }
 }
@@ -141,6 +193,38 @@ impl Prefs {
         self.discovery
     }
 
+    /// The same values with the sound path the app holds, which the player has
+    /// no part in.
+    ///
+    /// A path that is not one line, or is empty, is no path. A name that is not
+    /// one line, or is empty, keeps the name already there.
+    pub fn with_soloist(mut self, engine: SoundChoice, path: Option<&str>, name: &str) -> Self {
+        self.engine = engine;
+        self.soloist_path = path
+            .and_then(single_line)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned);
+        if let Some(name) = single_line(name).filter(|name| !name.is_empty()) {
+            self.soloist_name = name.to_owned();
+        }
+        self
+    }
+
+    /// Which sound path plays what this file remembers.
+    pub fn engine(&self) -> SoundChoice {
+        self.engine
+    }
+
+    /// The Soloist program the user chose, or `None` when they chose none.
+    pub fn soloist_path(&self) -> Option<&str> {
+        self.soloist_path.as_deref()
+    }
+
+    /// The device name the Soloist daemon announces.
+    pub fn soloist_name(&self) -> &str {
+        &self.soloist_name
+    }
+
     /// The slider this file remembers, owing the player the level it should
     /// sound at now.
     pub fn volume(&self) -> Volume {
@@ -152,15 +236,18 @@ impl Prefs {
         queue.restore_modes(self.repeat, self.shuffle);
     }
 
-    /// The file's five lines, in a fixed order.
+    /// The file's lines, one per key, in a fixed order.
     pub fn render(&self) -> String {
         format!(
-            "volume={}\nmute={}\nshuffle={}\nrepeat={}\ndiscovery={}\n",
+            "volume={}\nmute={}\nshuffle={}\nrepeat={}\ndiscovery={}\nengine={}\nsoloist_path={}\nsoloist_name={}\n",
             self.volume,
             self.muted,
             self.shuffle,
             self.repeat.key(),
-            self.discovery
+            self.discovery,
+            self.engine.key(),
+            self.soloist_path.as_deref().unwrap_or_default(),
+            self.soloist_name
         )
     }
 
@@ -215,6 +302,9 @@ impl Prefs {
             Setting::Shuffle(shuffle) => self.shuffle = shuffle,
             Setting::Repeat(repeat) => self.repeat = repeat,
             Setting::Discovery(discovery) => self.discovery = discovery,
+            Setting::Engine(engine) => self.engine = engine,
+            Setting::SoloistPath(path) => self.soloist_path = path,
+            Setting::SoloistName(name) => self.soloist_name = name,
         }
     }
 }
@@ -226,6 +316,9 @@ enum Setting {
     Shuffle(bool),
     Repeat(Repeat),
     Discovery(bool),
+    Engine(SoundChoice),
+    SoloistPath(Option<String>),
+    SoloistName(String),
 }
 
 /// The value `text` holds for `key`, or `None` when it is outside the table.
@@ -236,7 +329,20 @@ fn read_value(key: Key, text: &str) -> Option<Setting> {
         Key::Shuffle => flag(text).map(Setting::Shuffle),
         Key::Repeat => Repeat::from_key(text).map(Setting::Repeat),
         Key::Discovery => flag(text).map(Setting::Discovery),
+        Key::Engine => SoundChoice::from_key(text).map(Setting::Engine),
+        Key::SoloistPath => single_line(text)
+            .map(|path| (!path.is_empty()).then(|| path.to_owned()))
+            .map(Setting::SoloistPath),
+        Key::SoloistName => single_line(text)
+            .filter(|name| !name.is_empty())
+            .map(|name| Setting::SoloistName(name.to_owned())),
     }
+}
+
+/// `text` when it fits on one line, which is the only shape a single value can
+/// take in a file whose lines are the values.
+fn single_line(text: &str) -> Option<&str> {
+    (!text.contains('\n') && !text.contains('\r')).then_some(text)
 }
 
 /// A level: ASCII digits only, from 0 to full. Signed or padded text is not a
