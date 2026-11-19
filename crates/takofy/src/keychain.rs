@@ -1,10 +1,13 @@
 //! OS keychain adapter.
 
 use keyring::Entry;
-use takofy_core::credentials::{CredentialStore, RefreshToken, StoreError};
+use takofy_core::credentials::{
+    CredentialStore, RefreshToken, SoloistKey, SoloistKeyStore, StoreError,
+};
 
 const SERVICE: &str = "takofy";
 const USER: &str = "spotify-refresh-token";
+const SOLOIST_USER: &str = "soloist-api-key";
 
 /// Stores the refresh token in the OS keychain.
 ///
@@ -33,6 +36,43 @@ impl CredentialStore for KeychainStore {
     fn save(&self, token: &RefreshToken) -> Result<(), StoreError> {
         self.entry()?
             .set_password(token.expose())
+            .map_err(|error| map_error(&error))
+    }
+
+    fn clear(&self) -> Result<(), StoreError> {
+        match self.entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(map_error(&error)),
+        }
+    }
+}
+
+/// Stores the Soloist API key in the OS keychain.
+///
+/// One `Entry` per call, for the thread affinity of [`KeychainStore`].
+pub struct SoloistKeychain;
+
+impl SoloistKeychain {
+    fn entry(&self) -> Result<Entry, StoreError> {
+        Entry::new(SERVICE, SOLOIST_USER).map_err(|_| StoreError::Unavailable)
+    }
+}
+
+impl SoloistKeyStore for SoloistKeychain {
+    fn load(&self) -> Result<Option<SoloistKey>, StoreError> {
+        match self.entry()?.get_password() {
+            Ok(secret) => match SoloistKey::new(secret) {
+                Some(key) => Ok(Some(key)),
+                None => Err(StoreError::Corrupt),
+            },
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(map_error(&error)),
+        }
+    }
+
+    fn save(&self, key: &SoloistKey) -> Result<(), StoreError> {
+        self.entry()?
+            .set_password(key.expose())
             .map_err(|error| map_error(&error))
     }
 

@@ -28,7 +28,7 @@ use std::sync::atomic::AtomicBool;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
-use takofy_core::credentials::StoreError;
+use takofy_core::credentials::{SoloistKey, SoloistKeyStore, StoreError};
 use takofy_core::hold::HOLD_LOG_TARGET;
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
@@ -40,9 +40,9 @@ use takofy_ui::message::Failure;
 use takofy_ui::remote::REMOTE_LOG_TARGET;
 use takofy_ui::signin::failure_message;
 
-use crate::keychain::KeychainStore;
+use crate::keychain::{KeychainStore, SoloistKeychain};
 
-const USAGE: &str = "usage: takofy [--headless [--paste] [--context <uri>]] | takofy --probe-audio";
+const USAGE: &str = "usage: takofy [--headless [--paste] [--context <uri>]] | takofy --probe-audio | takofy --soloist-key";
 
 /// Which entry point the flags select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,9 @@ enum Mode {
     /// the first question a silent install asks is whether this machine can
     /// produce sound at all.
     ProbeAudio,
+    /// Reads a Soloist API key from a line of stdin into the keychain, so the
+    /// secret never lands in a shell history or an argv of ours.
+    SoloistKey,
 }
 
 /// What the command line asked for.
@@ -65,6 +68,8 @@ struct Flags {
     headless: bool,
     /// Report the audio device rather than opening a window.
     probe_audio: bool,
+    /// Read a Soloist API key from stdin and store it.
+    soloist_key: bool,
 }
 
 fn main() -> ExitCode {
@@ -79,6 +84,7 @@ fn main() -> ExitCode {
         Ok(Mode::Window) => run_window(&flags),
         Ok(Mode::Headless) => run_headless(flags),
         Ok(Mode::ProbeAudio) => run_probe_audio(),
+        Ok(Mode::SoloistKey) => run_soloist_key(),
         Err(()) => usage_error(),
     }
 }
@@ -91,6 +97,14 @@ fn usage_error() -> ExitCode {
 /// The window has no terminal to prompt on, so the paste fallback and a chosen
 /// context only make sense headless.
 fn mode_for(flags: &Flags) -> Result<Mode, ()> {
+    if flags.soloist_key {
+        // It reads one line and touches nothing else, so any other flag is a typo.
+        let alone = !flags.headless
+            && !flags.probe_audio
+            && flags.redirect == RedirectMode::Loopback
+            && flags.context.is_none();
+        return if alone { Ok(Mode::SoloistKey) } else { Err(()) };
+    }
     if flags.probe_audio {
         // It reads nothing else, so any other flag beside it is a typo.
         return if flags.headless || flags.context.is_some() {
@@ -245,6 +259,7 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
         context: None,
         headless: false,
         probe_audio: false,
+        soloist_key: false,
     };
     let mut args = args;
     while let Some(arg) = args.next() {
@@ -253,10 +268,37 @@ fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
             "--paste" => flags.redirect = RedirectMode::Paste,
             "--context" => flags.context = Some(args.next().ok_or(())?),
             "--probe-audio" => flags.probe_audio = true,
+            "--soloist-key" => flags.soloist_key = true,
             _ => return Err(()),
         }
     }
     Ok(flags)
+}
+
+/// Reads one line of stdin and stores it as the Soloist API key.
+///
+/// The value is never echoed, and an error names only the store's kind, so a
+/// terminal that scrolls back cannot show the secret.
+fn run_soloist_key() -> ExitCode {
+    let mut line = String::new();
+    if let Err(error) = std::io::stdin().read_line(&mut line) {
+        eprintln!("could not read the key: {error}");
+        return ExitCode::FAILURE;
+    }
+    let Some(key) = SoloistKey::new(line.trim().to_owned()) else {
+        eprintln!("the key is empty");
+        return ExitCode::FAILURE;
+    };
+    match SoloistKeychain.save(&key) {
+        Ok(()) => {
+            println!("saved");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("could not save the key: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn logger_builder() -> env_logger::Builder {
