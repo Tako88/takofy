@@ -5201,6 +5201,7 @@ dependencies = [
  "keyring",
  "librespot",
  "log",
+ "open",
  "reqwest",
  "serde_json",
  "takofy-core",

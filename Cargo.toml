@@ -40,6 +40,9 @@ http = "1"
 # The local hour for Home's greeting. Already in the build through `oauth2`, and
 # `unsafe_code` is denied, so a hand-written `localtime` is out.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Opens the Soloist download and key pages in the listener's own browser; already
+# locked through librespot's OAuth flow at the same version.
+open = "5.4.4"
 # The window: eframe runs the event loop and egui draws each frame.
 #
 # Glow (OpenGL), not wgpu. wgpu 30 does not compile for Windows: wgpu-hal 30
