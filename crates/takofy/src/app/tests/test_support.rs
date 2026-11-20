@@ -56,6 +56,9 @@ pub(super) fn test_window_restored(
     // A launch applies the file's setting, so a test's `Prefs::of` writes back
     // what the window would write.
     library.set_discovery_enabled(loaded_discovery(&loaded));
+    if let Loaded::Found(saved) = &loaded {
+        library.settings = takofy_ui::settings::Settings::from_prefs(saved);
+    }
     if let Cached::Found(snapshot) = cached {
         library.restore(snapshot);
     }

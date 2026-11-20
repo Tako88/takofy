@@ -8,6 +8,7 @@ use takofy_ui::library::Load;
 use takofy_ui::message::{
     DaemonState, Facts, Failure, Freshness, KeyState, SoloistAsk, SoloistUpdate, TransportUpdate,
 };
+use takofy_ui::prefs::SoundChoice;
 use takofy_ui::settings::{RowStatus, Step};
 
 #[test]

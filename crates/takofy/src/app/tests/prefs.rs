@@ -5,6 +5,7 @@ use crate::preferences::PrefsWriter;
 use eframe::App;
 use std::sync::{Arc, Mutex};
 use takofy_ui::prefs::QUIET;
+use takofy_ui::prefs::SoundChoice;
 use takofy_ui::repeat::Repeat;
 
 type PrefsLog = Arc<Mutex<Vec<Prefs>>>;
@@ -297,4 +298,61 @@ fn an_untouched_session_never_writes() {
         log.lock().expect("the sink log").is_empty(),
         "nothing changed, so nothing is written"
     );
+}
+
+#[test]
+fn choosing_an_engine_writes_it_down() {
+    let (log, sink) = recording();
+    let written = Prefs::default();
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+    assert_eq!(
+        app.library.settings.chosen(),
+        SoundChoice::BuiltIn,
+        "arrange: a fresh window plays through the built-in player"
+    );
+
+    app.library.settings.choose(SoundChoice::Soloist);
+    assert!(
+        app.transport.volume.set_fraction(0.4),
+        "arrange: a change is owed, so the file is written"
+    );
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    let saved = log.lock().expect("the sink log").clone();
+    assert!(!saved.is_empty(), "the settled value reached the file");
+    for prefs in &saved {
+        assert_eq!(
+            prefs.engine(),
+            SoundChoice::Soloist,
+            "the chosen engine is the one the next start reads"
+        );
+    }
+}
+
+#[test]
+fn a_file_that_chose_soloist_draws_its_row_chosen() {
+    let (log, sink) = recording();
+    let written = Prefs::parse("engine=soloist\nsoloist_path=/opt/soloist\n").expect("valid prefs");
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+
+    assert_eq!(
+        app.library.settings.chosen(),
+        SoundChoice::Soloist,
+        "the page starts from the file rather than from the defaults"
+    );
+
+    assert!(app.transport.volume.set_fraction(0.8));
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    for prefs in log.lock().expect("the sink log").iter() {
+        assert_eq!(
+            prefs.engine(),
+            SoundChoice::Soloist,
+            "an untouched page must not downgrade the file"
+        );
+    }
 }

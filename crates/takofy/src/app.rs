@@ -18,7 +18,7 @@ use takofy_ui::library::{HOME_HOLD, Library};
 use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, RemoteUpdate, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
-use takofy_ui::prefs::{Prefs, SoundChoice};
+use takofy_ui::prefs::Prefs;
 use takofy_ui::queue::Queue;
 use takofy_ui::remote::react;
 use takofy_ui::report::Reporter;
@@ -85,7 +85,6 @@ fn window_icon() -> Option<egui::IconData> {
 /// once at startup and handed back to every write. A fresh `Prefs` starts at
 /// the defaults, so a value left out of one is dropped back to one.
 struct SoundPath {
-    engine: SoundChoice,
     path: Option<String>,
     name: String,
 }
@@ -101,7 +100,6 @@ impl SoundPath {
             Loaded::Absent | Loaded::Refused(_) | Loaded::Unreadable => Prefs::default(),
         };
         Self {
-            engine: prefs.engine(),
             path: prefs.soloist_path().map(str::to_owned),
             name: prefs.soloist_name().to_owned(),
         }
@@ -221,6 +219,11 @@ impl TakofyApp {
         // The files were read before the window existed, so the first frame
         // draws their values rather than the defaults.
         library.set_discovery_enabled(loaded_discovery(&loaded));
+        // The page's starting point is the file's, or it would draw the built-in
+        // row as chosen for somebody who chose Soloist last time.
+        if let Loaded::Found(saved) = &loaded {
+            library.settings = takofy_ui::settings::Settings::from_prefs(saved);
+        }
         if let hidden_file::Loaded::Found(saved) = hidden {
             library.restore_hidden(saved);
         }
@@ -249,13 +252,27 @@ impl TakofyApp {
 
     /// The values the file should hold once they settle.
     fn current_prefs(&self) -> Prefs {
+        let program = self.program_path();
         Prefs::of(&self.transport.volume, &self.queue)
             .with_discovery(self.library.discovery_enabled())
             .with_soloist(
-                self.sound.engine,
-                self.sound.path.as_deref(),
+                // The page owns the choice: the engine is read once at startup,
+                // so this is what the *next* start plays through.
+                self.library.settings.chosen(),
+                program.as_deref(),
                 &self.sound.name,
             )
+    }
+
+    /// The program the file should name.
+    ///
+    /// A finished scan is the truth. Before any scan, the file's own value
+    /// stands: a page nobody opened must not erase what it never looked at.
+    fn program_path(&self) -> Option<String> {
+        match self.library.settings.facts() {
+            Some(facts) => facts.program.clone(),
+            None => self.sound.path.clone(),
+        }
     }
 
     /// The transport and queue the file names.
