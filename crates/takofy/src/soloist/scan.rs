@@ -28,6 +28,8 @@ pub trait Tree {
     fn is_file(&self, path: &Path) -> bool;
     fn is_dir(&self, path: &Path) -> bool;
     fn children(&self, folder: &Path) -> Vec<PathBuf>;
+    /// The first bytes, which say whether the file is a program at all.
+    fn head(&self, path: &Path) -> Option<Vec<u8>>;
 }
 
 /// The filesystem this process is running on.
@@ -40,6 +42,14 @@ impl Tree for Disk {
 
     fn is_dir(&self, path: &Path) -> bool {
         path.is_dir()
+    }
+
+    fn head(&self, path: &Path) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = [0u8; HEAD];
+        let mut file = std::fs::File::open(path).ok()?;
+        let read = file.read(&mut bytes).ok()?;
+        Some(bytes[..read].to_vec())
     }
 
     fn children(&self, folder: &Path) -> Vec<PathBuf> {
@@ -97,7 +107,7 @@ pub fn downloads_dir(profile: Option<&OsStr>) -> Option<PathBuf> {
 
 fn typed_path(typed: &Path, tree: &impl Tree) -> Scan {
     if tree.is_file(typed) {
-        return if named_like_program(typed) {
+        return if named_like_program(typed, tree) {
             Scan::Found(typed.to_path_buf())
         } else {
             Scan::NotSoloist
@@ -116,6 +126,20 @@ fn typed_path(typed: &Path, tree: &impl Tree) -> Scan {
     }
 }
 
+/// How many bytes of a file are read to tell a program from everything else.
+const HEAD: usize = 4;
+
+/// Whether these first bytes begin a program this machine can run.
+///
+/// The archive Spotify ships is a tar whose members include the program: a tar
+/// starts with its first member's name, so the name alone would offer the
+/// archive as the program and the spawn would fail with nothing to explain it.
+fn looks_like_program(head: &[u8]) -> bool {
+    const ELF: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+    const MACHINE: &[u8] = b"MZ";
+    head.starts_with(&ELF) || head.starts_with(MACHINE)
+}
+
 /// Whether the file is named like the program, which is the only file this
 /// process ever runs.
 ///
@@ -124,17 +148,21 @@ fn typed_path(typed: &Path, tree: &impl Tree) -> Scan {
 /// name that starts with the program's, carrying either no extension or the
 /// Windows one. An archive is not the program — `soloist_release_x86_64.tar`
 /// starts with the name too, and running it would produce nothing.
-fn named_like_program(path: &Path) -> bool {
+fn named_like_program(path: &Path, tree: &impl Tree) -> bool {
     let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
         return false;
     };
     if !stem.to_ascii_lowercase().starts_with(locate::NAME) {
         return false;
     }
-    match path.extension().and_then(OsStr::to_str) {
+    let named = match path.extension().and_then(OsStr::to_str) {
         None => true,
         Some(extension) => extension.eq_ignore_ascii_case("exe"),
-    }
+    };
+    named
+        && tree
+            .head(path)
+            .is_some_and(|head| looks_like_program(&head))
 }
 
 /// The program in `folder`, in a folder one level inside it, or among its files.
@@ -148,7 +176,7 @@ fn in_folder(folder: &Path, tree: &impl Tree) -> Option<PathBuf> {
     }
     for child in tree.children(folder) {
         if tree.is_file(&child) {
-            if named_like_program(&child) {
+            if named_like_program(&child, tree) {
                 return Some(child);
             }
             continue;
@@ -157,7 +185,7 @@ fn in_folder(folder: &Path, tree: &impl Tree) -> Option<PathBuf> {
             continue;
         }
         for nested in tree.children(&child) {
-            if tree.is_file(&nested) && named_like_program(&nested) {
+            if tree.is_file(&nested) && named_like_program(&nested, tree) {
                 return Some(nested);
             }
         }

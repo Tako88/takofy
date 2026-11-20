@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,13 @@ use crate::soloist::locate::name;
 struct FakeTree {
     files: BTreeSet<PathBuf>,
     folders: BTreeSet<PathBuf>,
+    bytes: BTreeMap<PathBuf, Vec<u8>>,
 }
+
+/// What an executable starts with on this platform.
+const ELF: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+/// What the archive does: a tar names its first member before anything else.
+const TAR: &[u8] = b"CHANGELOG.md";
 
 impl FakeTree {
     fn file(mut self, path: &str) -> Self {
@@ -22,9 +28,25 @@ impl FakeTree {
         self.folders.insert(PathBuf::from(path));
         self
     }
+
+    /// A file whose first bytes are `bytes`, so it is not a program.
+    fn blob(mut self, path: &str, bytes: &[u8]) -> Self {
+        self.files.insert(PathBuf::from(path));
+        self.bytes.insert(PathBuf::from(path), bytes.to_vec());
+        self
+    }
 }
 
 impl Tree for FakeTree {
+    fn head(&self, path: &Path) -> Option<Vec<u8>> {
+        if let Some(bytes) = self.bytes.get(path) {
+            return Some(bytes.clone());
+        }
+        // Every file a test names is a program unless it says otherwise: the
+        // ones that are not are the point of the tests that say so.
+        self.files.contains(path).then_some(ELF.to_vec())
+    }
+
     fn is_file(&self, path: &Path) -> bool {
         self.files.contains(path)
     }
@@ -263,6 +285,29 @@ fn the_archive_spotify_ships_names_the_program_after_the_archive() {
         ),
         Scan::Found(PathBuf::from("/home/x/Downloads/soloist_release_x86_64")),
         "the extracted program beside the archive is the program"
+    );
+}
+
+#[test]
+fn a_gzipped_archive_untarred_once_is_not_the_program() {
+    // Spotify's download is a gzip whose payload is a tar holding `soloist`.
+    // Unwrapping only the gzip leaves a file called `soloist_release_x86_64`,
+    // which starts with `CHANGELOG.md` and is not runnable however it is named.
+    let tree = FakeTree::default()
+        .folder("/home/x/Downloads")
+        .blob("/home/x/Downloads/soloist_release_x86_64", TAR);
+
+    assert_eq!(
+        scan(
+            None,
+            Some(OsStr::new("")),
+            Some(Path::new("/home/x/Downloads")),
+            &tree
+        ),
+        Scan::Missing {
+            searched_downloads: true
+        },
+        "a tar beside the download is not the program"
     );
 }
 
