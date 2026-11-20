@@ -37,6 +37,12 @@ jobs:
       - name: The lockfile did not move
         run: git diff --exit-code -- Cargo.lock
 
+      # A version bump rewrites Cargo.lock, and the Flatpak refuses a stamp that
+      # names another lockfile — at release time, which is the worst moment to
+      # find out. The same check runs here, on every push.
+      - name: The Flatpak source stamp follows the lockfile
+        run: sha256sum --quiet --check packaging/flatpak/cargo-sources.sha256
+
   windows:
     name: Windows build
     runs-on: windows-latest
