@@ -5,8 +5,10 @@
 //! caller's runtime, so the daemon's thread never needs one of its own.
 
 pub mod daemon;
+pub mod desk;
 pub mod launch;
 pub mod locate;
+pub mod scan;
 pub mod socket;
 
 use std::net::SocketAddr;
@@ -23,6 +25,7 @@ use takofy_core::soloist::discovery;
 use takofy_core::soloist::expiry::{self, Build};
 use takofy_core::soloist::frames::{Command, Frame, decode};
 use takofy_core::soloist::{Connection, SoloistFault, SoloistSound};
+use takofy_ui::message::{DaemonState, Freshness, SoloistUpdate, Update};
 
 use daemon::{Action, Daemon, Event, SPAWN_WAIT, State};
 
@@ -45,6 +48,13 @@ const AUTH_WAIT: Duration = Duration::from_secs(2);
 /// The thread's name, which is also how a warning says who it is.
 const THREAD: &str = "takofy-soloist";
 
+/// Where the machine publishes what it knows.
+///
+/// It is a closure rather than the bridge's notifier so this module owes the
+/// bridge nothing: the answer leaves on the same queue as the daemon's others,
+/// on a thread of its own.
+pub type Sink = Arc<dyn Fn(Update) + Send + Sync>;
+
 /// What the host reads from the preferences: the engine's own values only.
 #[derive(Debug, Clone)]
 pub struct SoloistPrefs {
@@ -65,6 +75,10 @@ enum Request {
     Sound {
         reply: SyncSender<Result<Connection, SoloistFault>>,
     },
+    /// Names where to publish what the machine knows, from now on.
+    Watch(Sink),
+    /// Starts the machine over from a new pin or key.
+    Recheck(Option<PathBuf>),
     Shutdown,
 }
 
@@ -106,6 +120,21 @@ impl SoloistHost {
         Ok((Box::new(sound) as Box<dyn Sound>, events))
     }
 
+    /// Names the place the machine publishes its state, and publishes the one
+    /// it already has.
+    pub fn watch(&self, sink: Sink) {
+        let _ = self.requests.send(Request::Watch(sink));
+    }
+
+    /// Starts the machine over, with a new pin in the preferences if one is
+    /// given.
+    ///
+    /// A live daemon is left alone: it owns the process a sound is already
+    /// playing through, so the change waits for the next start.
+    pub fn recheck(&self, path: Option<PathBuf>) {
+        let _ = self.requests.send(Request::Recheck(path));
+    }
+
     /// Stops the worker, and the daemon only if this window started it.
     pub fn shutdown(&self) {
         let _ = self.requests.send(Request::Shutdown);
@@ -139,6 +168,10 @@ struct Worker {
     connection: Option<Connection>,
     /// The sound request the machine is still working towards.
     pending: Option<SyncSender<Result<Connection, SoloistFault>>>,
+    /// Where the window hears what the machine knows, once it asked.
+    sink: Option<Sink>,
+    /// What was published last, so a repeat is not sent.
+    published: Option<Snapshot>,
 }
 
 impl Worker {
@@ -161,6 +194,8 @@ impl Worker {
             child: None,
             connection: None,
             pending: None,
+            sink: None,
+            published: None,
         }
     }
 
@@ -173,6 +208,12 @@ impl Worker {
                     self.daemon.retry();
                     self.pending = Some(reply);
                 }
+                Ok(Request::Watch(sink)) => {
+                    self.sink = Some(sink);
+                    // The sink is new, so whatever it holds is news to it.
+                    self.published = None;
+                }
+                Ok(Request::Recheck(path)) => self.recheck(path),
                 Ok(Request::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -182,6 +223,7 @@ impl Worker {
             self.advance(now);
             self.serve();
             self.settle();
+            self.publish();
         }
         self.stop_child();
     }
@@ -222,6 +264,37 @@ impl Worker {
             return;
         }
         self.daemon.event(Event::Located, Instant::now());
+    }
+
+    /// Starts over from a new pin or key, when that disturbs nothing.
+    fn recheck(&mut self, path: Option<PathBuf>) {
+        if !recheck_allowed(self.daemon.state()) {
+            return;
+        }
+        if let Some(path) = path {
+            self.prefs.path = Some(path);
+        }
+        self.stop_child();
+        self.connection = None;
+        self.daemon = Daemon::new(&self.prefs.name);
+        self.located = None;
+        self.build = Build::Unknown;
+        self.key = None;
+        self.begin();
+    }
+
+    /// Tells the window where the machine is, when that is news.
+    fn publish(&mut self) {
+        let Some(sink) = self.sink.clone() else {
+            return;
+        };
+        let snapshot = snapshot(self.daemon.state(), self.located.as_deref(), &self.build);
+        if self.published.as_ref() == Some(&snapshot) {
+            return;
+        }
+        let state = snapshot.daemon;
+        self.published = Some(snapshot);
+        sink(Update::Soloist(SoloistUpdate::Daemon(state)));
     }
 
     fn watch_child(&mut self) {
@@ -386,6 +459,72 @@ impl Worker {
             Ok(pid) => pid_alive(pid),
             Err(_) => false,
         }
+    }
+}
+
+/// What the window was told last.
+///
+/// The state is what crosses; the program and the build are here so a restart
+/// that found the same program is not announced twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Snapshot {
+    daemon: DaemonState,
+    program: Option<PathBuf>,
+    build: Freshness,
+}
+
+/// The snapshot of a machine in `state`, holding `program`.
+fn snapshot(state: State, program: Option<&Path>, build: &Build) -> Snapshot {
+    Snapshot {
+        daemon: mirror(state),
+        program: program.map(Path::to_path_buf),
+        build: freshness(*build),
+    }
+}
+
+/// Where the window draws the machine's own state.
+fn mirror(state: State) -> DaemonState {
+    match state {
+        State::Missing => DaemonState::Missing,
+        State::NotRunning => DaemonState::NotRunning,
+        State::Starting => DaemonState::Starting,
+        State::NoSocket => DaemonState::NoSocket,
+        State::Unpaired => DaemonState::Unpaired,
+        State::Expired => DaemonState::Expired,
+        State::Ready => DaemonState::Ready,
+        State::Adopted => DaemonState::Adopted,
+    }
+}
+
+/// Whether a restart may be asked for now.
+///
+/// A live machine owns the process a sound is already playing through, so a new
+/// pin or key waits for the next start rather than stopping it mid-track.
+fn recheck_allowed(state: State) -> bool {
+    may_restart(mirror(state))
+}
+
+/// The same rule, for a caller that only knows the mirror.
+pub(crate) fn may_restart(daemon: DaemonState) -> bool {
+    matches!(
+        daemon,
+        DaemonState::Missing
+            | DaemonState::NotRunning
+            | DaemonState::NoSocket
+            | DaemonState::Unpaired
+            | DaemonState::Expired
+    )
+}
+
+/// How usable a build is, as the window draws it.
+pub(crate) fn freshness(build: Build) -> Freshness {
+    match build {
+        Build::Unknown => Freshness::Unknown,
+        Build::Fresh => Freshness::Fresh,
+        Build::Expiring { days_left } => Freshness::Expiring {
+            days_left: u32::try_from(days_left.max(0)).unwrap_or(u32::MAX),
+        },
+        Build::Expired => Freshness::Expired,
     }
 }
 

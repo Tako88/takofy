@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use egui::{Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
+use egui::{Layout, Pos2, Rect, RichText, Role, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
 use takofy_model::{
     CoverSet, FollowedArtist, FollowedShow, PLAYLIST_NAME_MAX, PlaylistEntry, SavedAlbum,
 };
@@ -118,11 +118,19 @@ fn draw(
     let shown = kept.as_ref().map_or(total, Vec::len);
     announce(ui, shown, total, library.sidebar_kind.chosen(), head.field);
 
+    // The settings entry holds the column's foot, so the list ends above it
+    // rather than under it. A trail names a place in the library, and settings is
+    // not one, so the way in lives here (#81).
+    let width = band.width() - 2.0 * space::S2;
+    let foot = Rect::from_min_size(
+        Pos2::new(band.left() + space::S2, band.bottom() - FOOT_H),
+        Vec2::new(width, FOOT_H),
+    );
     let list = Rect::from_min_size(
         Pos2::new(band.left() + space::S2, head.top),
-        Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - head.top),
+        Vec2::new(width, (foot.top() - head.top).max(0.0)),
     );
-    rows(
+    let mut asked = rows(
         ui,
         list,
         library,
@@ -132,7 +140,82 @@ fn draw(
         drag,
         kept.as_deref(),
         free,
-    )
+    );
+    if settings_entry(ui, foot, library, tokens) {
+        // The page arms no read, so this answers nothing even in the column
+        // form; the drawer still closes because the row was picked.
+        asked.command = library.open(Page::Settings);
+        asked.picked = true;
+    }
+    asked
+}
+
+/// The foot's own height: one button and the padding above and below it.
+const FOOT_H: f32 = extent::BUTTON + 2.0 * space::S2;
+
+/// The way into the settings page: a rule, and one tracked word under it.
+///
+/// It sits below the lists rather than in the trail, because the trail names
+/// where in the library the window is and this page is not one of those places.
+fn settings_entry(ui: &mut Ui, rect: Rect, library: &Library, tokens: &Tokens) -> bool {
+    let rule = Rect::from_min_size(rect.min, Vec2::new(rect.width(), stroke::HAIRLINE));
+    ui.painter()
+        .rect_filled(rule, radius::NONE, tokens.palette.border);
+    let row = Rect::from_min_max(Pos2::new(rect.left(), rule.bottom()), rect.max);
+    if row.height() <= 0.0 || row.width() <= 0.0 {
+        return false;
+    }
+
+    let current = matches!(library.page(), Some(Page::Settings));
+    let slot = controls::slot(
+        ui,
+        Control::SettingsEntry,
+        Role::Button,
+        row,
+        "Settings",
+        tokens,
+        true,
+    );
+    // The same two washes every row of this column wears: the picked one is
+    // raised and ruled, and the pointer only hovers.
+    if current {
+        ui.painter()
+            .rect_filled(row, radius::SM, tokens.palette.surface_raised);
+        ui.painter().rect_filled(
+            Rect::from_min_size(row.min, Vec2::new(stroke::RULE, row.height())),
+            radius::SM,
+            tokens.palette.text,
+        );
+    } else if slot.hover > 0.0 {
+        ui.painter().rect_filled(
+            row,
+            radius::SM,
+            tokens.palette.row_hover.gamma_multiply(slot.hover),
+        );
+    }
+
+    let ink = if current {
+        tokens.palette.text
+    } else {
+        tokens.palette.text_muted
+    };
+    let label = recipe::spaced(
+        ui,
+        "SETTINGS",
+        egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        ink,
+        recipe::tracking_pts(text::XXS, tracking::WIDE),
+    );
+    ui.painter().galley(
+        Pos2::new(
+            row.left() + space::S2,
+            row.center().y - label.size().y / 2.0,
+        ),
+        label,
+        ink,
+    );
+
+    slot.response.clicked()
 }
 
 /// The four filters, in a fixed 2x2 block at the top of the sidebar.
@@ -326,6 +409,7 @@ fn name_field(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) {
                 cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
                 align: egui::Align2::LEFT_CENTER,
                 limit: PLAYLIST_NAME_MAX,
+                password: false,
             },
         )
     };
@@ -1344,6 +1428,7 @@ fn one(
                         cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
                         align: egui::Align2::LEFT_CENTER,
                         limit: PLAYLIST_NAME_MAX,
+                        password: false,
                     },
                 )
             };

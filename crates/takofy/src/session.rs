@@ -34,6 +34,7 @@ use crate::discovery::Outside;
 use crate::discovery::http::Http;
 use crate::discovery::lookup::{self, Spotify};
 use crate::soloist::SoloistHost;
+use crate::soloist::desk::Desk;
 use takofy_ui::prefs::SoundChoice;
 
 /// How long a rebuild waits for the dead session's player thread before going
@@ -512,6 +513,12 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         false
     }
 
+    /// The steps the settings page asks for, run beside the daemon, or `None`
+    /// when this host has no setup to answer for.
+    fn soloist_desk(&self) -> Option<Arc<Desk>> {
+        None
+    }
+
     fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     /// Ends the dead session: its engine, its streams and its player.
@@ -552,6 +559,8 @@ pub(crate) struct LiveSession {
     sound: SoundChoice,
     /// The daemon, when the engine is Soloist.
     soloist: Option<Arc<SoloistHost>>,
+    /// The settings page's steps, which prepare the setup under either engine.
+    desk: Option<Arc<Desk>>,
     /// The level as a percentage, kept so a daemon started later begins where
     /// the slider is.
     level: AtomicU16,
@@ -577,6 +586,7 @@ impl LiveSession {
             volume: Volume::default(),
             sound: SoundChoice::BuiltIn,
             soloist: None,
+            desk: None,
             level: AtomicU16::new(VOLUME_MAX),
             playable: AtomicBool::new(false),
             report: Mutex::new(None),
@@ -600,6 +610,13 @@ impl LiveSession {
     ) -> Self {
         self.sound = sound;
         self.soloist = soloist;
+        self
+    }
+
+    /// Hands in the setup the settings page drives, which exists under either
+    /// engine so a program and a key can be prepared before the choice is made.
+    pub(crate) fn with_desk(mut self, desk: Option<Arc<Desk>>) -> Self {
+        self.desk = desk;
         self
     }
 
@@ -1243,9 +1260,17 @@ impl SessionHost for LiveSession {
         self.sound == SoundChoice::Soloist
     }
 
+    fn soloist_desk(&self) -> Option<Arc<Desk>> {
+        self.desk.clone()
+    }
+
     async fn shutdown(self) -> Result<(), SessionError> {
         // Consuming the player is what joins its thread; the engine drops with
-        // the adapter. The daemon goes with the window that started it.
+        // the adapter. The daemon goes with the window that started it, and a
+        // pairing child would hold the data directory past the window.
+        if let Some(desk) = &self.desk {
+            desk.shutdown();
+        }
         if let Some(host) = &self.soloist {
             host.shutdown();
         }

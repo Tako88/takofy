@@ -1564,9 +1564,11 @@ fn the_reveal_scrolls_to_the_top_once() {
     let _ = window.frame(
         &mut transport,
         &mut queue,
+        // The column's foot holds the settings entry, so the wheel has to be
+        // pointed above it: the list ends where the foot begins.
         vec![egui::Event::PointerMoved(egui::pos2(
             area.center().x,
-            area.bottom() - 40.0,
+            area.center().y,
         ))],
     );
     let wheel = egui::Event::MouseWheel {

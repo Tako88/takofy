@@ -37,6 +37,7 @@ use takofy_core::receive::RECEIVE_LOG_TARGET;
 
 use crate::bridge::{LANDING_LOG_TARGET, STARTUP_LOG_TARGET};
 use crate::preferences::Loaded;
+use crate::soloist::desk::Desk;
 use crate::soloist::{SoloistHost, SoloistPrefs};
 use takofy_ui::cover::COVER_LOG_TARGET;
 use takofy_ui::message::Failure;
@@ -208,10 +209,11 @@ fn run_window(flags: &Flags) -> ExitCode {
         }
     };
     let engine = engine_of(&loaded);
+    let data_dir = soloist_data_dir();
     // The daemon is started only by the engine that uses it: a window on the
     // built-in player never runs a second sound path.
     let soloist = match engine.engine() {
-        SoundChoice::Soloist => soloist_data_dir().map(|dir| {
+        SoundChoice::Soloist => data_dir.clone().map(|dir| {
             Arc::new(SoloistHost::start(
                 runtime.handle().clone(),
                 SoloistPrefs {
@@ -224,11 +226,22 @@ fn run_window(flags: &Flags) -> ExitCode {
         }),
         SoundChoice::BuiltIn => None,
     };
+    // The setup's steps run beside the daemon, and under either engine: a
+    // program and a key are prepared before the choice is made.
+    let desk = data_dir.map(|dir| {
+        Arc::new(Desk::new(
+            Arc::new(SoloistKeychain),
+            dir,
+            engine.soloist_name().to_owned(),
+            soloist.clone(),
+        ))
+    });
     let host = match &outside {
         Some(outside) => session::LiveSession::new(cfg).with_outside(Arc::clone(outside)),
         None => session::LiveSession::new(cfg),
     }
-    .with_sound(engine.engine(), soloist);
+    .with_sound(engine.engine(), soloist)
+    .with_desk(desk);
     let (hidden, hidden_sync) = hidden_file::open();
     let (cached, snapshots) = snapshot::open();
 

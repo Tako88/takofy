@@ -5,13 +5,21 @@
 //! reach nothing else: no log line, no debug output, no error text.
 
 use std::fmt;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use takofy_core::credentials::SoloistKey;
 
 /// The address the daemon's own WebSocket binds to: the OS names the port.
 pub const WS_ADDR: &str = "127.0.0.1:0";
+
+/// How long `--version` may take before the program is given up on.
+pub const VERSION_WAIT: Duration = Duration::from_secs(5);
+
+/// How often a running `--version` is looked at.
+const VERSION_POLL: Duration = Duration::from_millis(25);
 
 /// A daemon command line, ready to be spawned.
 ///
@@ -44,17 +52,54 @@ impl Launch {
 
     /// Runs `--version` without the key and answers what it printed.
     pub fn version(exe: &Path) -> Result<String, VersionError> {
-        let output = Command::new(exe)
+        Self::version_within(exe, VERSION_WAIT)
+    }
+
+    /// Runs `--version`, and gives up on a program that will not finish.
+    ///
+    /// The file is one the listener named, so it may be anything at all: a
+    /// program that never exits is killed rather than holding the page that
+    /// asked.
+    pub fn version_within(exe: &Path, wait: Duration) -> Result<String, VersionError> {
+        let mut child = Command::new(exe)
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .output()
+            .spawn()
             .map_err(|error| VersionError::of(&error))?;
-        if !output.status.success() {
-            return Err(VersionError::Other);
+        let deadline = Instant::now()
+            .checked_add(wait)
+            .unwrap_or_else(Instant::now);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        return Err(VersionError::Other);
+                    }
+                    let mut printed = String::new();
+                    if let Some(mut stdout) = child.stdout.take() {
+                        stdout
+                            .read_to_string(&mut printed)
+                            .map_err(|_| VersionError::Other)?;
+                    }
+                    return Ok(printed);
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(VersionError::Other);
+                    }
+                    std::thread::sleep(VERSION_POLL);
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(VersionError::of(&error));
+                }
+            }
         }
-        String::from_utf8(output.stdout).map_err(|_| VersionError::Other)
     }
 
     #[cfg(test)]

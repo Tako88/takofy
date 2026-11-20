@@ -22,6 +22,7 @@ use takofy_ui::prefs::{Prefs, SoundChoice};
 use takofy_ui::queue::Queue;
 use takofy_ui::remote::react;
 use takofy_ui::report::Reporter;
+use takofy_ui::route::Page;
 use takofy_ui::signin::SignIn;
 use takofy_ui::theme::{Tokens, fonts, scroll, style};
 use takofy_ui::{layout, view};
@@ -490,6 +491,14 @@ impl eframe::App for TakofyApp {
         // A label want is not a command returned by the view: the shell may keep
         // only one of those, so the wants are drained from their own store.
         for command in self.library.releases.requests() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        // The settings page's asks are its state's outbox, drained here for the
+        // same reason: one frame may carry a scan, a key and a pairing. Entering
+        // the page is the setup's one retry, so the visit is told first.
+        let on_page = matches!(self.library.page(), Some(Page::Settings));
+        self.library.settings.visit(on_page);
+        for command in self.library.settings.take_outbox() {
             let _ = self.ui_end.commands.send(command);
         }
         for command in self.art.requests(now) {

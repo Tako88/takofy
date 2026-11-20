@@ -134,6 +134,7 @@ pub(super) fn show(ui: &mut Ui, field: Field<'_>, tokens: &Tokens) -> Edited {
             text,
             writing: false,
             wants_focus: clear_clicked || pressed,
+            password: false,
             font: egui::FontId::new(text::XS, fonts::sans(Weight::Regular)),
             hint: "",
             inset: egui::Margin {

@@ -68,6 +68,17 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::FilterPodcasts
                 | Control::SearchField
                 | Control::HomeSearch
+                | Control::SettingsEntry
+                | Control::EngineBuiltIn
+                | Control::EngineSoloist
+                | Control::OpenDownload
+                | Control::OpenKeyPage
+                | Control::RescanProgram
+                | Control::PathField
+                | Control::KeyField
+                | Control::StartPairing
+                | Control::StopPairing
+                | Control::AutoplaySwitch
         );
         assert_eq!(
             availability(control) == Availability::Ready,

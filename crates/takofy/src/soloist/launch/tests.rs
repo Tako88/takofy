@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use takofy_core::credentials::SoloistKey;
 
@@ -60,6 +61,15 @@ fn the_debug_output_names_nothing_but_the_type() {
 
     assert_eq!(printed, "Launch(..)");
     assert!(!printed.contains(SENTINEL), "the key must not be printed");
+}
+
+#[test]
+fn a_program_that_is_not_there_has_no_version() {
+    let error =
+        Launch::version_within(Path::new("/nonexistent/soloist"), Duration::from_millis(25))
+            .unwrap_err();
+
+    assert_eq!(error, VersionError::NotFound);
 }
 
 #[test]

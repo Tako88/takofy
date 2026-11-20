@@ -1,4 +1,7 @@
+use std::path::{Path, PathBuf};
+
 use takofy_core::soloist::Connection;
+use takofy_core::soloist::expiry::Build;
 use takofy_core::soloist::frames::Command;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -82,4 +85,68 @@ fn a_state_with_a_sound_in_it_answers_without_a_fault() {
     assert!(State::Ready.playable());
     assert!(State::Adopted.playable());
     assert!(!State::NoSocket.playable());
+}
+
+#[test]
+fn a_restart_is_allowed_only_when_no_daemon_is_live() {
+    use super::daemon::State;
+
+    for state in [State::Starting, State::Ready, State::Adopted] {
+        assert!(
+            !super::recheck_allowed(state),
+            "{state:?} is a live machine a sound may be talking to"
+        );
+    }
+    for state in [
+        State::Missing,
+        State::NotRunning,
+        State::NoSocket,
+        State::Unpaired,
+        State::Expired,
+    ] {
+        assert!(
+            super::recheck_allowed(state),
+            "{state:?} is idle or settled"
+        );
+    }
+}
+
+#[test]
+fn the_snapshot_names_the_state_the_machine_is_in() {
+    use super::daemon::State;
+    use takofy_ui::message::DaemonState;
+
+    for (state, expected) in [
+        (State::Missing, DaemonState::Missing),
+        (State::NotRunning, DaemonState::NotRunning),
+        (State::Starting, DaemonState::Starting),
+        (State::NoSocket, DaemonState::NoSocket),
+        (State::Unpaired, DaemonState::Unpaired),
+        (State::Expired, DaemonState::Expired),
+        (State::Ready, DaemonState::Ready),
+        (State::Adopted, DaemonState::Adopted),
+    ] {
+        let snapshot = super::snapshot(state, Some(Path::new("/opt/soloist")), &Build::Fresh);
+
+        assert_eq!(snapshot.daemon, expected, "{state:?}");
+        assert_eq!(snapshot.program, Some(PathBuf::from("/opt/soloist")));
+    }
+}
+
+#[test]
+fn a_build_is_named_the_way_the_page_names_it() {
+    use takofy_ui::message::Freshness;
+
+    assert_eq!(super::freshness(Build::Unknown), Freshness::Unknown);
+    assert_eq!(super::freshness(Build::Fresh), Freshness::Fresh);
+    assert_eq!(super::freshness(Build::Expired), Freshness::Expired);
+    assert_eq!(
+        super::freshness(Build::Expiring { days_left: 9 }),
+        Freshness::Expiring { days_left: 9 }
+    );
+    assert_eq!(
+        super::freshness(Build::Expiring { days_left: -3 }),
+        Freshness::Expiring { days_left: 0 },
+        "a day count the page draws is never negative"
+    );
 }

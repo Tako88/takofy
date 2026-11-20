@@ -59,7 +59,7 @@ pub fn find(
 }
 
 /// The file name, with the suffix Windows needs on a `PATH` entry.
-fn name() -> &'static str {
+pub(crate) fn name() -> &'static str {
     if cfg!(windows) { "soloist.exe" } else { NAME }
 }
 

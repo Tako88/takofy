@@ -104,11 +104,26 @@ pub enum Control {
     DiscoverySwitch,
     /// The chance shelf's quiet square, which draws the library again.
     DrawAnother,
+    /// The sidebar's foot row, which opens the settings page (#81).
+    SettingsEntry,
+    /// The settings page: the two engines, the setup's steps, and the one
+    /// playback switch (#81).
+    EngineBuiltIn,
+    EngineSoloist,
+    OpenDownload,
+    OpenKeyPage,
+    RescanProgram,
+    ChangeProgram,
+    PathField,
+    KeyField,
+    StartPairing,
+    StopPairing,
+    AutoplaySwitch,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 75] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -171,6 +186,18 @@ impl Control {
         Self::DiscoverySwitch,
         Self::DrawAnother,
         Self::HomeSearch,
+        Self::SettingsEntry,
+        Self::EngineBuiltIn,
+        Self::EngineSoloist,
+        Self::OpenDownload,
+        Self::OpenKeyPage,
+        Self::RescanProgram,
+        Self::ChangeProgram,
+        Self::PathField,
+        Self::KeyField,
+        Self::StartPairing,
+        Self::StopPairing,
+        Self::AutoplaySwitch,
         Self::Authorize,
     ];
 }
@@ -281,6 +308,24 @@ pub fn availability(control: Control) -> Availability {
         Control::ReleaseLike => Availability::Ready, // #35
         Control::ReleaseMore => Availability::Ready, // #35
         Control::EpisodeOrder => Availability::Ready,
+
+        // The settings page draws every control it names, and each press reaches
+        // the host (#81).
+        Control::SettingsEntry
+        | Control::EngineBuiltIn
+        | Control::EngineSoloist
+        | Control::OpenDownload
+        | Control::OpenKeyPage
+        | Control::RescanProgram
+        | Control::PathField
+        | Control::KeyField
+        | Control::StartPairing
+        | Control::StopPairing
+        | Control::AutoplaySwitch => Availability::Ready,
+        // The ready frame's one exit asks the setup for the program field again,
+        // which the settings state cannot express yet, so it is drawn present and
+        // inert.
+        Control::ChangeProgram => Availability::Waiting,
 
         // The sign-in card's one control; the state decides whether it acts.
         Control::Authorize => Availability::Ready,
