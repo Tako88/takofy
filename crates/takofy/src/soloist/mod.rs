@@ -293,6 +293,11 @@ impl Worker {
             return;
         }
         let state = snapshot.daemon;
+        // A state change is the only evidence a listener's machine gives about
+        // why nothing plays; it is a kind, never a path, a key or a URI.
+        if self.published.as_ref().map(|last| last.daemon) != Some(state) {
+            log::info!(target: SOLOIST_LOG_TARGET, "soloist: {state:?}");
+        }
         self.published = Some(snapshot);
         sink(Update::Soloist(SoloistUpdate::Daemon(state)));
     }
