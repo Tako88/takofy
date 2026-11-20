@@ -14,6 +14,7 @@ mod recovery;
 mod rename;
 mod rootlist;
 mod session;
+mod soloist;
 mod test_support;
 mod track_page;
 mod transfer;

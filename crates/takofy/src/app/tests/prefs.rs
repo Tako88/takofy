@@ -5,6 +5,7 @@ use crate::preferences::PrefsWriter;
 use eframe::App;
 use std::sync::{Arc, Mutex};
 use takofy_ui::prefs::QUIET;
+use takofy_ui::prefs::SoundChoice;
 use takofy_ui::repeat::Repeat;
 
 type PrefsLog = Arc<Mutex<Vec<Prefs>>>;
@@ -237,6 +238,44 @@ fn an_off_discovery_setting_is_written_back_off() {
 }
 
 #[test]
+fn the_sound_path_survives_a_write_back() {
+    let (log, sink) = recording();
+    let written = Prefs::parse(
+        "volume=40\nengine=soloist\nsoloist_path=/opt/soloist/soloist\nsoloist_name=Desk\n",
+    )
+    .expect("valid prefs");
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+    assert!(
+        app.transport.volume.set_fraction(0.6),
+        "arrange: the level moved, so a write is owed"
+    );
+
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    let saved = log.lock().expect("the sink log").clone();
+    assert_eq!(saved.len(), 1, "the change was written once");
+    for prefs in &saved {
+        assert_eq!(
+            prefs.engine(),
+            SoundChoice::Soloist,
+            "a level change must not drop the chosen engine"
+        );
+        assert_eq!(
+            prefs.soloist_path(),
+            Some("/opt/soloist/soloist"),
+            "nor forget the program it runs"
+        );
+        assert_eq!(
+            prefs.soloist_name(),
+            "Desk",
+            "nor the name its daemon announces"
+        );
+    }
+}
+
+#[test]
 fn an_untouched_session_never_writes() {
     let (log, sink) = recording();
     let written = Prefs::parse("volume=40\nshuffle=true\nrepeat=all\n").expect("valid prefs");
@@ -259,4 +298,61 @@ fn an_untouched_session_never_writes() {
         log.lock().expect("the sink log").is_empty(),
         "nothing changed, so nothing is written"
     );
+}
+
+#[test]
+fn choosing_an_engine_writes_it_down() {
+    let (log, sink) = recording();
+    let written = Prefs::default();
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+    assert_eq!(
+        app.library.settings.chosen(),
+        SoundChoice::BuiltIn,
+        "arrange: a fresh window plays through the built-in player"
+    );
+
+    app.library.settings.choose(SoundChoice::Soloist);
+    assert!(
+        app.transport.volume.set_fraction(0.4),
+        "arrange: a change is owed, so the file is written"
+    );
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    let saved = log.lock().expect("the sink log").clone();
+    assert!(!saved.is_empty(), "the settled value reached the file");
+    for prefs in &saved {
+        assert_eq!(
+            prefs.engine(),
+            SoundChoice::Soloist,
+            "the chosen engine is the one the next start reads"
+        );
+    }
+}
+
+#[test]
+fn a_file_that_chose_soloist_draws_its_row_chosen() {
+    let (log, sink) = recording();
+    let written = Prefs::parse("engine=soloist\nsoloist_path=/opt/soloist\n").expect("valid prefs");
+    let (mut app, _received) =
+        test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+
+    assert_eq!(
+        app.library.settings.chosen(),
+        SoundChoice::Soloist,
+        "the page starts from the file rather than from the defaults"
+    );
+
+    assert!(app.transport.volume.set_fraction(0.8));
+    App::on_exit(&mut app, None);
+    drop(app);
+
+    for prefs in log.lock().expect("the sink log").iter() {
+        assert_eq!(
+            prefs.engine(),
+            SoundChoice::Soloist,
+            "an untouched page must not downgrade the file"
+        );
+    }
 }

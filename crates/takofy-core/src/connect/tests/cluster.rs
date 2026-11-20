@@ -297,3 +297,25 @@ fn a_holder_missing_from_the_roster_is_still_the_holder() {
     assert_eq!(view.holder.as_deref(), Some("ghost"));
     assert_eq!(ids(&view), ["phone"]);
 }
+
+#[test]
+fn the_configured_sound_name_is_this_windows_own_device() {
+    assert!(is_own_sound_device("Takofy Soloist", "Takofy Soloist"));
+    assert!(
+        !is_own_sound_device("Takofy Soloist", "Another name"),
+        "another device's name is not this window"
+    );
+    assert!(
+        !is_own_sound_device("Takofy", "Takofy Soloist"),
+        "the built-in controller keeps its own name"
+    );
+}
+
+#[test]
+fn an_unset_sound_name_owns_nothing() {
+    assert!(
+        !is_own_sound_device("", ""),
+        "an empty name must not match an unnamed device"
+    );
+    assert!(!is_own_sound_device("Takofy Soloist", "   "));
+}

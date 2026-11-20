@@ -3,6 +3,7 @@
 use super::super::*;
 use super::test_support::*;
 
+use super::super::drift::Drift;
 use crate::message::Failure;
 
 /// One track row, whose address is the kind a radio continues from.
@@ -600,4 +601,132 @@ fn an_answer_to_an_ask_that_never_went_out_is_ignored() {
     queue.land_drift(1, &fresh(2));
 
     assert_eq!(order(&queue), before, "an unanswered ask grew the queue");
+}
+
+#[test]
+fn an_autoplay_queue_asks_as_it_always_has() {
+    let (mut queue, _transport) = tuned(6, 5);
+    assert!(queue.autoplay(), "a fresh queue starts with autoplay on");
+
+    assert!(
+        matches!(
+            queue.drift_wants(),
+            Some(Command::ContinueRadio { ask: 1, .. })
+        ),
+        "autoplay on left the queue with nothing to continue it"
+    );
+}
+
+#[test]
+fn autoplay_off_stops_an_ordinary_queue_at_its_end() {
+    let (mut queue, _transport) = tuned(6, 5);
+    queue.set_autoplay(false);
+
+    assert_eq!(
+        queue.drift_wants(),
+        None,
+        "a queue with autoplay off asked for more"
+    );
+    assert_eq!(
+        queue.drift,
+        Drift::Ready,
+        "the queue stopped asking rather than running dry, so the switch is not one-way"
+    );
+}
+
+#[test]
+fn turning_autoplay_back_on_lets_the_queue_ask() {
+    let (mut queue, _transport) = tuned(6, 5);
+    queue.set_autoplay(false);
+    assert_eq!(queue.drift_wants(), None);
+
+    queue.set_autoplay(true);
+
+    assert!(
+        matches!(
+            queue.drift_wants(),
+            Some(Command::ContinueRadio { ask: 1, .. })
+        ),
+        "the refused ask spent a token"
+    );
+}
+
+#[test]
+fn an_answer_landing_with_autoplay_off_grows_nothing() {
+    let (mut queue, _transport) = tuned(8, 5);
+    assert_eq!(wanted(&mut queue).0, 1);
+    let before = order(&queue);
+
+    queue.set_autoplay(false);
+    queue.land_drift(1, &fresh(2));
+
+    assert_eq!(order(&queue), before, "an answer grew a stopped queue");
+    assert_eq!(
+        queue.drift,
+        Drift::Ready,
+        "the landing left the queue asked"
+    );
+    assert_eq!(
+        queue.drift_wants(),
+        None,
+        "a landing re-armed the queue it was supposed to stop"
+    );
+}
+
+#[test]
+fn autoplay_off_still_lets_repeat_suppress_the_ask() {
+    for mode in [Repeat::One, Repeat::All] {
+        let (mut queue, _transport) = tuned(6, 4);
+        queue.set_autoplay(false);
+        queue.set_repeat(mode);
+
+        assert_eq!(queue.drift_wants(), None, "a looping queue asked: {mode:?}");
+        assert_eq!(queue.drift, Drift::Ready, "a loop spent the mark: {mode:?}");
+    }
+}
+
+#[test]
+fn a_station_still_asks_with_autoplay_off() {
+    let (mut queue, _transport) = tuned(6, 5);
+    queue.set_station(true);
+    queue.set_autoplay(false);
+
+    assert!(
+        matches!(
+            queue.drift_wants(),
+            Some(Command::ContinueRadio { ask: 1, .. })
+        ),
+        "autoplay off ended a station"
+    );
+}
+
+#[test]
+fn a_station_lands_an_answer_with_autoplay_off() {
+    let (mut queue, _transport) = tuned(8, 5);
+    queue.set_station(true);
+    queue.set_autoplay(false);
+    assert_eq!(wanted(&mut queue).0, 1);
+
+    queue.land_drift(1, &fresh(2));
+
+    let mut expected = uris_of(&radio_tracks(8));
+    expected.extend(uris_of(&fresh(2)));
+    assert_eq!(order(&queue), expected, "a station dropped its answer");
+}
+
+#[test]
+fn a_new_start_ends_the_station() {
+    let (mut queue, mut transport) = tuned(6, 5);
+    queue.set_station(true);
+    queue.set_autoplay(false);
+
+    let tracks = radio_tracks(6);
+    assert!(queue.start(&tracks, 0, None, &mut transport).is_some());
+    assert!(queue.jump(5, &mut transport).is_some());
+
+    assert_eq!(
+        queue.drift_wants(),
+        None,
+        "the rows a later start put here were still a station"
+    );
 }

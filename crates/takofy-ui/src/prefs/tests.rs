@@ -24,6 +24,7 @@ fn prefs_round_trip() {
                             shuffle,
                             repeat,
                             discovery,
+                            ..Prefs::default()
                         };
                         assert_eq!(
                             Prefs::parse(&prefs.render()),
@@ -41,8 +42,8 @@ fn prefs_round_trip() {
 fn default_prefs_render_the_documented_file() {
     assert_eq!(
         Prefs::default().render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\n",
-        "the file is five fixed lines in a fixed order with a trailing newline"
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\nautoplay=true\ndiscovery=true\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
+        "the file is one fixed line per key in a fixed order with a trailing newline"
     );
 }
 
@@ -52,8 +53,8 @@ fn a_discovery_off_round_trips() {
 
     assert_eq!(
         off.render(),
-        "volume=100\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=false\n",
-        "the fifth value is written last"
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\nautoplay=true\ndiscovery=false\nengine=builtin\nsoloist_path=\nsoloist_name=Takofy\n",
+        "the discovery value keeps its place ahead of the sound keys"
     );
     assert_eq!(
         Prefs::parse(&off.render()),
@@ -73,6 +74,66 @@ fn a_file_without_the_discovery_key_reads_it_on() {
         prefs(80).discovery(),
         "the default is the setting on, so a missing line adds nothing rather than removing it"
     );
+}
+
+#[test]
+fn autoplay_is_on_by_default() {
+    assert!(
+        Prefs::default().autoplay(),
+        "a value built without the setting keeps autoplay on"
+    );
+    assert_eq!(
+        Prefs::parse("volume=80\n").map(|prefs| prefs.autoplay()),
+        Ok(true),
+        "a file written before the key existed keeps the documented default"
+    );
+}
+
+#[test]
+fn autoplay_round_trips() {
+    for autoplay in [true, false] {
+        let prefs = Prefs {
+            autoplay,
+            ..Prefs::default()
+        };
+
+        assert!(
+            prefs.render().contains(&format!("autoplay={autoplay}\n")),
+            "the file spells the value it holds: {autoplay}"
+        );
+        assert_eq!(
+            Prefs::parse(&prefs.render()),
+            Ok(prefs.clone()),
+            "a rendered file parses back to the value it came from: {autoplay}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_autoplay_value_refuses_the_whole_file() {
+    let refusal = Prefs::parse("volume=80\nautoplay=maybe\n")
+        .expect_err("a value outside the table is refused");
+
+    assert_eq!(refusal.line, 2, "the refused line is named");
+    assert_eq!(
+        refusal.reason,
+        Reason::BadValue(Key::Autoplay),
+        "the key at fault is named"
+    );
+    assert_eq!(
+        refusal.to_string(),
+        "line 2: bad value for `autoplay`",
+        "the message names the line and the key, and nothing else"
+    );
+}
+
+#[test]
+fn a_duplicate_autoplay_key_is_refused() {
+    let refusal = Prefs::parse("autoplay=true\nautoplay=false\n")
+        .expect_err("two values for one key have no honest winner");
+
+    assert_eq!(refusal.line, 2, "the second line is the duplicate");
+    assert_eq!(refusal.reason, Reason::Duplicate(Key::Autoplay));
 }
 
 #[test]
@@ -346,6 +407,30 @@ fn each_reason_has_its_own_message() {
             Reason::Duplicate(Key::Discovery),
             "line 3: `discovery` appears twice",
         ),
+        (
+            Reason::BadValue(Key::Engine),
+            "line 3: bad value for `engine`",
+        ),
+        (
+            Reason::BadValue(Key::SoloistPath),
+            "line 3: bad value for `soloist_path`",
+        ),
+        (
+            Reason::BadValue(Key::SoloistName),
+            "line 3: bad value for `soloist_name`",
+        ),
+        (
+            Reason::Duplicate(Key::Engine),
+            "line 3: `engine` appears twice",
+        ),
+        (
+            Reason::Duplicate(Key::SoloistPath),
+            "line 3: `soloist_path` appears twice",
+        ),
+        (
+            Reason::Duplicate(Key::SoloistName),
+            "line 3: `soloist_name` appears twice",
+        ),
     ] {
         assert_eq!(
             refusal(3, reason).to_string(),
@@ -450,9 +535,43 @@ fn prefs_of_reads_a_volume_and_a_queue() {
             shuffle: true,
             repeat: Repeat::One,
             discovery: true,
+            ..Prefs::default()
         },
         "the file records the level behind the lid and the queue's modes"
     );
+}
+
+#[test]
+fn prefs_of_records_the_autoplay_setting() {
+    let mut queue = Queue::seeded(5);
+    queue.set_autoplay(false);
+
+    let saved = Prefs::of(&Volume::muted_at(70), &queue);
+
+    assert!(
+        !saved.autoplay(),
+        "the file records the switch the queue holds"
+    );
+    assert_eq!(
+        Prefs::parse(&saved.render()),
+        Ok(saved.clone()),
+        "what `of` records is what `parse` reads back"
+    );
+}
+
+#[test]
+fn seed_queue_restores_the_autoplay_setting() {
+    let saved = Prefs {
+        autoplay: false,
+        ..Prefs::default()
+    };
+
+    let mut queue = Queue::seeded(3);
+    assert!(queue.autoplay(), "a fresh queue starts with autoplay on");
+
+    saved.seed_queue(&mut queue);
+
+    assert!(!queue.autoplay(), "the saved switch comes back");
 }
 
 #[test]
@@ -483,6 +602,7 @@ fn prefs_volume_and_seed_queue_reproduce_the_saved_state() {
         shuffle: true,
         repeat: Repeat::All,
         discovery: true,
+        ..Prefs::default()
     };
 
     let volume = saved.volume();
@@ -759,6 +879,213 @@ fn flush_clears_the_pending_candidate() {
         Some(QUIET),
         "and it arms a window of its own"
     );
+}
+
+#[test]
+fn the_built_in_engine_is_the_default() {
+    assert_eq!(
+        SoundChoice::default(),
+        SoundChoice::BuiltIn,
+        "a file that never chose an engine keeps the one Takofy ships"
+    );
+    assert_eq!(
+        Prefs::default().engine(),
+        SoundChoice::BuiltIn,
+        "and so does a value built without one"
+    );
+}
+
+#[test]
+fn the_daemon_is_named_what_the_listener_looks_for() {
+    // One name in the phone's device list is worth more than a disambiguated
+    // one, and the window announces nothing while this engine is chosen.
+    assert_eq!(
+        Prefs::default().soloist_name(),
+        "Takofy",
+        "the daemon carries the app's own name, not a qualified one"
+    );
+}
+
+#[test]
+fn a_file_without_the_sound_keys_reads_their_defaults() {
+    let parsed = Prefs::parse("volume=80\nmute=false\nshuffle=false\nrepeat=off\ndiscovery=true\n")
+        .expect("a file written before the sound keys existed");
+
+    assert_eq!(parsed.engine(), SoundChoice::BuiltIn, "the built-in engine");
+    assert_eq!(parsed.soloist_path(), None, "no path to a program");
+    assert_eq!(
+        parsed.soloist_name(),
+        "Takofy",
+        "and the name the daemon announces"
+    );
+}
+
+#[test]
+fn every_sound_setting_round_trips() {
+    for engine in [SoundChoice::BuiltIn, SoundChoice::Soloist] {
+        for path in [None, Some("/opt/soloist/soloist")] {
+            for name in ["Takofy", "Desk"] {
+                let prefs = Prefs::default().with_soloist(engine, path, name);
+
+                assert_eq!(prefs.engine(), engine, "the engine comes back");
+                assert_eq!(prefs.soloist_path(), path, "the path comes back");
+                assert_eq!(prefs.soloist_name(), name, "the name comes back");
+                assert_eq!(
+                    Prefs::parse(&prefs.render()),
+                    Ok(prefs.clone()),
+                    "a rendered file parses back to the value it came from: {engine:?} {path:?} {name:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_sound_keys_follow_the_older_ones_in_a_fixed_order() {
+    let prefs =
+        Prefs::default().with_soloist(SoundChoice::Soloist, Some("/usr/bin/soloist"), "Desk");
+
+    assert_eq!(
+        prefs.render(),
+        "volume=100\nmute=false\nshuffle=false\nrepeat=off\nautoplay=true\ndiscovery=true\nengine=soloist\nsoloist_path=/usr/bin/soloist\nsoloist_name=Desk\n",
+        "the older values keep their place and the sound keys follow in this order"
+    );
+}
+
+#[test]
+fn an_unset_path_renders_empty_and_reads_back_unset() {
+    let prefs = Prefs::default();
+
+    assert!(
+        prefs.render().contains("soloist_path=\n"),
+        "an unset path is an empty value, not a missing line"
+    );
+    assert_eq!(
+        Prefs::parse(&prefs.render()),
+        Ok(prefs),
+        "an empty path is no path, so it round-trips"
+    );
+}
+
+#[test]
+fn an_unknown_engine_word_is_refused() {
+    for word in ["librespot", "Soloist", "built-in", "true", ""] {
+        let text = format!("volume=80\nengine={word}\n");
+        let refusal = Prefs::parse(&text).expect_err("a value outside the table is refused");
+
+        assert_eq!(refusal.line, 2, "the refused line is named: {word:?}");
+        assert_eq!(
+            refusal.reason,
+            Reason::BadValue(Key::Engine),
+            "an engine is spelled exactly as the table: {word:?}"
+        );
+        assert_eq!(
+            refusal.to_string(),
+            "line 2: bad value for `engine`",
+            "the message names the line and the key, and nothing else"
+        );
+    }
+}
+
+#[test]
+fn an_empty_device_name_is_refused() {
+    let refusal =
+        Prefs::parse("soloist_name=\n").expect_err("a daemon must announce a name to be picked");
+
+    assert_eq!(refusal.line, 1, "the refused line is named");
+    assert_eq!(
+        refusal.reason,
+        Reason::BadValue(Key::SoloistName),
+        "an empty name is not a name"
+    );
+}
+
+#[test]
+fn a_refused_path_never_prints_the_value() {
+    let refusal = Prefs::parse("soloist_path=/opt/secret-9\nsoloist_path=/opt/other\n")
+        .expect_err("two values for one key have no honest winner");
+
+    assert_eq!(
+        refusal.to_string(),
+        "line 2: `soloist_path` appears twice",
+        "the message names the line and the key, and nothing else"
+    );
+    assert!(
+        !refusal.to_string().contains("secret"),
+        "the text the user wrote is never quoted back"
+    );
+}
+
+#[test]
+fn a_value_of_two_lines_is_never_written() {
+    let prefs =
+        Prefs::default().with_soloist(SoundChoice::Soloist, Some("/opt/a\nb"), "Desk\nExtra");
+
+    assert_eq!(
+        prefs.soloist_path(),
+        None,
+        "a path that is not one line is not a path"
+    );
+    assert_eq!(
+        prefs.soloist_name(),
+        "Takofy",
+        "a name that is not one line keeps the one already there"
+    );
+    assert_eq!(
+        prefs.render().lines().count(),
+        Key::ALL.len(),
+        "the file stays one value per line"
+    );
+}
+
+#[test]
+fn an_empty_name_keeps_the_one_already_there() {
+    let prefs = Prefs::default().with_soloist(SoundChoice::Soloist, None, "");
+
+    assert_eq!(
+        prefs.soloist_name(),
+        "Takofy",
+        "an empty name is no name, so the default stands"
+    );
+}
+
+#[test]
+fn a_changed_path_settles_before_it_is_written() {
+    let written = Prefs::default();
+    let mut settle = Settle::new(written.clone());
+    let base = Instant::now();
+    let changed =
+        written
+            .clone()
+            .with_soloist(SoundChoice::BuiltIn, Some("/opt/soloist"), "Takofy");
+
+    assert_ne!(
+        changed, written,
+        "the path is part of what a frame compares"
+    );
+    assert_eq!(
+        settle.observe(base, &changed),
+        None,
+        "no write happens on the frame the path changes"
+    );
+    assert_eq!(
+        settle.observe(base + QUIET, &changed),
+        Some(changed.clone()),
+        "the path at rest is written once"
+    );
+}
+
+#[test]
+fn no_preference_key_holds_a_secret() {
+    for key in Key::ALL {
+        let name = key.name();
+        for needle in ["key", "secret", "token", "password", "credential", "auth"] {
+            assert!(
+                !name.contains(needle),
+                "`{name}` must not name a place for a secret"
+            );
+        }
+    }
 }
 
 #[test]

@@ -84,6 +84,7 @@ use crate::discovery::{LOOKUP_DEADLINE, MAX_CONCURRENT_LOOKUPS};
 use crate::playhead::ResumePoint;
 use crate::recovery::{Attempt, Change, Pacing, Recovery};
 use crate::session::{Discover, Retired, SessionError, SessionHost, stop_or};
+use crate::soloist::Sink;
 
 /// What the task received from the select, once the borrow on `stop` is gone.
 enum Event {
@@ -136,6 +137,8 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     // A playback drain names the generation whose failure it judged, so a
     // signal from a retired drain cannot start a rebuild for the live one.
     let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Read before the host moves into the task, because the drain needs it.
+    let external = host.sounds_externally();
     let slot = WakeSlot::default();
     let startup = Arc::new(Startup::new());
     let notifier = Notifier {
@@ -174,6 +177,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let mut token: Option<AccessToken> = None;
         let mut recovery = Recovery::new(pacing);
         let mut drains = Drains::new(signal_tx);
+        drains.playhead.set_suppress_suspect(external);
         // Whether an engine is up. A dead engine is still up until it is
         // retired, and a retired one is gone even though the account is signed
         // in.
@@ -214,6 +218,11 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>> = Arc::new(Mutex::new(HashSet::new()));
         let mut cover_tasks = JoinSet::new();
         let mut lookups = Lookups::new();
+        // The settings page draws the daemon's own state, so the watch starts
+        // with the window rather than with the first step pressed.
+        if let Some(desk) = host.soloist_desk() {
+            desk.watch(soloist_sink(&task_notifier));
+        }
         // The walk a reload announced and the labels have not answered yet. It
         // is taken at the next turn of the loop, so a write cannot land between
         // the list and its names.
@@ -708,6 +717,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     | Command::LabelSaved { .. }
                     | Command::Fetch { .. }
                     | Command::Report(_)
+                    | Command::Soloist(_)
                     | Command::Volume { .. }
                     | Command::Answer { .. }
                     | Command::Pause
@@ -944,7 +954,24 @@ fn serve_instant<H: SessionHost>(
             spawn_lookup(host, notifier, parts.lookups, Asked::Seed(seed))
         }
         Immediate::Dig { ask } => spawn_lookup(host, notifier, parts.lookups, Asked::Ring(ask)),
+        // The desk answers from threads of its own, long after this command is
+        // served: a `Watch` goes out at the window's first frame.
+        Immediate::Soloist(ask) => match host.soloist_desk() {
+            Some(desk) => desk.ask(ask, soloist_sink(notifier)),
+            None => log::info!("soloist: this window has no setup to ask"),
+        },
     }
+}
+
+/// Where one Soloist answer goes: the queue every other update leaves on.
+///
+/// The desk holds the sink for the session and calls it from threads that outlive
+/// the command, so it gets a clone of the notifier rather than a borrow of it.
+fn soloist_sink(notifier: &Notifier) -> Sink {
+    let notifier = notifier.clone();
+    Arc::new(move |update: Update| {
+        notifier.send(update);
+    })
 }
 
 /// The lookups the loop has running: their tasks, the cap on how many run at

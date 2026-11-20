@@ -5,7 +5,11 @@ use std::sync::mpsc::channel;
 use takofy_model::home::{SeedKind, StationSeed};
 use takofy_model::{CoverImage, CoverUrl, TrackEntry};
 use takofy_ui::library::Load;
-use takofy_ui::message::{Failure, TransportUpdate};
+use takofy_ui::message::{
+    DaemonState, Facts, Failure, Freshness, KeyState, SoloistAsk, SoloistUpdate, TransportUpdate,
+};
+use takofy_ui::prefs::SoundChoice;
+use takofy_ui::settings::{RowStatus, Step};
 
 #[test]
 fn wall_clock_ms_is_within_a_minute_of_the_system_clock() {
@@ -102,6 +106,79 @@ fn drain_feeds_the_transport() {
     assert!(commands.is_empty());
     assert_eq!(transport.state, TransportState::Playing);
     assert_eq!(transport.position_ms, 9);
+}
+
+#[test]
+fn drain_feeds_the_settings_page() {
+    let (tx, rx) = channel();
+    let mut state = SignIn::SignedIn;
+    let mut library = Library::default();
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    let mut devices = Devices::default();
+    tx.send(Update::Soloist(SoloistUpdate::Facts(Facts {
+        program: Some("/opt/soloist/soloist".to_owned()),
+        build: Freshness::Fresh,
+        built: None,
+        expires: None,
+        key: KeyState::Stored,
+        looked_in_downloads: false,
+    })))
+    .expect("send");
+    tx.send(Update::Soloist(SoloistUpdate::Daemon(DaemonState::Ready)))
+        .expect("send");
+
+    let commands = drain(
+        &rx,
+        &mut state,
+        &mut library,
+        &mut transport,
+        &mut queue,
+        &mut devices,
+        &mut Art::default(),
+        &mut Playclock::at(Instant::now()),
+    );
+
+    assert!(commands.is_empty());
+    assert_eq!(library.settings.paired(), Some(true));
+    assert_eq!(library.settings.status(), RowStatus::ReadyPaired);
+    assert_eq!(
+        library.settings.steps(),
+        [Step::Done; 3],
+        "a found program, a stored key and a ready daemon are the setup done"
+    );
+}
+
+#[test]
+fn a_settings_press_leaves_the_window_as_a_command() {
+    let (mut app, mut received) = idle_window();
+    app.library.settings.choose(SoundChoice::Soloist);
+    app.library.settings.submit_path();
+
+    let ctx = window_context();
+    let _ = ui_frame(&mut app, &ctx);
+
+    assert_eq!(
+        take_commands(&mut received),
+        vec![Command::Soloist(SoloistAsk::Scan { path: None })],
+        "the page collects its asks and the frame hands them on"
+    );
+}
+
+#[test]
+fn the_settings_page_asks_for_a_scan_when_it_opens() {
+    let (mut app, mut received) = idle_window();
+    app.library.settings.choose(SoundChoice::Soloist);
+    app.library.open(Page::Settings);
+
+    let ctx = window_context();
+    let _ = ui_frame(&mut app, &ctx);
+
+    assert_eq!(
+        take_commands(&mut received),
+        vec![Command::Soloist(SoloistAsk::Scan { path: None })],
+        "opening the page is the setup's one retry"
+    );
 }
 
 #[test]

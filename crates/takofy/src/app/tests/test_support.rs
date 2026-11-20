@@ -56,10 +56,14 @@ pub(super) fn test_window_restored(
     // A launch applies the file's setting, so a test's `Prefs::of` writes back
     // what the window would write.
     library.set_discovery_enabled(loaded_discovery(&loaded));
+    if let Loaded::Found(saved) = &loaded {
+        library.settings = takofy_ui::settings::Settings::from_prefs(saved);
+    }
     if let Cached::Found(snapshot) = cached {
         library.restore(snapshot);
     }
     let gate = Arc::new(AtomicBool::new(library.discovery_enabled()));
+    let sound = SoundPath::loaded(&loaded);
     let app = TakofyApp {
         state: SignIn::default(),
         library,
@@ -76,6 +80,7 @@ pub(super) fn test_window_restored(
         art: Art::new(),
         since: None,
         prefs,
+        sound,
         snapshots,
         gate,
         hidden: HiddenSync::off(),

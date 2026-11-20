@@ -5,6 +5,8 @@
 //! returning the `Arc`, the type is not `Clone`, and the event forwarder holds
 //! only the receiver, never the player.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,6 +18,8 @@ use librespot::playback::mixer::VolumeGetter;
 use librespot::playback::mixer::mappings::MappedCtrl;
 use librespot::playback::player::{Player, PlayerEvent, PlayerEventChannel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+use crate::soloist::SoloistFault;
 
 /// The loudest level a slider can name.
 pub const VOLUME_MAX: u16 = 100;
@@ -147,6 +151,8 @@ pub enum PlaybackError {
     PlayerClosed,
     #[error("not a playable track URI: {0}")]
     NotPlayable(String),
+    #[error("{0}")]
+    Soloist(SoloistFault),
 }
 
 /// How long a device may take to open before it is reported as missing.
@@ -224,6 +230,60 @@ pub fn playable_track(uri: &str) -> Result<SpotifyUri, PlaybackError> {
     match parsed {
         SpotifyUri::Track { .. } | SpotifyUri::Episode { .. } => Ok(parsed),
         _ => Err(PlaybackError::NotPlayable(uri.to_owned())),
+    }
+}
+
+/// The engine-agnostic seam: whatever makes sound.
+///
+/// The event stream is not part of it. A sound is handed back beside the
+/// `UnboundedReceiver<PlaybackEvent>` it feeds, as `Playback::start` already does.
+pub trait Sound: Send + Sync {
+    /// Loads one track, starting at `position_ms` and playing only when asked to.
+    fn load(&self, uri: &str, position_ms: u32, play: bool) -> Result<(), PlaybackError>;
+
+    /// Loads and plays one track, starting at 0 ms.
+    fn play(&self, uri: &str) -> Result<(), PlaybackError>;
+
+    /// Jumps within the loaded track.
+    fn seek(&self, position_ms: u32);
+
+    /// Pauses playback, keeping the loaded track.
+    fn pause(&self);
+
+    /// Resumes a paused track.
+    fn resume(&self);
+
+    /// Stops playback.
+    fn stop(&self);
+
+    /// Sets the level, 0 to `VOLUME_MAX`.
+    fn set_volume(&self, percent: u16);
+
+    /// Gives the engine back, joining whatever thread it owns.
+    fn shutdown(self: Box<Self>)
+    -> Pin<Box<dyn Future<Output = Result<(), PlaybackError>> + Send>>;
+}
+
+/// A sound and the stream of events it produces.
+pub type ExternalSound = (Box<dyn Sound>, UnboundedReceiver<PlaybackEvent>);
+
+/// Which engine feeds the player.
+pub enum SoundEngine {
+    BuiltIn,
+    External(ExternalSound),
+}
+
+/// Picks the engine.
+///
+/// The closure is the built-in device path, and it is not called when another
+/// engine was handed in.
+pub fn choose(
+    engine: SoundEngine,
+    start_builtin: impl FnOnce() -> Result<ExternalSound, PlaybackError>,
+) -> Result<ExternalSound, PlaybackError> {
+    match engine {
+        SoundEngine::BuiltIn => start_builtin(),
+        SoundEngine::External(sound) => Ok(sound),
     }
 }
 
@@ -315,6 +375,42 @@ impl Playback {
                 Err(PlaybackError::PlayerShared)
             }
         }
+    }
+}
+
+impl Sound for Playback {
+    fn load(&self, uri: &str, position_ms: u32, play: bool) -> Result<(), PlaybackError> {
+        Playback::load(self, uri, position_ms, play)
+    }
+
+    fn play(&self, uri: &str) -> Result<(), PlaybackError> {
+        Playback::play(self, uri)
+    }
+
+    fn seek(&self, position_ms: u32) {
+        Playback::seek(self, position_ms);
+    }
+
+    fn pause(&self) {
+        Playback::pause(self);
+    }
+
+    fn resume(&self) {
+        Playback::resume(self);
+    }
+
+    fn stop(&self) {
+        Playback::stop(self);
+    }
+
+    /// The sink reads the `Volume` handle the player was built with, so the
+    /// level is already set by the time it gets here.
+    fn set_volume(&self, _percent: u16) {}
+
+    fn shutdown(
+        self: Box<Self>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlaybackError>> + Send>> {
+        Box::pin(async move { Playback::shutdown(*self).await })
     }
 }
 

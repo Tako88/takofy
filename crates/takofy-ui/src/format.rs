@@ -2,14 +2,16 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::home::{DiscoveryKind, ReleaseDate, SeedKind};
+use takofy_model::home::{Day, DiscoveryKind, ReleaseDate, SeedKind};
 use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
 use crate::home::discovery::walk::{More, Note};
 use crate::library::SidebarWrite;
 use crate::library_filter::RootKind;
+use crate::message::{Freshness, PairFault, SetupFault};
 use crate::search_index::tracks_phrase;
+use crate::settings::RowStatus;
 use crate::sidebar_kind::SidebarKind;
 
 /// One day in milliseconds.
@@ -823,6 +825,144 @@ pub fn byline(owner: Option<&Owner>, tracks: Option<(usize, u32)>) -> Vec<String
 pub fn plain_description(raw: &str) -> Option<String> {
     let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.is_empty() { None } else { Some(line) }
+}
+
+/// The month names the copy spells out.
+const MONTHS_LONG: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The year, month and day a day number names.
+///
+/// The count is the one [`Day`] carries, which the binary's local day also uses:
+/// 1970-01-01 is day 719 163. A number outside any calender still answers
+/// something, so no caller can panic on it.
+pub fn civil_from_days(day: Day) -> (i32, u8, u8) {
+    let z = i64::from(day.days()) - 719_163 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day_of_month = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year as i32, month as u8, day_of_month as u8)
+}
+
+fn month_name(month: u8, names: [&'static str; 12]) -> &'static str {
+    names[usize::from(month).saturating_sub(1).min(11)]
+}
+
+/// A day as `12 Nov 2026`.
+pub fn day_short(day: Day) -> String {
+    let (year, month, day_of_month) = civil_from_days(day);
+    format!("{day_of_month} {} {year}", month_name(month, MONTHS))
+}
+
+/// A day as `10 February`.
+pub fn day_long(day: Day) -> String {
+    let (_, month, day_of_month) = civil_from_days(day);
+    format!("{day_of_month} {}", month_name(month, MONTHS_LONG))
+}
+
+/// The word the chosen engine's row carries.
+pub fn status_word(status: RowStatus) -> &'static str {
+    match status {
+        RowStatus::Pairing => "Pairing",
+        RowStatus::Expired => "Expired",
+        RowStatus::NotFound => "Not found",
+        RowStatus::NotSetUp => "Not set up",
+        RowStatus::Unpaired => "Not paired",
+        RowStatus::ReadyPaired => "Ready · paired",
+    }
+}
+
+/// The word a row that is not the chosen engine carries.
+pub fn switch_word() -> &'static str {
+    "Switch to it"
+}
+
+/// Why a pairing could not finish, and what to do next.
+pub fn pair_failure(fault: PairFault) -> &'static str {
+    match fault {
+        PairFault::Expired => "Soloist's build has expired. Download a newer one, then try again.",
+        PairFault::Exited => {
+            "Soloist stopped before the phone answered; another Soloist may be using it."
+        }
+        PairFault::CouldNotStart => "Soloist could not be started.",
+        PairFault::NotExecutable => "That file cannot run yet: it has no execute permission.",
+        PairFault::NotReady => "Soloist still needs its program and its key.",
+        PairFault::Busy => "Soloist is still starting. Try again in a moment.",
+    }
+}
+
+/// Why a setup action failed, and what to do next.
+pub fn setup_failure(fault: SetupFault) -> &'static str {
+    match fault {
+        SetupFault::KeyEmpty => "Paste the key first.",
+        SetupFault::KeychainUnavailable => "This computer has no keychain Takofy can use.",
+        SetupFault::KeychainFailed => "The key could not be saved to your keychain.",
+        SetupFault::NotSoloist => "That file is not Spotify Soloist.",
+    }
+}
+
+/// The line a scan that found nothing shows, naming where it looked.
+pub fn not_found_line(looked_in_downloads: bool) -> &'static str {
+    if looked_in_downloads {
+        "Not found in Downloads"
+    } else {
+        "Not found"
+    }
+}
+
+/// The line the setup block names the program with: where it is, its build and
+/// how long that build has left.
+///
+/// A build the version did not name drops its two parts, so the line never says
+/// more than the version did.
+pub fn program_line(program: &str, built: Option<Day>, build: Freshness) -> String {
+    let mut line = program.to_owned();
+    if let Some(built) = built {
+        line.push_str(" · build ");
+        line.push_str(&day_short(built));
+    }
+    if let Some(age) = freshness_word(build) {
+        line.push_str(" · ");
+        line.push_str(&age);
+    }
+    line
+}
+
+fn freshness_word(build: Freshness) -> Option<String> {
+    match build {
+        Freshness::Unknown => None,
+        Freshness::Fresh => Some("fresh".to_owned()),
+        Freshness::Expiring { days_left: 1 } => Some("expires in 1 day".to_owned()),
+        Freshness::Expiring { days_left } => Some(format!("expires in {days_left} days")),
+        Freshness::Expired => Some("expired".to_owned()),
+    }
+}
+
+/// The expiry block's title, naming the day the build stops working.
+pub fn expiry_title(day: Day) -> String {
+    format!("This download expires on {}", day_long(day))
+}
+
+/// The expiry block's sentence: the rule, and what happens at the end of it.
+pub fn expiry_line() -> &'static str {
+    "Spotify's builds stop working 90 days after they were made. Download a newer one before then; Takofy will keep using the old one until it stops."
 }
 
 #[cfg(test)]

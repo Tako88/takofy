@@ -16,10 +16,12 @@ protobuf.workspace = true
 protobuf-json-mapping.workspace = true
 futures-util.workspace = true
 http.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true
-serde_json.workspace = true
+# Paused-time tests need the test clock, which the runtime features leave out.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

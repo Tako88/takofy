@@ -25,6 +25,9 @@ pub(crate) struct Spec<'a> {
     pub align: Align2,
     /// The most characters this field accepts; the caller names its own bound.
     pub limit: usize,
+    /// Whether the text is masked as it is typed, for a field that carries a
+    /// secret.
+    pub password: bool,
 }
 
 /// What the keyboard and focus did this frame.
@@ -52,6 +55,7 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
         cursor,
         align,
         limit,
+        password,
     } = spec;
     if rect.width() <= 0.0 {
         return Out::default();
@@ -125,7 +129,8 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
             .font(font)
             .text_color(text_color)
             .event_filter(FIELD_FILTER)
-            .char_limit(limit);
+            .char_limit(limit)
+            .password(password);
         // egui takes a hint atom for an empty field and paints the first keystroke
         // one frame late when one is present, so a field with nothing to hint
         // passes none and shows the character on its own frame.

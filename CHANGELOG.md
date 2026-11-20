@@ -6,6 +6,25 @@ here is on the [releases page](https://github.com/Tako88/takofy/releases).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-20
+
+### Added
+
+- **The sound can come from Spotify Soloist.** Settings now names the program
+  that plays your audio. Takofy's own engine is the default and is unchanged.
+  The other is Spotify Soloist — Spotify's playback program, installed
+  separately — which Takofy starts and drives while it keeps doing everything
+  else: the library, search, the queue, and what is playing. Three steps set it
+  up: point Takofy at the program, paste the API key Spotify gives you, and pair
+  the device, which the phone does by choosing **Takofy** from Spotify's device
+  list. A Soloist build stops working 90 days after it was built, and the page
+  says how many days yours has left.
+- **A settings page**, reached from the sidebar, because a choice that only
+  exists in a file is not a choice. It says where each piece stands in words —
+  whether the program was found, whether the key is stored, whether the device
+  is paired, whether the build has expired — and offers the step that comes
+  next.
+
 ## [0.3.2] — 2026-11-17
 
 ### Added

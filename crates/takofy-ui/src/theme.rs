@@ -190,6 +190,22 @@ pub mod extent {
     /// reference caps it at `70ch` so a wide window does not stretch a paragraph
     /// from edge to edge.
     pub const EPISODE_TEXT_CH: f32 = 70.0;
+    /// The measure a settings line is clamped to, in characters: the reference
+    /// caps the switch row's line at `56ch`, so a wide window does not stretch
+    /// it from edge to edge.
+    pub const SETTINGS_TEXT_CH: f32 = 56.0;
+    /// An engine row's marker, 12 px square.
+    pub const ENGINE_MARKER: f32 = 12.0;
+    /// The autoplay switch: a 34-by-18 track, a 12-point square thumb, and the
+    /// inset the thumb keeps from the track's edge.
+    pub const SWITCH_W: f32 = 34.0;
+    pub const SWITCH_H: f32 = 18.0;
+    pub const SWITCH_THUMB: f32 = 12.0;
+    /// The settings page's path field floor, 18 rem: a full path reads without
+    /// the field taking the page's whole width at the minimum window.
+    pub const PATH_FIELD_MIN_W: f32 = 288.0;
+    /// The waiting dot beside a pairing step, 6 px.
+    pub const WAIT_DOT: f32 = 6.0;
     /// The search field's height, 2 rem.
     pub const SEARCH_H: f32 = 32.0;
     /// The search field's flex basis, 14 rem.
@@ -551,6 +567,9 @@ pub mod scroll {
 pub mod opacity {
     /// A row in flight: still legible, clearly not on the page.
     pub const LIFTED: f32 = 0.55;
+    /// A setup step not yet reachable: drawn in full, but set back so only the
+    /// step being asked for reads as the one to act on.
+    pub const AHEAD: f32 = 0.45;
     /// The scrollbar at rest: present, but it never competes with a row.
     pub const SCROLL_REST: f32 = 0.16;
     /// The scrollbar under the pointer, or being dragged.

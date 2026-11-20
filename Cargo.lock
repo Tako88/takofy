@@ -5190,7 +5190,7 @@ dependencies = [
 
 [[package]]
 name = "takofy"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "eframe",
@@ -5201,18 +5201,20 @@ dependencies = [
  "keyring",
  "librespot",
  "log",
+ "open",
  "reqwest",
  "serde_json",
  "takofy-core",
  "takofy-model",
  "takofy-ui",
  "tokio",
+ "tokio-tungstenite",
  "winresource",
 ]
 
 [[package]]
 name = "takofy-core"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -5229,11 +5231,11 @@ dependencies = [
 
 [[package]]
 name = "takofy-model"
-version = "0.3.2"
+version = "0.4.0"
 
 [[package]]
 name = "takofy-ui"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "egui",
  "log",

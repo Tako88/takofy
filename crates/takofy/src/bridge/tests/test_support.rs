@@ -15,16 +15,20 @@ use super::reads::{ArtistScript, LikedScript, LyricsScript, PortraitScript, Sear
 use super::recovery::RetireScript;
 use super::transfer::{AcceptScript, PrepareScript, ResolveScript, default_landing};
 use crate::session::{ArtistPage, Discover, Retired, SessionError, SessionHost, TrackPage};
+use crate::soloist::desk::Desk;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use takofy_core::connect::{ClusterView, ConnectError};
-use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
+use takofy_core::credentials::{
+    AccessToken, CredentialStore, RefreshToken, SoloistKey, SoloistKeyStore, StoreError,
+};
 use takofy_core::engine::{EngineError, RootlistRead};
 use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::rootlist::{RootEntry, Walked};
+use takofy_core::soloist::SoloistFault;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{
     ArtistReleases, Day, DigAnswer, DigAsk, DigOutcome, DiscoveryOutcome, DiscoverySeed, Station,
@@ -35,6 +39,7 @@ use takofy_model::{
     Landing, LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal,
     Report, RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
 };
+use takofy_ui::prefs::SoundChoice;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -817,11 +822,39 @@ impl Drop for InFlight<'_> {
     }
 }
 
+/// The keychain a test's setup steps read and write, so nothing of the session
+/// under test reaches the system one.
+#[derive(Default)]
+pub(super) struct FakeKeys {
+    key: Mutex<Option<SoloistKey>>,
+}
+
+impl SoloistKeyStore for FakeKeys {
+    fn load(&self) -> Result<Option<SoloistKey>, StoreError> {
+        Ok(self.key.lock().expect("lock").clone())
+    }
+
+    fn save(&self, key: &SoloistKey) -> Result<(), StoreError> {
+        *self.key.lock().expect("lock") = Some(key.clone());
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), StoreError> {
+        *self.key.lock().expect("lock") = None;
+        Ok(())
+    }
+}
+
 /// Records every session call so an exit path can be asserted without a
 /// network or an audio device.
 #[derive(Clone)]
 pub(super) struct FakeHost {
     pub(super) shared: Arc<FakeState>,
+    /// The sound path this host models. Soloist's sound is the daemon's own
+    /// player, so the built-in one is never the one that starts.
+    sound: SoundChoice,
+    /// The setup the settings page drives, when a test gave it one.
+    desk: Option<Arc<Desk>>,
 }
 
 impl FakeHost {
@@ -847,6 +880,8 @@ impl FakeHost {
         labels: Vec<LabelScript>,
     ) -> Self {
         Self {
+            sound: SoundChoice::BuiltIn,
+            desk: None,
             shared: Arc::new(FakeState {
                 connect_scripts: Mutex::new(connect),
                 rootlist_scripts: Mutex::new(roots),
@@ -858,13 +893,42 @@ impl FakeHost {
         }
     }
 
+    /// The sound path this host answers for, which is the engine the window
+    /// chose at startup.
+    pub(super) fn with_sound(mut self, sound: SoundChoice) -> Self {
+        self.sound = sound;
+        self
+    }
+
     /// The account the fake session connects as.
     pub(super) fn with_account(self, account: Account) -> Self {
         *self.shared.account.lock().expect("lock") = Some(account);
         self
     }
 
+    /// The settings page's steps, answering beside the fake session with a
+    /// keychain of their own. The host is absent because no daemon runs here:
+    /// a stored pin or key would take effect at the next start.
+    pub(super) fn with_desk(mut self) -> Self {
+        self.desk = Some(Arc::new(Desk::new(
+            Arc::new(FakeKeys::default()),
+            std::path::PathBuf::from("/nonexistent/takofy/soloist"),
+            "Takofy Soloist".to_owned(),
+            None,
+        )));
+        self
+    }
+
     /// Builds the fake player once, holding the event stream a drain takes.
+    /// Starts the built-in player, which is the path that opens the audio
+    /// device. A Soloist window sounds through the daemon's own player, so it
+    /// never reaches this one.
+    fn start_builtin(&self) {
+        if self.sound == SoundChoice::BuiltIn {
+            self.start_player();
+        }
+    }
+
     fn start_player(&self) {
         if self.shared.player_started.swap(true, Ordering::SeqCst) {
             return;
@@ -906,6 +970,10 @@ fn answer_order(shared: &FakeState, id: RequestId, ok: bool) -> bool {
 
 impl SessionHost for FakeHost {
     type Discovery = FakeDiscovery;
+
+    fn soloist_desk(&self) -> Option<Arc<Desk>> {
+        self.desk.clone()
+    }
 
     fn connect(
         &mut self,
@@ -1962,8 +2030,13 @@ impl SessionHost for FakeHost {
                     uri.to_owned(),
                 )));
             }
+            PlayScript::Soloist => {
+                return Err(SessionError::Playback(PlaybackError::Soloist(
+                    SoloistFault::Missing,
+                )));
+            }
         }
-        self.start_player();
+        self.start_builtin();
         if let Some(tx) = self.shared.play_started.lock().expect("lock").take() {
             let _ = tx.send(());
         }
@@ -1982,7 +2055,7 @@ impl SessionHost for FakeHost {
         }
         match *self.shared.prepare_script.lock().expect("lock") {
             PrepareScript::Ok => {
-                self.start_player();
+                self.start_builtin();
                 Ok(())
             }
             PrepareScript::NoAudioDevice => {
@@ -2163,6 +2236,10 @@ impl SessionHost for FakeHost {
 
     fn is_down(&self) -> bool {
         self.shared.down.load(Ordering::SeqCst)
+    }
+
+    fn sounds_externally(&self) -> bool {
+        self.sound == SoundChoice::Soloist
     }
 
     fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {

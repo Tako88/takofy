@@ -289,6 +289,7 @@ fn inner(
                         text,
                         writing,
                         wants_focus,
+                        password: false,
                         font,
                         hint: "",
                         inset: Margin::same(0),

@@ -22,6 +22,7 @@ pub mod playlist_edit;
 pub mod receive;
 pub mod rootlist;
 pub mod show;
+pub mod soloist;
 
 mod collected;
 mod collection;
@@ -52,7 +53,11 @@ pub use discovery::ReadFailed;
 pub use engine::{
     DiscoveryReads, Engine, EngineError, OrderAnswer, Orders, PlaylistPage, TrackPages,
 };
-pub use playback::{Outcome, Playback, PlaybackError, PlaybackEvent, drive, map_event};
+pub use playback::{
+    ExternalSound, Outcome, Playback, PlaybackError, PlaybackEvent, Sound, SoundEngine, choose,
+    drive, map_event,
+};
 pub use rootlist::{RootlistError, RootlistPage, RootlistWire, parse_rootlist};
+pub use soloist::SoloistFault;
 pub use transfer::{Resolution, TransferPlan};
 pub use watch::{ORDER_MARGIN, Watching};

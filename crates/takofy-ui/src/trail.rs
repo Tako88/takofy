@@ -37,8 +37,9 @@ fn owning_list(page: &Page) -> Option<RootKind> {
         Page::Album(_) => Some(RootKind::Albums),
         Page::Artist(_) => Some(RootKind::Artists),
         Page::Show(_) => Some(RootKind::Podcasts),
-        // Home is nobody's list and a search is not a list the root holds.
-        Page::Home | Page::Search(_) => None,
+        // Home is nobody's list, a search is not a list the root holds, and
+        // settings belongs to no list at all.
+        Page::Home | Page::Search(_) | Page::Settings => None,
     }
 }
 
@@ -83,6 +84,7 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
     }
     let label = match page {
         Page::Home => None,
+        Page::Settings => Some("Settings"),
         Page::Playlist(_) => library.selected_name(),
         // The album's name only once it is loaded, and only for this page: a
         // ready detail left over from the last album must not name this one.

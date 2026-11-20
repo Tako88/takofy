@@ -2,10 +2,17 @@
 //!
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
+//!
+//! There is one exception, and it is one-shot: the key a listener pastes on the
+//! settings page travels in [`SoloistAsk::StoreKey`] wrapped in a [`Secret`].
+//! The field that held it is emptied by the submit, the wrapper has no
+//! `Display` and prints `Secret(..)`, and no `Update` ever carries one back.
 
 use std::time::Instant;
 
-use takofy_model::home::{HomeAnswer, HomeAsk, StationSeed};
+use takofy_model::home::{Day, HomeAnswer, HomeAsk, StationSeed};
+
+use crate::secret::Secret;
 use takofy_model::{
     Account, AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
     FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
@@ -163,6 +170,35 @@ pub enum Command {
     Answer { id: RequestId, ok: bool },
     /// Publish what this window is playing, or that it has nothing to publish.
     Report(Option<Report>),
+    /// One step of the Soloist setup, or of the engine choice behind it.
+    Soloist(SoloistAsk),
+}
+
+/// A request about the Soloist engine, from the settings page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SoloistAsk {
+    /// Find the program.
+    ///
+    /// `None` searches the `PATH` and then the Downloads folder; `Some` resolves
+    /// that path or reports it missing, and never falls through to a search.
+    Scan { path: Option<String> },
+    /// Store the pasted key in the system keychain.
+    StoreKey(Secret),
+    /// Start the pairing step beside this window.
+    Pair,
+    /// Stop the pairing step that is waiting.
+    StopPair,
+    /// Open the page a setup step names, in the browser.
+    Open(SoloistPage),
+}
+
+/// A web page the settings page sends the listener to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoloistPage {
+    /// Where Spotify Soloist is downloaded.
+    Download,
+    /// The listener's own Spotify developer page, where the key is made.
+    Key,
 }
 
 /// Why an operation failed, with no field that could carry a secret.
@@ -297,6 +333,124 @@ pub enum TransportUpdate {
     Seeked { position_ms: u32 },
     /// The command could not be carried out; carries no detail.
     Failed(Failure),
+}
+
+/// A change on the Soloist side of the receiver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SoloistUpdate {
+    /// What a scan found, and what the keychain holds.
+    Facts(Facts),
+    /// Where the daemon is.
+    Daemon(DaemonState),
+    /// Where the pairing step stands.
+    Pairing(PairEnd),
+    /// Why the last setup action failed.
+    Fault(SetupFault),
+}
+
+/// What a scan of the disk and the keychain know about the stored setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Facts {
+    /// The program that was found, as the file names it.
+    pub program: Option<String>,
+    /// How usable the found build is.
+    pub build: Freshness,
+    /// The day the build was made, when the version named one.
+    pub built: Option<Day>,
+    /// The day the build stops working, when one could be read.
+    pub expires: Option<Day>,
+    /// Whether the keychain holds a key.
+    pub key: KeyState,
+    /// Whether the search looked in the Downloads folder.
+    pub looked_in_downloads: bool,
+}
+
+/// How close a Soloist build is to the day it stops working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// The version said nothing this build could read, which never blocks play.
+    Unknown,
+    /// It has more than the warning window left.
+    Fresh,
+    /// It stops working in `days_left` days.
+    Expiring { days_left: u32 },
+    /// It is past its last day.
+    Expired,
+}
+
+/// What the keychain says about the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyState {
+    /// No key is stored.
+    Absent,
+    /// A key is stored.
+    Stored,
+    /// The keychain could not be read, so nothing can be said about it.
+    Unreadable,
+}
+
+/// Where the daemon is, mirrored so the window can draw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonState {
+    /// No program was found.
+    Missing,
+    /// The program is there and is not running.
+    NotRunning,
+    /// It was started and has not answered yet.
+    Starting,
+    /// It runs but opened no socket this window could talk to.
+    NoSocket,
+    /// It answered, and is not signed in to the account.
+    Unpaired,
+    /// The build is past its expiry.
+    Expired,
+    /// It answered as this window's own device.
+    Ready,
+    /// A daemon someone else started answered as this window's own device.
+    Adopted,
+}
+
+/// How the pairing step ended, or that it has not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairEnd {
+    /// The phone has not answered yet.
+    Waiting,
+    /// The phone answered and the daemon remembered it.
+    Landed,
+    /// Pairing could not finish, for this reason.
+    Failed(PairFault),
+    /// The listener stopped it.
+    Stopped,
+}
+
+/// Why pairing could not finish. A kind, never a detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairFault {
+    /// The build is past its expiry.
+    Expired,
+    /// The program ended without pairing; another Soloist may hold its data.
+    Exited,
+    /// The program could not be started.
+    CouldNotStart,
+    /// The file cannot be run: it has no execute permission.
+    NotExecutable,
+    /// The program or the key is missing, so there is nothing to pair with.
+    NotReady,
+    /// A live daemon holds the data directory.
+    Busy,
+}
+
+/// Why a setup action failed. A kind, never a detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupFault {
+    /// Nothing was pasted, or only whitespace.
+    KeyEmpty,
+    /// The system keychain has no store this app can read.
+    KeychainUnavailable,
+    /// The keychain refused the read or the write.
+    KeychainFailed,
+    /// The file is not Spotify Soloist, so it is never run.
+    NotSoloist,
 }
 
 /// A state change sent from the worker to the window.
@@ -529,6 +683,8 @@ pub enum Update {
     Devices(DeviceUpdate),
     /// A change the receiver made to what this window is playing.
     Remote(RemoteUpdate),
+    /// A change on the Soloist side of the receiver.
+    Soloist(SoloistUpdate),
 }
 
 impl Update {
@@ -612,7 +768,8 @@ impl Update {
             | Self::RadioMore { .. }
             | Self::Transport(_)
             | Self::Devices(_)
-            | Self::Remote(_) => false,
+            | Self::Remote(_)
+            | Self::Soloist(_) => false,
         }
     }
 }

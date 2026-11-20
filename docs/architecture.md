@@ -78,6 +78,19 @@ rows, since both are indices into it. None of this changes the shutdown order â€
 the command task still owns the engine and the player, and teardown still joins
 it before the runtime drops.
 
+Sound has two paths behind one trait. The built-in one is librespot's player on
+the audio device; the other is Spotify Soloist, a separate program whose daemon
+holds the device instead, picked by a stored preference that starts at the
+built-in one. `Sound` is the whole seam: the bridge and the queue never learn
+which engine they hold, and Soloist is still one `play` per row, because the
+queue the window shows is the window's own and is never mirrored into the
+daemon's. The protocol that speaks to it lives in `takofy-core`; the process
+that runs it, the socket it opens and the platform underneath live in the
+binary. The key that pairs the daemon is kept in the OS keychain and handed over
+on the daemon's command line, where any local process can read it while it runs:
+the cost of pairing without a store of our own, recorded on #97. What the page
+that installs the program and points the app at it will say is #81's to write.
+
 The device list is read the same way, and it is the same entry that lets this
 client be handed the sound. It announces itself as a device that can play only
 once something is playing here, because an active device with no player takes

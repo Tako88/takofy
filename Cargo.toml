@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 # The floor is the compiler the Flatpak SDK ships, so the release and the
 # sandbox are built by the same rustc.
@@ -22,15 +22,16 @@ librespot = { version = "0.8.0", default-features = false, features = [
     "rustls-tls-native-roots",
     "rodio-backend",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 thiserror = "2"
 keyring = "4.2.0"
 env_logger = "0.11"
 log = "0.4"
 protobuf = "3.7"
 protobuf-json-mapping = "3.7"
-# The binary reads the outside service's JSON bodies with it, and tests build
-# raw dealer payloads with it; librespot already locks the same version.
+# The binary reads the outside service's JSON bodies with it, core decodes
+# Soloist's frames with it, and tests build raw dealer payloads with it;
+# librespot already locks the same version.
 serde_json = "1"
 futures-util = "0.3"
 # The collection endpoints want their own media type and an HTTP method, and
@@ -39,6 +40,9 @@ http = "1"
 # The local hour for Home's greeting. Already in the build through `oauth2`, and
 # `unsafe_code` is denied, so a hand-written `localtime` is out.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Opens the Soloist download and key pages in the listener's own browser; already
+# locked through librespot's OAuth flow at the same version.
+open = "5.4.4"
 # The window: eframe runs the event loop and egui draws each frame.
 #
 # Glow (OpenGL), not wgpu. wgpu 30 does not compile for Windows: wgpu-hal 30
@@ -60,6 +64,9 @@ egui = "0.37.0"
 # a cancellable request.
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Soloist speaks its protocol over a local WebSocket. Already locked through
+# librespot's own tungstenite dependency.
+tokio-tungstenite = "0.28.0"
 # Build-time only: the resource compiler that embeds the window icon on
 # Windows. Linux never runs the script.
 winresource = "0.1.34"

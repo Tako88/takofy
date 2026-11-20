@@ -13,7 +13,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use takofy_core::rootlist::Walked;
 use takofy_model::home::{DigAsk, DiscoverySeed, HomeAsk, StationSeed};
 use takofy_model::{CoverUrl, Report, RequestId};
-use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, Update};
+use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, SoloistAsk, Update};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver as StopReceiver;
 
@@ -113,6 +113,7 @@ pub(super) fn classify(command: &Command) -> Class {
         | Command::LabelSaved { .. } => Class::Read,
         Command::Fetch { .. }
         | Command::Report(_)
+        | Command::Soloist(_)
         | Command::Volume { .. }
         | Command::Answer { .. }
         | Command::Pause
@@ -150,7 +151,7 @@ pub(super) fn log_unclaimed(class: Class) {
 
 /// One command served the moment it arrives, carrying what it changes.
 ///
-/// One variant per Instant command, so `serve_instant` names all nine with no
+/// One variant per Instant command, so `serve_instant` names all eleven with no
 /// wildcard: a variant added here does not compile until it has a body.
 pub(super) enum Immediate {
     Answer { id: RequestId, ok: bool },
@@ -163,6 +164,7 @@ pub(super) enum Immediate {
     Fetch { url: CoverUrl },
     Discover { seed: DiscoverySeed },
     Dig { ask: DigAsk },
+    Soloist(SoloistAsk),
 }
 
 impl Immediate {
@@ -179,6 +181,7 @@ impl Immediate {
             Command::Fetch { url } => Self::Fetch { url },
             Command::LoadHome(HomeAsk::Discovery { seed }) => Self::Discover { seed },
             Command::LoadHome(HomeAsk::Dig(ask)) => Self::Dig { ask },
+            Command::Soloist(ask) => Self::Soloist(ask),
             // `classify` names the instants, and it is the total match.
             _ => return None,
         })

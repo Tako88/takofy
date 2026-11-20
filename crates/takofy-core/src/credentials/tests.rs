@@ -1,5 +1,5 @@
-use super::fake::FakeStore;
-use super::{AccessToken, CredentialStore, RefreshToken, StoreError};
+use super::fake::{FakeKeyStore, FakeStore};
+use super::{AccessToken, CredentialStore, RefreshToken, SoloistKey, SoloistKeyStore, StoreError};
 
 fn token(value: &str) -> RefreshToken {
     RefreshToken::new(value.to_owned()).expect("non-empty token")
@@ -74,4 +74,48 @@ fn failing_store_surfaces_its_error() {
         store.save(&token("abc")),
         Err(StoreError::Unavailable)
     ));
+}
+
+fn soloist_key(value: &str) -> SoloistKey {
+    SoloistKey::new(value.to_owned()).expect("non-empty key")
+}
+
+#[test]
+fn soloist_key_debug_never_carries_the_key() {
+    let key = soloist_key("soloist-super-secret");
+    let shown = format!("{key:?}");
+    assert_eq!(shown, "SoloistKey(<redacted>)");
+    assert!(!shown.contains("soloist-super-secret"), "leaked: {shown}");
+}
+
+#[test]
+fn empty_soloist_key_is_rejected() {
+    assert!(SoloistKey::new(String::new()).is_none());
+    assert!(SoloistKey::new("  \n\t ".to_owned()).is_none());
+}
+
+#[test]
+fn soloist_key_save_then_load_round_trips() {
+    let store = FakeKeyStore::new();
+    assert!(store.load().expect("load succeeds").is_none());
+    store.save(&soloist_key("abc")).expect("save succeeds");
+    let loaded = store.load().expect("load succeeds").expect("key present");
+    assert_eq!(loaded.expose(), "abc");
+    assert_eq!(store.save_count(), 1);
+}
+
+#[test]
+fn soloist_key_clear_is_idempotent() {
+    let store = FakeKeyStore::new();
+    store.save(&soloist_key("abc")).expect("save succeeds");
+    store.clear().expect("clear succeeds");
+    assert!(store.load().expect("load succeeds").is_none());
+    store.clear().expect("second clear succeeds");
+}
+
+#[test]
+fn soloist_key_store_surfaces_its_error() {
+    let store = FakeKeyStore::new();
+    store.fail_load();
+    assert!(matches!(store.load(), Err(StoreError::Unavailable)));
 }
