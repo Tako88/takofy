@@ -109,7 +109,8 @@ impl SignIn {
                 | Update::CoverFailed { .. }
                 | Update::Devices(_)
                 | Update::Remote(_)
-                | Update::Transport(_),
+                | Update::Transport(_)
+                | Update::Soloist(_),
                 _,
             ) => {}
         }

@@ -711,6 +711,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     | Command::LabelSaved { .. }
                     | Command::Fetch { .. }
                     | Command::Report(_)
+                    | Command::Soloist(_)
                     | Command::Volume { .. }
                     | Command::Answer { .. }
                     | Command::Pause

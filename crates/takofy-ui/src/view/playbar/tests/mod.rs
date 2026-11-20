@@ -7,6 +7,7 @@ mod links;
 mod modes;
 mod now;
 mod queue_button;
+mod redaction;
 mod remote;
 mod seek;
 mod test_support;

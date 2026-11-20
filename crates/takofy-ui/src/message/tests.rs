@@ -424,6 +424,25 @@ fn cases() -> Vec<(bool, Update)> {
             },
         ),
         (false, Update::Transport(TransportUpdate::Loading)),
+        (
+            false,
+            Update::Soloist(SoloistUpdate::Facts(Facts {
+                program: Some("soloist".to_owned()),
+                build: Freshness::Fresh,
+                built: None,
+                expires: None,
+                key: KeyState::Stored,
+                looked_in_downloads: true,
+            })),
+        ),
+        (
+            false,
+            Update::Soloist(SoloistUpdate::Pairing(PairEnd::Failed(PairFault::Busy))),
+        ),
+        (
+            false,
+            Update::Soloist(SoloistUpdate::Fault(SetupFault::NotSoloist)),
+        ),
         (false, Update::Devices(DeviceUpdate::SteerFailed)),
         (false, Update::Remote(RemoteUpdate::Lost { epoch: 0 })),
     ]

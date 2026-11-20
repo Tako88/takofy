@@ -1,6 +1,141 @@
 use super::*;
 
+use takofy_model::home::Day;
 use takofy_model::{Owner, OwnerName, PlaylistAccess, Revision};
+
+/// The day numbers below are 1970-01-01 plus the count to each date, the same
+/// count the binary hands the window.
+const NOV_12_2026: i32 = 739_932;
+const FEB_10_2026: i32 = 739_657;
+const FEB_29_2024: i32 = 738_945;
+const EPOCH: i32 = 719_163;
+const DEC_1_2026: i32 = 739_951;
+
+fn day(days: i32) -> Day {
+    Day::from_days(days)
+}
+
+#[test]
+fn a_day_number_names_its_year_month_and_day() {
+    assert_eq!(civil_from_days(day(EPOCH)), (1970, 1, 1));
+    assert_eq!(civil_from_days(day(FEB_29_2024)), (2024, 2, 29));
+    assert_eq!(civil_from_days(day(DEC_1_2026)), (2026, 12, 1));
+}
+
+#[test]
+fn the_short_day_is_the_build_lines_date() {
+    assert_eq!(day_short(day(NOV_12_2026)), "12 Nov 2026");
+    assert_eq!(day_short(day(FEB_10_2026)), "10 Feb 2026");
+}
+
+#[test]
+fn the_long_day_is_the_expirys_own_date() {
+    assert_eq!(day_long(day(FEB_10_2026)), "10 February");
+    assert_eq!(day_long(day(NOV_12_2026)), "12 November");
+}
+
+#[test]
+fn the_engine_row_has_one_word_per_state() {
+    assert_eq!(status_word(RowStatus::Pairing), "Pairing");
+    assert_eq!(status_word(RowStatus::Expired), "Expired");
+    assert_eq!(status_word(RowStatus::NotFound), "Not found");
+    assert_eq!(status_word(RowStatus::NotSetUp), "Not set up");
+    assert_eq!(status_word(RowStatus::Unpaired), "Not paired");
+    assert_eq!(status_word(RowStatus::ReadyPaired), "Ready \u{00b7} paired");
+    assert_eq!(switch_word(), "Switch to it");
+}
+
+#[test]
+fn a_pairing_failure_says_what_to_do_about_it() {
+    assert_eq!(
+        pair_failure(PairFault::Busy),
+        "Soloist is still starting. Try again in a moment."
+    );
+    assert!(
+        pair_failure(PairFault::Exited).contains("another Soloist may be using it"),
+        "the exit-1 reason names the other process"
+    );
+    for fault in [
+        PairFault::Expired,
+        PairFault::Exited,
+        PairFault::CouldNotStart,
+        PairFault::NotReady,
+        PairFault::Busy,
+    ] {
+        assert!(!pair_failure(fault).is_empty(), "{fault:?}");
+    }
+}
+
+#[test]
+fn a_setup_failure_says_what_went_wrong() {
+    assert_eq!(
+        setup_failure(SetupFault::NotSoloist),
+        "That file is not Spotify Soloist."
+    );
+    for fault in [
+        SetupFault::KeyEmpty,
+        SetupFault::KeychainUnavailable,
+        SetupFault::KeychainFailed,
+        SetupFault::NotSoloist,
+    ] {
+        assert!(!setup_failure(fault).is_empty(), "{fault:?}");
+    }
+}
+
+#[test]
+fn the_program_line_names_the_file_its_build_and_its_age() {
+    assert_eq!(
+        program_line(
+            "~/Downloads/soloist",
+            Some(day(NOV_12_2026)),
+            Freshness::Fresh
+        ),
+        "~/Downloads/soloist \u{00b7} build 12 Nov 2026 \u{00b7} fresh"
+    );
+    assert_eq!(
+        program_line(
+            "/opt/soloist",
+            Some(day(NOV_12_2026)),
+            Freshness::Expiring { days_left: 12 }
+        ),
+        "/opt/soloist \u{00b7} build 12 Nov 2026 \u{00b7} expires in 12 days"
+    );
+    assert_eq!(
+        program_line(
+            "/opt/soloist",
+            Some(day(NOV_12_2026)),
+            Freshness::Expiring { days_left: 1 }
+        ),
+        "/opt/soloist \u{00b7} build 12 Nov 2026 \u{00b7} expires in 1 day"
+    );
+    assert_eq!(
+        program_line("/opt/soloist", Some(day(NOV_12_2026)), Freshness::Expired),
+        "/opt/soloist \u{00b7} build 12 Nov 2026 \u{00b7} expired"
+    );
+    assert_eq!(
+        program_line("/opt/soloist", None, Freshness::Unknown),
+        "/opt/soloist",
+        "a build the version did not name says only where it is"
+    );
+}
+
+#[test]
+fn a_search_that_found_nothing_says_where_it_looked() {
+    assert_eq!(not_found_line(true), "Not found in Downloads");
+    assert_eq!(not_found_line(false), "Not found");
+}
+
+#[test]
+fn the_expiry_block_names_the_day_and_the_rule() {
+    assert_eq!(
+        expiry_title(day(FEB_10_2026)),
+        "This download expires on 10 February"
+    );
+    assert!(expiry_line().contains("90 days"));
+    // egui does not collapse runs of spaces, so a stray indent shows on screen.
+    assert!(!expiry_line().contains("  "));
+    assert_eq!(expiry_line().trim(), expiry_line());
+}
 
 #[test]
 fn the_search_note_says_top_only_when_the_answer_reaches_the_cap() {

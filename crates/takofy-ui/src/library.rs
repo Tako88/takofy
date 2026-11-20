@@ -41,6 +41,7 @@ use crate::removal;
 use crate::reorder;
 use crate::route::{History, Page};
 use crate::search::Search;
+use crate::settings::Settings;
 use crate::show_order::{ShowOrder, default_order};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
@@ -346,6 +347,8 @@ pub struct Library {
     /// It is not the shelf play: a radio works from any page, and a page change
     /// is no reason to drop one still in flight.
     radio: Option<String>,
+    /// The settings page: the engine choice, the Soloist setup and autoplay.
+    pub settings: Settings,
 }
 
 /// Which sidebar write is in flight, and what it would put back.
@@ -1206,9 +1209,12 @@ impl Library {
             // The rows a drift asked for go to the queue, which is the
             // only store that holds them.
             Update::RadioMore { .. } => {}
-            Update::NeedsAuthorization
-            | Update::SignInFailed(_)
-            | Update::Devices(_)
+            // A session that ended or never started cannot still be pairing:
+            // the child that pairs belongs to the session it was asked in.
+            Update::NeedsAuthorization | Update::SignInFailed(_) => self.settings.reset_session(),
+            // The settings page's own replies, which no page change drops.
+            Update::Soloist(_) => self.settings.apply(update),
+            Update::Devices(_)
             | Update::Remote(_)
             | Update::Transport(_)
             | Update::Cover { .. }

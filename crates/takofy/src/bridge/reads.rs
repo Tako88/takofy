@@ -113,6 +113,7 @@ pub(super) fn classify(command: &Command) -> Class {
         | Command::LabelSaved { .. } => Class::Read,
         Command::Fetch { .. }
         | Command::Report(_)
+        | Command::Soloist(_)
         | Command::Volume { .. }
         | Command::Answer { .. }
         | Command::Pause
