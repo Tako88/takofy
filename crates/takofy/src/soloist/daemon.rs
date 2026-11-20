@@ -232,7 +232,11 @@ impl Daemon {
             self.evidence_until = None;
             return;
         }
-        if self.state != State::Starting {
+        // A daemon answers as soon as it listens, before it has restored the
+        // session, and the frame saying the account is there arrives a moment
+        // later; pairing a phone says it too. So being signed in is what
+        // settles the state, from the wait or from having been unpaired.
+        if !matches!(self.state, State::Starting | State::Unpaired) {
             return;
         }
         if is_own_sound_device(device_name, &self.name) {

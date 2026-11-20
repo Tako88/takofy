@@ -106,6 +106,36 @@ fn a_daemon_that_is_not_signed_in_is_unpaired() {
 }
 
 #[test]
+fn a_daemon_that_signs_in_after_it_answers_becomes_ready() {
+    let base = Instant::now();
+    let mut daemon = starting(base);
+    daemon.event(Event::Connected, base);
+    // The socket opens before the session is restored, so the first frame
+    // says no account and a later one says the account is there.
+    daemon.event(auth(false, NAME), base);
+    assert_eq!(daemon.state(), State::Unpaired);
+
+    daemon.event(auth(true, NAME), at(base, 900));
+
+    assert_eq!(daemon.state(), State::Ready);
+    assert!(daemon.state().playable());
+}
+
+#[test]
+fn a_borrowed_daemon_that_signs_in_late_is_adopted() {
+    let base = Instant::now();
+    let mut daemon = Daemon::new(NAME);
+    daemon.event(Event::Located, base);
+    daemon.event(Event::PortRead, base);
+    daemon.event(Event::Connected, base);
+    daemon.event(auth(false, NAME), base);
+
+    daemon.event(auth(true, NAME), at(base, 400));
+
+    assert_eq!(daemon.state(), State::Adopted);
+}
+
+#[test]
 fn another_sounds_name_is_not_this_window() {
     let base = Instant::now();
     let mut daemon = starting(base);
