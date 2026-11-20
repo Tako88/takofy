@@ -83,29 +83,31 @@ impl SessionError {
 
     /// A fixed name for the log. The source error is never formatted: it can
     /// embed a response body.
-    pub(crate) fn kind(&self) -> &'static str {
+    pub(crate) fn kind(&self) -> String {
         match self {
-            Self::NotConnected => "not connected",
-            Self::LinkLost => "link lost",
-            Self::Engine(EngineError::Session(_)) => "session",
-            Self::Engine(EngineError::Rootlist(_)) => "rootlist",
-            Self::Engine(EngineError::Context(_)) => "context",
-            Self::Engine(EngineError::Album(_)) => "album",
-            Self::Engine(EngineError::Artist(_)) => "artist",
-            Self::Engine(EngineError::Show(_)) => "show",
-            Self::Engine(EngineError::Station(_)) => "station",
-            Self::Engine(EngineError::Lyrics(_)) => "lyrics",
-            Self::Engine(EngineError::Playlist(_)) => "playlist",
-            Self::Engine(EngineError::Followed(_)) => "followed",
-            Self::Engine(EngineError::Connect(_)) => "connect",
-            Self::Engine(EngineError::Releases) => "releases",
+            Self::NotConnected => "not connected".to_owned(),
+            Self::LinkLost => "link lost".to_owned(),
+            Self::Engine(EngineError::Session(_)) => "session".to_owned(),
+            Self::Engine(EngineError::Rootlist(_)) => "rootlist".to_owned(),
+            Self::Engine(EngineError::Context(_)) => "context".to_owned(),
+            Self::Engine(EngineError::Album(_)) => "album".to_owned(),
+            Self::Engine(EngineError::Artist(_)) => "artist".to_owned(),
+            Self::Engine(EngineError::Show(_)) => "show".to_owned(),
+            Self::Engine(EngineError::Station(_)) => "station".to_owned(),
+            Self::Engine(EngineError::Lyrics(_)) => "lyrics".to_owned(),
+            Self::Engine(EngineError::Playlist(_)) => "playlist".to_owned(),
+            Self::Engine(EngineError::Followed(_)) => "followed".to_owned(),
+            Self::Engine(EngineError::Connect(_)) => "connect".to_owned(),
+            Self::Engine(EngineError::Releases) => "releases".to_owned(),
             Self::Playback(error) => match error {
-                PlaybackError::NoAudioBackend => "no audio backend",
-                PlaybackError::NoAudioDevice => "no audio device",
-                PlaybackError::PlayerShared => "player shared",
-                PlaybackError::PlayerClosed => "player closed",
-                PlaybackError::NotPlayable(_) => "not playable",
-                PlaybackError::Soloist(_) => "soloist",
+                PlaybackError::NoAudioBackend => "no audio backend".to_owned(),
+                PlaybackError::NoAudioDevice => "no audio device".to_owned(),
+                PlaybackError::PlayerShared => "player shared".to_owned(),
+                PlaybackError::PlayerClosed => "player closed".to_owned(),
+                PlaybackError::NotPlayable(_) => "not playable".to_owned(),
+                // The fault is the whole diagnosis: "soloist" alone says
+                // nothing a reader of the log can act on.
+                PlaybackError::Soloist(fault) => format!("soloist: {fault}"),
             },
         }
     }
