@@ -76,6 +76,7 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::RescanProgram
                 | Control::PathField
                 | Control::KeyField
+                | Control::SaveKey
                 | Control::StartPairing
                 | Control::StopPairing
                 | Control::AutoplaySwitch

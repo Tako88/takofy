@@ -449,6 +449,11 @@ impl Settings {
         self.key_field.edit()
     }
 
+    /// Whether the key field holds anything worth sending.
+    pub fn key_field_empty(&self) -> bool {
+        self.key_field.is_empty()
+    }
+
     pub fn submit_count(&self) -> u32 {
         self.submit_count
     }

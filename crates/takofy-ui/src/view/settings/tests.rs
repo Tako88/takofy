@@ -276,3 +276,67 @@ fn the_page_draws_no_sound_colour() {
     });
     assert!(!green, "no row of this page is drawn in the accent");
 }
+
+#[test]
+fn a_pasted_key_is_saved_without_pressing_enter() {
+    let ctx = context();
+    let mut library = Library::default();
+    library.settings.reveal_setup();
+    library.settings.apply(&found_program());
+    let mut queue = Queue::default();
+    let output = frame(&ctx, Vec::new(), &mut library, &mut queue);
+
+    let _ = click(
+        &ctx,
+        at_text(&output, "Paste the key"),
+        &mut library,
+        &mut queue,
+    );
+    let key = "soloist-key-pasted-not-typed";
+    let _ = frame(
+        &ctx,
+        vec![Event::Text(key.to_owned())],
+        &mut library,
+        &mut queue,
+    );
+
+    // A paste is not a keystroke ending in Enter, so the page has to offer the
+    // action the field cannot: this press is the whole point.
+    let output = frame(&ctx, Vec::new(), &mut library, &mut queue);
+    let _ = click(
+        &ctx,
+        at_text(&output, "SAVE THE KEY"),
+        &mut library,
+        &mut queue,
+    );
+
+    let drained = library.settings.take_outbox();
+    assert_eq!(drained.len(), 1, "the press carries the key out once");
+    assert!(matches!(
+        &drained[0],
+        Command::Soloist(SoloistAsk::StoreKey(_))
+    ));
+    assert!(!format!("{drained:?}").contains(key), "the command redacts");
+}
+
+#[test]
+fn saving_is_inert_with_nothing_to_save() {
+    let ctx = context();
+    let mut library = Library::default();
+    library.settings.reveal_setup();
+    library.settings.apply(&found_program());
+    let mut queue = Queue::default();
+    let output = frame(&ctx, Vec::new(), &mut library, &mut queue);
+
+    let _ = click(
+        &ctx,
+        at_text(&output, "SAVE THE KEY"),
+        &mut library,
+        &mut queue,
+    );
+
+    assert!(
+        library.settings.take_outbox().is_empty(),
+        "an empty field sends nothing"
+    );
+}

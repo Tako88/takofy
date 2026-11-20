@@ -116,6 +116,7 @@ pub enum Control {
     ChangeProgram,
     PathField,
     KeyField,
+    SaveKey,
     StartPairing,
     StopPairing,
     AutoplaySwitch,
@@ -123,7 +124,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 75] = [
+    pub const ALL: [Self; 76] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -195,6 +196,7 @@ impl Control {
         Self::ChangeProgram,
         Self::PathField,
         Self::KeyField,
+        Self::SaveKey,
         Self::StartPairing,
         Self::StopPairing,
         Self::AutoplaySwitch,
@@ -319,6 +321,7 @@ pub fn availability(control: Control) -> Availability {
         | Control::RescanProgram
         | Control::PathField
         | Control::KeyField
+        | Control::SaveKey
         | Control::StartPairing
         | Control::StopPairing
         | Control::AutoplaySwitch => Availability::Ready,

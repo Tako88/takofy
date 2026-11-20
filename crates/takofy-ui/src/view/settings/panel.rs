@@ -246,12 +246,16 @@ fn step_key(
         );
         ui.add_space(space::S3);
         let mut submitted = false;
+        // Enter sends the key, but a paste is not a keystroke ending in Enter:
+        // without a button a pasted key sits in the field and the pairing step
+        // stays out of reach.
+        let save = ghost_size(ui, "Save the key");
+        let stacked = ui.available_width() < extent::PATH_FIELD_MIN_W + save.x + space::S3;
         ui.horizontal(|ui| {
             if text_button(ui, tokens, Control::OpenKeyPage, "Open the key page", true) {
                 presses.open = Some(SoloistPage::Key);
             }
             ui.add_space(space::S3);
-            let width = ui.available_width();
             let out = field(
                 ui,
                 tokens,
@@ -262,11 +266,34 @@ fn step_key(
                     password: true,
                     salt: reading.submit_count,
                 },
-                width,
+                ui.available_width(),
                 settings.key_field_mut(),
             );
             submitted = out.enter;
         });
+        if stacked {
+            if ghost(
+                ui,
+                tokens,
+                Control::SaveKey,
+                "Save the key",
+                !settings.key_field_empty(),
+            ) {
+                submitted = true;
+            }
+        } else {
+            ui.horizontal(|ui| {
+                if ghost(
+                    ui,
+                    tokens,
+                    Control::SaveKey,
+                    "Save the key",
+                    !settings.key_field_empty(),
+                ) {
+                    submitted = true;
+                }
+            });
+        }
         if submitted {
             presses.key = true;
         }
