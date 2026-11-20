@@ -23,7 +23,7 @@ use takofy_ui::message::{
 };
 use takofy_ui::secret::Secret;
 
-use super::launch::Launch;
+use super::launch::{Launch, SpawnError as SoloistSpawnError};
 use super::scan::{self, Disk, Scan};
 use super::{SOLOIST_LOG_TARGET, Sink, SoloistHost, freshness, may_restart, now_unix};
 
@@ -278,7 +278,12 @@ impl Desk {
             Ok(child) => child,
             Err(error) => {
                 log::info!(target: SOLOIST_LOG_TARGET, "soloist: pairing did not start: {error}");
-                self.refuse(PairFault::CouldNotStart);
+                self.refuse(match error {
+                    // The archive Spotify ships is not marked runnable, and a
+                    // listener who extracted it by hand gets exactly this.
+                    SoloistSpawnError::Denied => PairFault::NotExecutable,
+                    _ => PairFault::CouldNotStart,
+                });
                 return;
             }
         };

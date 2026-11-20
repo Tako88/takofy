@@ -51,6 +51,10 @@ fn a_pairing_failure_says_what_to_do_about_it() {
         pair_failure(PairFault::Busy),
         "Soloist is still starting. Try again in a moment."
     );
+    assert_eq!(
+        pair_failure(PairFault::NotExecutable),
+        "That file cannot run yet: it has no execute permission."
+    );
     assert!(
         pair_failure(PairFault::Exited).contains("another Soloist may be using it"),
         "the exit-1 reason names the other process"

@@ -432,6 +432,8 @@ pub enum PairFault {
     Exited,
     /// The program could not be started.
     CouldNotStart,
+    /// The file cannot be run: it has no execute permission.
+    NotExecutable,
     /// The program or the key is missing, so there is nothing to pair with.
     NotReady,
     /// A live daemon holds the data directory.

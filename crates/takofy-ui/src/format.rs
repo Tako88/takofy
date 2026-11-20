@@ -902,6 +902,7 @@ pub fn pair_failure(fault: PairFault) -> &'static str {
             "Soloist stopped before the phone answered; another Soloist may be using it."
         }
         PairFault::CouldNotStart => "Soloist could not be started.",
+        PairFault::NotExecutable => "That file cannot run yet: it has no execute permission.",
         PairFault::NotReady => "Soloist still needs its program and its key.",
         PairFault::Busy => "Soloist is still starting. Try again in a moment.",
     }
