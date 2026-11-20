@@ -424,10 +424,7 @@ impl Worker {
 
     /// Closes what a settled machine no longer needs.
     fn settle(&mut self) {
-        if matches!(
-            self.daemon.state(),
-            State::Starting | State::Ready | State::Adopted
-        ) {
+        if self.daemon.state().keeps_child() {
             return;
         }
         self.connection = None;

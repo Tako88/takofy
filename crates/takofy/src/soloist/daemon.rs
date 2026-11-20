@@ -50,6 +50,19 @@ impl State {
         matches!(self, Self::Ready | Self::Adopted)
     }
 
+    /// Whether the process should be left running in this state.
+    ///
+    /// An unpaired daemon is waiting for a phone to pick it out of Spotify's
+    /// device list, so killing it is how pairing becomes impossible: the phone
+    /// would look for a process that no longer exists. Everything a phone can
+    /// fix keeps its process; everything else is ours to replace.
+    pub fn keeps_child(self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Ready | Self::Adopted | Self::Unpaired
+        )
+    }
+
     /// The fault a sound asked now would answer with, or `None` while the
     /// machine is still working on it.
     pub fn fault(self) -> Option<takofy_core::SoloistFault> {

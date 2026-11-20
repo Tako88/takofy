@@ -279,3 +279,17 @@ fn every_settled_state_names_the_fault_it_answers_with() {
     assert_eq!(State::Ready.fault(), None);
     assert_eq!(State::Adopted.fault(), None);
 }
+
+#[test]
+fn a_daemon_waiting_for_a_phone_is_not_killed() {
+    // Being signed out is the state a first pairing starts in, and the phone
+    // can only fix it while the process is alive.
+    assert!(State::Unpaired.keeps_child());
+    assert!(State::Starting.keeps_child());
+    assert!(State::Ready.keeps_child());
+    assert!(State::Adopted.keeps_child());
+    assert!(!State::NotRunning.keeps_child());
+    assert!(!State::NoSocket.keeps_child());
+    assert!(!State::Expired.keeps_child());
+    assert!(!State::Missing.keeps_child());
+}
