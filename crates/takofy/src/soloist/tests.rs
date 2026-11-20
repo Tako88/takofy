@@ -61,6 +61,26 @@ async fn a_frame_that_is_not_the_answer_is_passed_over() {
     assert_eq!(auth_of(&mut connection).await, Some((false, String::new())));
 }
 
+#[tokio::test]
+async fn a_session_that_arrives_after_the_first_answer_is_believed() {
+    let (mut connection, mut heard, frames) = daemon();
+    tokio::spawn(async move {
+        let _ = heard.recv().await;
+        // Measured order on a real daemon: the socket answers "no account" at
+        // 0.08s and the session is there at 0.43s.
+        let _ = frames.send(r#"{"type":"auth_state","logged_in":false}"#.to_owned());
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        let _ = frames
+            .send(r#"{"type":"auth_state","logged_in":true,"device_name":"Takofy"}"#.to_owned());
+    });
+
+    assert_eq!(
+        auth_of(&mut connection).await,
+        Some((true, "Takofy".to_owned())),
+        "the restored session is what the machine is told"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_daemon_that_says_nothing_is_not_trusted() {
     let (mut connection, _heard, _frames) = daemon();

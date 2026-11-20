@@ -592,18 +592,24 @@ async fn auth_of(connection: &mut Connection) -> Option<(bool, String)> {
         .send(Command::GetAuthState.encode())
         .ok()?;
     let deadline = tokio::time::Instant::now() + AUTH_WAIT;
+    let mut answered = None;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let text = tokio::time::timeout(left, connection.incoming.recv())
-            .await
-            .ok()??;
+        let Ok(Some(text)) = tokio::time::timeout(left, connection.incoming.recv()).await else {
+            return answered;
+        };
         if let Frame::AuthState {
             logged_in,
             device_name,
             ..
         } = decode(&text)
         {
-            return Some((logged_in, device_name));
+            if logged_in {
+                return Some((true, device_name));
+            }
+            // The daemon listens before it has restored the session, so "no
+            // account" is an answer that may be withdrawn a moment later.
+            answered = Some((logged_in, device_name));
         }
     }
 }
