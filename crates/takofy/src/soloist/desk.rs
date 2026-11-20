@@ -271,6 +271,16 @@ impl Desk {
             self.refuse(PairFault::CouldNotStart);
             return;
         }
+        // Only one Soloist may hold a data directory at a time, and this window's
+        // own daemon is holding it. It lets go for the duration, and takes it
+        // back when the pairing child is reaped.
+        if let Some(host) = self.host.as_ref() {
+            host.free();
+            if !host.freed(&self.data_dir, PAIR_FREE_WAIT) {
+                self.refuse(PairFault::Busy);
+                return;
+            }
+        }
         let spawned = Launch::pair(&program, &self.name, &key, &self.data_dir).spawn();
         // The keychain has it, and the child was given it: nothing here keeps it.
         drop(key);
@@ -389,6 +399,9 @@ fn run_scan(
 }
 
 /// Waits for the pairing child, and answers when it ends or is stopped.
+/// How long the window's daemon is given to let go of the data directory.
+const PAIR_FREE_WAIT: Duration = Duration::from_secs(3);
+
 fn wait_for_pair(
     slot: &Mutex<Slot>,
     host: Option<&Arc<SoloistHost>>,
@@ -401,6 +414,9 @@ fn wait_for_pair(
             let _ = child.wait();
             guard(slot).pairing = None;
             send(slot, SoloistUpdate::Pairing(PairEnd::Stopped));
+            if let Some(host) = host {
+                host.resume();
+            }
             return;
         }
         match child.try_wait() {
@@ -408,6 +424,9 @@ fn wait_for_pair(
                 guard(slot).pairing = None;
                 let end = pair_end(status.code());
                 send(slot, SoloistUpdate::Pairing(end));
+                if let Some(host) = host {
+                    host.resume();
+                }
                 if end == PairEnd::Landed
                     && let Some(host) = host
                     && may_restart(guard(slot).daemon)
@@ -423,6 +442,9 @@ fn wait_for_pair(
                     slot,
                     SoloistUpdate::Pairing(PairEnd::Failed(PairFault::Exited)),
                 );
+                if let Some(host) = host {
+                    host.resume();
+                }
                 return;
             }
         }

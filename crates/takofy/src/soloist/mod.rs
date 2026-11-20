@@ -79,6 +79,10 @@ enum Request {
     Watch(Sink),
     /// Starts the machine over from a new pin or key.
     Recheck(Option<PathBuf>),
+    /// Lets go of the data directory, for the one job that needs it alone.
+    Free,
+    /// Takes the data directory back once that job is done.
+    Resume,
     Shutdown,
 }
 
@@ -135,6 +139,41 @@ impl SoloistHost {
         let _ = self.requests.send(Request::Recheck(path));
     }
 
+    /// Stops the daemon so another process may use the data directory.
+    ///
+    /// Only one Soloist may hold a data directory at a time — a second one
+    /// exits with a general failure — and pairing is the other one. The worker
+    /// keeps running, so it can take the directory back afterwards.
+    pub fn free(&self) {
+        let _ = self.requests.send(Request::Free);
+    }
+
+    /// Takes the data directory back, and starts the daemon again.
+    pub fn resume(&self) {
+        let _ = self.requests.send(Request::Resume);
+    }
+
+    /// Waits up to `wait` for the daemon to let go of the data directory.
+    ///
+    /// The worker kills the child and reaps it before it reads another request,
+    /// so this only waits for the worker's turn.
+    pub fn freed(&self, data_dir: &Path, wait: Duration) -> bool {
+        let until = Instant::now() + wait;
+        loop {
+            let alive = std::fs::read_to_string(data_dir.join(PID_FILE))
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .is_some_and(pid_alive);
+            if !alive {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// Stops the worker, and the daemon only if this window started it.
     pub fn shutdown(&self) {
         let _ = self.requests.send(Request::Shutdown);
@@ -172,6 +211,8 @@ struct Worker {
     sink: Option<Sink>,
     /// What was published last, so a repeat is not sent.
     published: Option<Snapshot>,
+    /// Whether another process holds the data directory right now.
+    paused: bool,
 }
 
 impl Worker {
@@ -196,6 +237,7 @@ impl Worker {
             pending: None,
             sink: None,
             published: None,
+            paused: false,
         }
     }
 
@@ -214,6 +256,14 @@ impl Worker {
                     self.published = None;
                 }
                 Ok(Request::Recheck(path)) => self.recheck(path),
+                Ok(Request::Free) => {
+                    self.stop_child();
+                    self.paused = true;
+                }
+                Ok(Request::Resume) => {
+                    self.paused = false;
+                    self.daemon.retry();
+                }
                 Ok(Request::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -316,6 +366,11 @@ impl Worker {
     }
 
     fn advance(&mut self, now: Instant) {
+        // While another process has the data directory, this one must not take
+        // it: a spawn now would exit at once and be counted as a failure.
+        if self.paused {
+            return;
+        }
         match self.daemon.action(now) {
             Action::None => {}
             Action::Spawn => self.spawn(now),
