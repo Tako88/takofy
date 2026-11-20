@@ -245,3 +245,61 @@ fn the_real_disk_answers_about_the_files_it_has() {
     assert!(disk.is_dir(Path::new("src")));
     assert!(!disk.is_file(Path::new("src")));
 }
+
+#[test]
+fn the_archive_spotify_ships_names_the_program_after_the_archive() {
+    // Spotify's Linux tar holds one file called `soloist_release_x86_64`: no
+    // folder, no extension, and not the bare name the program is called.
+    let tree = FakeTree::default()
+        .folder("/home/x/Downloads")
+        .file("/home/x/Downloads/soloist_release_x86_64");
+
+    assert_eq!(
+        scan(
+            None,
+            Some(OsStr::new("")),
+            Some(Path::new("/home/x/Downloads")),
+            &tree
+        ),
+        Scan::Found(PathBuf::from("/home/x/Downloads/soloist_release_x86_64")),
+        "the extracted program beside the archive is the program"
+    );
+}
+
+#[test]
+fn an_archive_is_never_taken_for_the_program() {
+    let tree = FakeTree::default()
+        .folder("/home/x/Downloads")
+        .file("/home/x/Downloads/soloist_release_x86_64.tar")
+        .file("/home/x/Downloads/soloist_release_x86_64.tar.gz")
+        .file("/home/x/Downloads/soloist_release_windows_x86_64.zip");
+
+    assert_eq!(
+        scan(
+            None,
+            Some(OsStr::new("")),
+            Some(Path::new("/home/x/Downloads")),
+            &tree
+        ),
+        Scan::Missing {
+            searched_downloads: true
+        },
+        "a packed archive starts with the name too, and is not a program"
+    );
+}
+
+#[test]
+fn a_typed_archive_is_refused_as_not_the_program() {
+    let tree = FakeTree::default().file("/home/x/Downloads/soloist_release_x86_64.tar");
+
+    assert_eq!(
+        scan(
+            Some(Path::new("/home/x/Downloads/soloist_release_x86_64.tar")),
+            None,
+            None,
+            &tree
+        ),
+        Scan::NotSoloist,
+        "it was named, so it answers rather than falling through to a search"
+    );
+}

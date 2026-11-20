@@ -41,7 +41,7 @@ const PAIR_THREAD: &str = "takofy-soloist-pair";
 const DOWNLOAD_PAGE: &str =
     "https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates";
 /// Where the listener's own key is made.
-const KEY_PAGE: &str = "https://developer.spotify.com/dashboard";
+const KEY_PAGE: &str = "https://developer.spotify.com/dashboard/soloist";
 
 /// One scan at a time, with the newest request waiting behind the running one.
 ///

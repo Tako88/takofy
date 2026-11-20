@@ -311,3 +311,17 @@ fn a_pasted_key_never_reaches_a_debug_line() {
 
     assert!(!printed.contains(KEY), "{printed}");
 }
+
+#[test]
+fn each_setup_page_is_the_page_it_claims() {
+    // The key is generated on a page of its own, not on the dashboard's root:
+    // `/dashboard` shows an app list and no Soloist key.
+    assert_eq!(
+        super::KEY_PAGE,
+        "https://developer.spotify.com/dashboard/soloist"
+    );
+    assert_eq!(
+        super::DOWNLOAD_PAGE,
+        "https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates"
+    );
+}

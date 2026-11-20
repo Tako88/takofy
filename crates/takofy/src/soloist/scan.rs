@@ -118,19 +118,48 @@ fn typed_path(typed: &Path, tree: &impl Tree) -> Scan {
 
 /// Whether the file is named like the program, which is the only file this
 /// process ever runs.
+///
+/// Spotify's archive ships the program as `soloist_release_x86_64` on Linux and
+/// `soloist.exe` on Windows, so the name is a hint rather than the truth: any
+/// name that starts with the program's, carrying either no extension or the
+/// Windows one. An archive is not the program — `soloist_release_x86_64.tar`
+/// starts with the name too, and running it would produce nothing.
 fn named_like_program(path: &Path) -> bool {
-    path.file_name() == Some(OsStr::new(locate::name()))
+    let Some(stem) = path.file_stem().and_then(OsStr::to_str) else {
+        return false;
+    };
+    if !stem.to_ascii_lowercase().starts_with(locate::NAME) {
+        return false;
+    }
+    match path.extension().and_then(OsStr::to_str) {
+        None => true,
+        Some(extension) => extension.eq_ignore_ascii_case("exe"),
+    }
 }
 
-/// The program in `folder`, or in a folder one level inside it.
+/// The program in `folder`, in a folder one level inside it, or among its files.
+///
+/// The extracted archive is one file beside everything else in Downloads, so a
+/// child file counts as much as a child folder does.
 fn in_folder(folder: &Path, tree: &impl Tree) -> Option<PathBuf> {
     let direct = folder.join(locate::name());
     if tree.is_file(&direct) {
         return Some(direct);
     }
     for child in tree.children(folder) {
+        if tree.is_file(&child) {
+            if named_like_program(&child) {
+                return Some(child);
+            }
+            continue;
+        }
         if !tree.is_dir(&child) {
             continue;
+        }
+        for nested in tree.children(&child) {
+            if tree.is_file(&nested) && named_like_program(&nested) {
+                return Some(nested);
+            }
         }
         let candidate = child.join(locate::name());
         if tree.is_file(&candidate) {

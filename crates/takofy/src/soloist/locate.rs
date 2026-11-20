@@ -15,7 +15,7 @@ pub enum Located {
 }
 
 /// The name the program is installed under.
-const NAME: &str = "soloist";
+pub(crate) const NAME: &str = "soloist";
 
 impl Located {
     pub fn path(&self) -> Option<&Path> {
