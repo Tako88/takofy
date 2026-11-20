@@ -93,7 +93,9 @@ pub fn tracks_view(
             );
         }
         MainPage::Settings => {
-            return super::inner(ui, |ui| super::settings::settings_view(ui, tokens));
+            return super::inner(ui, |ui| {
+                super::settings::settings_view(ui, library, queue, tokens)
+            });
         }
         MainPage::Playlist => {}
     }
