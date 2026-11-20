@@ -267,3 +267,21 @@ async fn no_event_arrives_after_a_shutdown() {
     sound.shutdown().await.expect("clean shutdown");
     assert!(events.recv().await.is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_load_that_never_attached_activates_again() {
+    let mut harness = Harness::new(50);
+    harness.expect_command("set_volume").await;
+    harness.sound.load(TRACK, 0, true).expect("valid track");
+    harness.drive_to_play().await;
+    harness.send(r#"{"type":"command_result","command":"play"}"#);
+    harness.loading().await;
+
+    tokio::time::advance(super::super::ending::LOAD_BUDGET).await;
+    assert_eq!(harness.event().await, PlaybackEvent::Unavailable);
+
+    // The activation was acknowledged and did not take, so the next load asks
+    // the device to take the sound again rather than trusting the old answer.
+    harness.sound.load(TRACK, 0, true).expect("valid track");
+    harness.expect_command("activate").await;
+}

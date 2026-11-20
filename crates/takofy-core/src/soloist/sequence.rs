@@ -107,6 +107,15 @@ impl Sequence {
     }
 
     /// Drops the rest of the sequence, for a stop or a superseding load.
+    /// Says the activation this sequence believed in never landed.
+    ///
+    /// A load that never attached is the evidence: `activate` acknowledged,
+    /// the device still not holding the account's sound, the play inaudible.
+    /// The next load then activates again instead of believing itself heard.
+    pub fn withdraw_activation(&mut self) {
+        self.active_confirmed = false;
+    }
+
     pub fn abort(&mut self, now: Instant) {
         if self.in_flight.is_some() {
             self.owe_answer(now);

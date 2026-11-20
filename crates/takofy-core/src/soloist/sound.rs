@@ -116,6 +116,7 @@ async fn run(
                 } else {
                     ending.observe(&frame, now, &fold.state, &expect)
                 };
+                let unplayable = verdict.events.contains(&PlaybackEvent::Unavailable);
                 finish(
                     &events,
                     &mut reported,
@@ -125,6 +126,9 @@ async fn run(
                     &mut ending,
                     now,
                 );
+                if unplayable {
+                    sequence.withdraw_activation();
+                }
             }
             request = requests.recv() => {
                 let Some(request) = request else {
@@ -143,7 +147,11 @@ async fn run(
             _ = ticker.tick() => {
                 let now = Instant::now();
                 let verdict = ending.tick(now, &fold.state, &expect);
+                let unplayable = verdict.events.contains(&PlaybackEvent::Unavailable);
                 let output = sequence.tick(now);
+                if unplayable {
+                    sequence.withdraw_activation();
+                }
                 finish(
                     &events,
                     &mut Vec::new(),
